@@ -7,7 +7,16 @@ const SAVEETHA_USER = process.env.SAVEETHA_USER;
 const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-const KEYWORD = process.env.KEYWORD || '';
+let KEYWORD_ENV = process.env.KEYWORD || '';
+
+let KEYWORD = KEYWORD_ENV;
+let TARGET_TIME = '';
+
+if (KEYWORD_ENV.includes('@')) {
+    const parts = KEYWORD_ENV.split('@');
+    KEYWORD = parts[0].trim();
+    TARGET_TIME = parts[1].trim();
+}
 
 // ── Telegram Helper ────────────────────────────────────────────────────────────
 async function sendTelegram(text) {
@@ -60,8 +69,8 @@ async function runBookingBot() {
         process.exit(1);
     }
 
-    console.log(`[Bot] Starting booking for: "${KEYWORD}"`);
-    await sendTelegram(`⏳ Starting booking bot for *${KEYWORD || 'any slot'}*...\nScanning Saveetha portal...`);
+    console.log(`[Bot] Starting booking for: "${KEYWORD}"${TARGET_TIME ? ` at "${TARGET_TIME}"` : ''}`);
+    await sendTelegram(`⏳ Starting booking bot for *${KEYWORD || 'any slot'}*${TARGET_TIME ? ` at *${TARGET_TIME}*` : ''}...\nScanning Saveetha portal...`);
 
     const browser = await chromium.launch({
         headless: true,
@@ -94,58 +103,67 @@ async function runBookingBot() {
         console.log('[Bot] Navigating to Event Booking page...');
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        let isBooked = false;
-        let attempts = 0;
+        console.log(`[Bot] Scanning for slots...`);
 
-        // ── SCAN LOOP ─────────────────────────────────────────────────────────
-        while (!isBooked && attempts < 120) {
-            attempts++;
-            console.log(`[Bot] Scan attempt #${attempts}...`);
+        const evaluation = await page.evaluate((params) => {
+            const { kw, time } = params;
+            const results = [];
+            const allAvailable = [];
+            const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
+            const btns = Array.from(allClickable).filter(el => {
+                if (el.offsetParent === null) return false;
+                const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                return text === 'book' || text === 'book now' || text === 'register' ||
+                       text === 'book slot' || text === 'enroll' ||
+                       text.startsWith('book') || text.includes('waitlist');
+            });
 
-            const slotsFound = await page.evaluate((kw) => {
-                const results = [];
-                const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
-                const btns = Array.from(allClickable).filter(el => {
-                    if (el.offsetParent === null) return false;
-                    const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
-                    return text === 'book' || text === 'book now' || text === 'register' ||
-                           text === 'book slot' || text === 'enroll' ||
-                           text.startsWith('book') || text.includes('waitlist');
-                });
+            function normalize(str) {
+                if (!str) return '';
+                return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+            }
 
-                function normalize(str) {
-                    if (!str) return '';
-                    return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-                }
+            const kwNorm = normalize(kw);
+            const timeNorm = normalize(time);
 
-                const kwNorm = normalize(kw);
-
-                for (let i = 0; i < btns.length; i++) {
-                    const btn = btns[i];
-                    let current = btn;
-                    let card = null;
-                    for (let d = 0; d < 10; d++) {
-                        if (!current || current === document.body) break;
-                        current = current.parentElement;
-                        if (!current) break;
-                        const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
-                        const rect = current.getBoundingClientRect();
-                        if (hasHeading && rect.height > 50 && rect.height < 2500) {
-                            card = current;
-                            break;
-                        }
-                    }
-
-                    const fullText = card ? normalize(card.innerText) : normalize(btn.innerText);
-                    const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
-                    const isWaitlist = btnText.includes('waitlist');
-
-                    if (!kwNorm || fullText.includes(kwNorm)) {
-                        results.push({ index: i, fullText, isWaitlist });
+            for (let i = 0; i < btns.length; i++) {
+                const btn = btns[i];
+                let current = btn;
+                let card = null;
+                for (let d = 0; d < 10; d++) {
+                    if (!current || current === document.body) break;
+                    current = current.parentElement;
+                    if (!current) break;
+                    const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
+                    const rect = current.getBoundingClientRect();
+                    if (hasHeading && rect.height > 50 && rect.height < 2500) {
+                        card = current;
+                        break;
                     }
                 }
-                return results;
-            }, KEYWORD);
+
+                const fullTextRaw = card ? card.innerText : btn.innerText;
+                const fullTextNorm = normalize(fullTextRaw);
+                const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
+                const isWaitlist = btnText.includes('waitlist');
+
+                // Extract summary for available slots list
+                let summary = fullTextRaw.replace(/\n+/g, ' | ').trim();
+                if (summary.length > 80) summary = summary.substring(0, 80) + '...';
+                allAvailable.push(summary);
+
+                let matchKeyword = !kwNorm || fullTextNorm.includes(kwNorm);
+                let matchTime = !timeNorm || fullTextNorm.includes(timeNorm);
+
+                if (matchKeyword && matchTime) {
+                    results.push({ index: i, fullText: fullTextNorm, isWaitlist });
+                }
+            }
+            return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
+        }, { kw: KEYWORD, time: TARGET_TIME });
+
+        const slotsFound = evaluation.slotsFound;
+        const availableSlots = evaluation.availableSlots;
 
             if (slotsFound.length > 0) {
                 console.log(`[Bot] Match found: ${slotsFound[0].fullText.substring(0, 60)}...`);
@@ -276,31 +294,22 @@ async function runBookingBot() {
 
                     await sendTelegramPhoto(
                         tmpPath,
-                        `${actionStr} Successfully!\n\n🎯 Slot: ${KEYWORD}\n🔗 URL: ${currentUrl}\n\nThe booking process is complete! 🎉`
+                        `${actionStr} Successfully!\n\n🎯 Slot: ${KEYWORD}${TARGET_TIME ? ` at ${TARGET_TIME}` : ''}\n🔗 URL: ${currentUrl}\n\nThe booking process is complete! 🎉`
                     );
 
                     try { fs.unlinkSync(tmpPath); } catch (_) {}
-
-                    isBooked = true;
                 } else {
-                    console.log(`[Bot] Tagging failed: ${tagged.reason} — reloading...`);
-                    await page.waitForTimeout(3000);
-                    await page.reload({ waitUntil: 'domcontentloaded' });
+                    console.log(`[Bot] Tagging failed: ${tagged.reason}`);
+                    await sendTelegram(`⚠️ Found the slot but failed to book: ${tagged.reason}`);
                 }
 
             } else {
-                console.log('[Bot] No slot found yet, reloading in 5 seconds...');
-                if (attempts % 20 === 0) {
-                    await sendTelegram(`🔍 Still scanning... (attempt ${attempts}/120)\nSearching for: *${KEYWORD}*`);
-                }
-                await page.waitForTimeout(5000);
-                await page.reload({ waitUntil: 'domcontentloaded' });
+                console.log('[Bot] No slot found.');
+                const availableMsg = availableSlots.length > 0 
+                    ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n') 
+                    : '\n\nNo slots are currently available on the page.';
+                await sendTelegram(`⚠️ No slot found for *"${KEYWORD}"*${TARGET_TIME ? ` at *${TARGET_TIME}*` : ''}.${availableMsg}`);
             }
-        }
-
-        if (!isBooked) {
-            await sendTelegram(`⚠️ *Timeout!*\nCould not find *"${KEYWORD}"* after 120 scans.\n\nTry again with:\n\`!book ${KEYWORD}\``);
-        }
 
     } catch (err) {
         console.error('[Bot] Error:', err);

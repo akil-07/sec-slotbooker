@@ -45,7 +45,7 @@ export default {
 
             if (!keyword) {
                 await sendTelegram(env.TELEGRAM_BOT_TOKEN, chatId,
-                    '⚠️ Please provide a keyword.\n\nExample:\n`!book CAT exam`\n`!book internal`'
+                    '⚠️ Please provide a keyword.\n\nExample:\n`!book CAT exam`\n`!book internal @ 10:00 AM`'
                 );
                 return new Response('OK', { status: 200 });
             }
@@ -90,10 +90,10 @@ export default {
             await sendTelegram(env.TELEGRAM_BOT_TOKEN, chatId,
                 '✅ *Saveetha Booking Bot is Online!*\n\n' +
                 '*Available Commands:*\n' +
-                '`!book <keyword>` — Start booking a slot\n' +
+                '`!book <keyword> [@ time]` — Start booking a slot\n' +
                 '`!status` — Check if bot is alive\n' +
                 '`!help` — Show this help\n\n' +
-                '_Example: !book CAT internal exam_'
+                '_Example: !book CAT internal @ 10:00 AM_'
             );
 
         // ── Command: !help ────────────────────────────────────────────────────
@@ -101,13 +101,13 @@ export default {
             await sendTelegram(env.TELEGRAM_BOT_TOKEN, chatId,
                 '📖 *Saveetha Bot Help*\n\n' +
                 '*How to use:*\n' +
-                '1. Send `!book <keyword>` to start booking\n' +
-                '2. The bot will scan Saveetha portal every 5 seconds\n' +
-                '3. You\'ll get a Telegram message when booked!\n\n' +
+                '1. Send `!book <keyword> [@ time]` to start booking\n' +
+                '2. The bot will scan the Saveetha portal\n' +
+                '3. You\'ll get a Telegram message if booked, or a list of available slots if not!\n\n' +
                 '*Commands:*\n' +
-                '`!book <keyword>` — Book a slot (e.g. `!book CAT`)\n' +
+                '`!book <keyword> [@ time]` — Book a slot (e.g. `!book CAT @ 10:00 AM`)\n' +
                 '`!status` — Check bot status\n\n' +
-                '*Note:* One booking job runs at a time. Max 120 scans (~10 minutes).'
+                '*Note:* One booking job runs at a time.'
             );
         }
 

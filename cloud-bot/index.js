@@ -44,14 +44,22 @@ client.on('ready', () => {
 client.on('message_create', async (message) => {
     const text = message.body.trim();
     
-    // Command format: !book <keyword>
+    // Command format: !book <keyword> [@ time]
     if (text.toLowerCase().startsWith('!book')) {
-        const keyword = text.substring(5).trim();
-        console.log(`[Command Received] Starting Saveetha Auto-Booker for: "${keyword}"`);
-        message.reply(`⏳ Starting Saveetha Cloud Bot for "${keyword}"... Please wait.`);
+        let keyword = text.substring(5).trim();
+        let targetTime = '';
+        
+        if (keyword.includes('@')) {
+            const parts = keyword.split('@');
+            keyword = parts[0].trim();
+            targetTime = parts[1].trim();
+        }
+        
+        console.log(`[Command Received] Starting Saveetha Auto-Booker for: "${keyword}"${targetTime ? ` at "${targetTime}"` : ''}`);
+        message.reply(`⏳ Starting Saveetha Cloud Bot for "${keyword}"${targetTime ? ` at ${targetTime}` : ''}... Please wait.`);
         
         try {
-            await runBookingBot(keyword, message);
+            await runBookingBot(keyword, targetTime, message);
         } catch (err) {
             console.error('[Error in Booking Bot]', err);
             message.reply(`❌ Error occurred: ${err.message}`);
@@ -59,7 +67,7 @@ client.on('message_create', async (message) => {
     }
 });
 
-async function runBookingBot(targetKeyword, message) {
+async function runBookingBot(targetKeyword, targetTime, message) {
     console.log('[Playwright] Launching browser...');
     // Running headful in the background (headless: true)
     const browser = await chromium.launch({ 
@@ -102,62 +110,71 @@ async function runBookingBot(targetKeyword, message) {
         console.log('[Playwright] Navigating to Event Booking page...');
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         
-        // Fast-scan loop
-        let isBooked = false;
-        let attempts = 0;
-
-        while (!isBooked) {
-            attempts++;
-            console.log(`[Playwright] Scan attempt #${attempts}...`);
+        console.log(`[Playwright] Scanning for slots...`);
+        
+        // Re-evaluate the page content inside the browser context
+        const evaluation = await page.evaluate((params) => {
+            const { kw, time } = params;
+            const results = [];
+            const allAvailable = [];
+            const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
+            const btns = Array.from(allClickable).filter(el => {
+                if (el.offsetParent === null) return false;
+                const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                return text === 'book' || text === 'book now' || text === 'register' || text === 'book slot' || text === 'enroll' || text.startsWith('book') || text.includes('waitlist');
+            });
             
-            // Re-evaluate the page content inside the browser context
-            const slotsFound = await page.evaluate((kw) => {
-                const results = [];
-                const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
-                const btns = Array.from(allClickable).filter(el => {
-                    if (el.offsetParent === null) return false;
-                    const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
-                    return text === 'book' || text === 'book now' || text === 'register' || text === 'book slot' || text === 'enroll' || text.startsWith('book') || text.includes('waitlist');
-                });
+            function normalize(str) {
+                if (!str) return '';
+                return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+            }
+
+            const kwNorm = normalize(kw);
+            const timeNorm = normalize(time);
+
+            for (let i = 0; i < btns.length; i++) {
+                const btn = btns[i];
+                let current = btn;
+                let card = null;
+                // Walk up to find card container
+                for (let d = 0; d < 10; d++) {
+                    if (!current || current === document.body) break;
+                    current = current.parentElement;
+                    if (!current) break;
+                    const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
+                    const rect = current.getBoundingClientRect();
+                    // Assume a card is between 50px and 2500px tall
+                    if (hasHeading && rect.height > 50 && rect.height < 2500) {
+                        card = current;
+                        break;
+                    }
+                }
                 
-                function normalize(str) {
-                    if (!str) return '';
-                    return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+                const fullTextRaw = card ? card.innerText : btn.innerText;
+                const fullTextNorm = normalize(fullTextRaw);
+                const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
+                const isWaitlist = btnText.includes('waitlist');
+
+                // Extract a summary for available slots
+                let summary = fullTextRaw.replace(/\n+/g, ' | ').trim();
+                if (summary.length > 80) summary = summary.substring(0, 80) + '...';
+                allAvailable.push(summary);
+
+                let matchKeyword = !kwNorm || fullTextNorm.includes(kwNorm);
+                let matchTime = !timeNorm || fullTextNorm.includes(timeNorm);
+
+                if (matchKeyword && matchTime) {
+                    results.push({ index: i, fullText: fullTextNorm, isWaitlist });
                 }
+            }
+            return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
+        }, { kw: targetKeyword, time: targetTime });
 
-                const kwNorm = normalize(kw);
+        const slotsFound = evaluation.slotsFound;
+        const availableSlots = evaluation.availableSlots;
 
-                for (let i = 0; i < btns.length; i++) {
-                    const btn = btns[i];
-                    let current = btn;
-                    let card = null;
-                    // Walk up to find card container
-                    for (let d = 0; d < 10; d++) {
-                        if (!current || current === document.body) break;
-                        current = current.parentElement;
-                        if (!current) break;
-                        const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
-                        const rect = current.getBoundingClientRect();
-                        // Assume a card is between 50px and 2500px tall
-                        if (hasHeading && rect.height > 50 && rect.height < 2500) {
-                            card = current;
-                            break;
-                        }
-                    }
-                    
-                    const fullText = card ? normalize(card.innerText) : normalize(btn.innerText);
-                    const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
-                    const isWaitlist = btnText.includes('waitlist');
-
-                    if (!kwNorm || fullText.includes(kwNorm)) {
-                        results.push({ index: i, fullText, isWaitlist });
-                    }
-                }
-                return results;
-            }, targetKeyword);
-
-            if (slotsFound.length > 0) {
-                console.log(`[Playwright] Match found: ${slotsFound[0].fullText.substring(0, 60)}...`);
+        if (slotsFound.length > 0) {
+            console.log(`[Playwright] Match found: ${slotsFound[0].fullText.substring(0, 60)}...`);
                 
                 // Tag the button and its card with data attributes using evaluate
                 const tagged = await page.evaluate((targetData) => {
@@ -285,26 +302,17 @@ async function runBookingBot(targetKeyword, message) {
                     console.log('[Playwright] Sending screenshot 4 (final result)...');
                     await sendScreenshot(page, message, `🎉 Step 4: Final result! URL: ${currentUrl}`);
 
-                    const actionStr = slotsFound[0].isWaitlist ? 'Waitlisted' : 'Booked';
-                    message.reply(`✅ ${actionStr}: *${targetKeyword}*\n📸 Screenshots sent above show the full booking process.`);
-                    isBooked = true;
-                    break;
+                    message.reply(`✅ ${actionStr}: *${targetKeyword}*${targetTime ? ` at ${targetTime}` : ''}\n📸 Screenshots sent above show the full booking process.`);
                 } else {
-                    console.log(`[Playwright] Tagging failed: ${tagged.reason} — reloading...`);
-                    await page.waitForTimeout(3000);
-                    await page.reload({ waitUntil: 'domcontentloaded' });
+                    console.log(`[Playwright] Tagging failed: ${tagged.reason}`);
+                    message.reply(`⚠️ Found the slot but failed to book: ${tagged.reason}`);
                 }
-            } else {
-                console.log('[Playwright] No slot found yet, reloading in 5 seconds...');
-                await page.waitForTimeout(5000);
-                await page.reload({ waitUntil: 'domcontentloaded' });
-            }
-            
-            // Limit to 120 attempts to prevent infinite loops
-            if (attempts > 120) {
-                message.reply(`⚠️ Timeout: Could not find "${targetKeyword}" after 120 scans.`);
-                break;
-            }
+        } else {
+            console.log('[Playwright] No slot found.');
+            const availableMsg = availableSlots.length > 0 
+                ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n') 
+                : '\n\nNo slots are currently available on the page.';
+            message.reply(`⚠️ No slot found for "${targetKeyword}"${targetTime ? ` at ${targetTime}` : ''}.${availableMsg}`);
         }
         
     } catch (err) {
