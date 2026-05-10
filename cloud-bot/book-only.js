@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const SAVEETHA_USER = process.env.SAVEETHA_USER;
@@ -6,6 +7,8 @@ const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const KEYWORD = process.env.KEYWORD || '';
+const EMAIL_USER = process.env.EMAIL_USER;
+const EMAIL_PASS = process.env.EMAIL_PASS;
 
 // ── Telegram Helper ────────────────────────────────────────────────────────────
 async function sendTelegram(text) {
@@ -21,6 +24,30 @@ async function sendTelegram(text) {
         else console.log('[Telegram] Message sent.');
     } catch (e) {
         console.error('[Telegram] Failed to send:', e.message);
+    }
+}
+
+// ── Email Helper ───────────────────────────────────────────────────────────────
+async function sendEmail(subject, text) {
+    if (!EMAIL_USER || !EMAIL_PASS) {
+        console.log('[Email] Credentials not provided, skipping email notification.');
+        return;
+    }
+    try {
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+        });
+        const mailOptions = {
+            from: `"Saveetha Bot" <${EMAIL_USER}>`,
+            to: EMAIL_USER, // sends the email to yourself
+            subject: subject,
+            text: text
+        };
+        await transporter.sendMail(mailOptions);
+        console.log('[Email] Confirmation email sent successfully.');
+    } catch (e) {
+        console.error('[Email] Failed to send email:', e.message);
     }
 }
 
@@ -249,6 +276,12 @@ async function runBookingBot() {
                         `🎯 *Slot:* ${KEYWORD}\n` +
                         `🔗 *URL:* ${currentUrl}\n\n` +
                         `The booking process is complete! 🎉`
+                    );
+
+                    // Send Email Confirmation
+                    await sendEmail(
+                        `Saveetha Bot: ${actionStr} for ${KEYWORD}`,
+                        `${actionStr} Successfully!\n\nSlot: ${KEYWORD}\nURL: ${currentUrl}\n\nThe booking process is complete!`
                     );
 
                     isBooked = true;
