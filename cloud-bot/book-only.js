@@ -1,5 +1,6 @@
 const { chromium } = require('playwright');
-const nodemailer = require('nodemailer');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const SAVEETHA_USER = process.env.SAVEETHA_USER;
@@ -7,8 +8,6 @@ const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const KEYWORD = process.env.KEYWORD || '';
-const EMAIL_USER = process.env.EMAIL_USER;
-const EMAIL_PASS = process.env.EMAIL_PASS;
 
 // ── Telegram Helper ────────────────────────────────────────────────────────────
 async function sendTelegram(text) {
@@ -27,27 +26,26 @@ async function sendTelegram(text) {
     }
 }
 
-// ── Email Helper ───────────────────────────────────────────────────────────────
-async function sendEmail(subject, text) {
-    if (!EMAIL_USER || !EMAIL_PASS) {
-        console.log('[Email] Credentials not provided, skipping email notification.');
-        return;
-    }
+async function sendTelegramPhoto(photoPath, caption) {
     try {
-        const transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+        const formData = new FormData();
+        formData.append('chat_id', CHAT_ID);
+        formData.append('caption', caption);
+        
+        const buffer = fs.readFileSync(photoPath);
+        const blob = new Blob([buffer], { type: 'image/png' });
+        formData.append('photo', blob, 'screenshot.png');
+
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
+        const res = await fetch(url, {
+            method: 'POST',
+            body: formData
         });
-        const mailOptions = {
-            from: `"Saveetha Bot" <${EMAIL_USER}>`,
-            to: EMAIL_USER, // sends the email to yourself
-            subject: subject,
-            text: text
-        };
-        await transporter.sendMail(mailOptions);
-        console.log('[Email] Confirmation email sent successfully.');
+        const data = await res.json();
+        if (!data.ok) console.error('[Telegram] Error sending photo:', data.description);
+        else console.log('[Telegram] Photo sent.');
     } catch (e) {
-        console.error('[Email] Failed to send email:', e.message);
+        console.error('[Telegram] Failed to send photo:', e.message);
     }
 }
 
@@ -271,18 +269,17 @@ async function runBookingBot() {
                     console.log(`[Bot] Final URL: ${currentUrl}`);
 
                     const actionStr = slotsFound[0].isWaitlist ? '📋 Waitlisted' : '✅ Booked';
-                    await sendTelegram(
-                        `${actionStr} Successfully!\n\n` +
-                        `🎯 *Slot:* ${KEYWORD}\n` +
-                        `🔗 *URL:* ${currentUrl}\n\n` +
-                        `The booking process is complete! 🎉`
+                    
+                    // Take screenshot
+                    const tmpPath = path.join(__dirname, '_tmp_screenshot.png');
+                    await page.screenshot({ path: tmpPath, fullPage: false });
+
+                    await sendTelegramPhoto(
+                        tmpPath,
+                        `${actionStr} Successfully!\n\n🎯 Slot: ${KEYWORD}\n🔗 URL: ${currentUrl}\n\nThe booking process is complete! 🎉`
                     );
 
-                    // Send Email Confirmation
-                    await sendEmail(
-                        `Saveetha Bot: ${actionStr} for ${KEYWORD}`,
-                        `${actionStr} Successfully!\n\nSlot: ${KEYWORD}\nURL: ${currentUrl}\n\nThe booking process is complete!`
-                    );
+                    try { fs.unlinkSync(tmpPath); } catch (_) {}
 
                     isBooked = true;
                 } else {

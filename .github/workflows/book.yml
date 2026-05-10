@@ -45,8 +45,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ github.event.inputs.chat_id }}
           KEYWORD: ${{ github.event.inputs.keyword }}
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
         run: |
           cd cloud-bot
           node book-only.js
