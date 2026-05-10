@@ -44,22 +44,28 @@ client.on('ready', () => {
 client.on('message_create', async (message) => {
     const text = message.body.trim();
     
-    // Command format: !book <keyword> [@ time]
+    // Command format: !book <keyword> [@ time] [# start time]
     if (text.toLowerCase().startsWith('!book')) {
         let keyword = text.substring(5).trim();
         let targetTime = '';
+        let startTime = '';
         
+        if (keyword.includes('#')) {
+            const parts = keyword.split('#');
+            keyword = parts[0].trim();
+            startTime = parts[1].trim();
+        }
+
         if (keyword.includes('@')) {
             const parts = keyword.split('@');
             keyword = parts[0].trim();
             targetTime = parts[1].trim();
         }
         
-        console.log(`[Command Received] Starting Saveetha Auto-Booker for: "${keyword}"${targetTime ? ` at "${targetTime}"` : ''}`);
-        message.reply(`⏳ Starting Saveetha Cloud Bot for "${keyword}"${targetTime ? ` at ${targetTime}` : ''}... Please wait.`);
+        console.log(`[Command Received] Starting Saveetha Auto-Booker for: "${keyword}"${targetTime ? ` at "${targetTime}"` : ''}${startTime ? ` | starts at ${startTime}` : ''}`);
         
         try {
-            await runBookingBot(keyword, targetTime, message);
+            await runBookingBot(keyword, targetTime, startTime, message);
         } catch (err) {
             console.error('[Error in Booking Bot]', err);
             message.reply(`❌ Error occurred: ${err.message}`);
@@ -67,7 +73,37 @@ client.on('message_create', async (message) => {
     }
 });
 
-async function runBookingBot(targetKeyword, targetTime, message) {
+async function runBookingBot(targetKeyword, targetTime, startTime, message) {
+    if (startTime) {
+        // Calculate delay
+        const now = new Date();
+        const match = startTime.match(/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i);
+        if (match) {
+            let hours = parseInt(match[1], 10);
+            const mins = parseInt(match[2], 10);
+            const isPM = match[3] && match[3].toLowerCase() === 'pm';
+            const isAM = match[3] && match[3].toLowerCase() === 'am';
+            
+            if (isPM && hours < 12) hours += 12;
+            if (isAM && hours === 12) hours = 0;
+            
+            const target = new Date(now);
+            target.setHours(hours, mins, 0, 0);
+            
+            let diff = target.getTime() - now.getTime();
+            if (diff < 0) {
+                target.setDate(target.getDate() + 1);
+                diff = target.getTime() - now.getTime();
+            }
+            
+            const delayMins = Math.round(diff / 60000);
+            message.reply(`⏱️ *Timer Mode Active*\nWaiting ${delayMins} minute(s) before starting the booking process for *${targetKeyword}* (Starts at ${startTime}).`);
+            await new Promise(resolve => setTimeout(resolve, diff));
+        }
+    }
+
+    message.reply(`⏳ Starting Saveetha Cloud Bot for "${targetKeyword}"${targetTime ? ` at ${targetTime}` : ''}... Please wait.`);
+
     console.log('[Playwright] Launching browser...');
     // Running headful in the background (headless: true)
     const browser = await chromium.launch({ 

@@ -45,7 +45,7 @@ export default {
 
             if (!keyword) {
                 await sendTelegram(env.TELEGRAM_BOT_TOKEN, chatId,
-                    '⚠️ Please provide a keyword.\n\nExample:\n`!book CAT exam`\n`!book internal @ 10:00 AM`'
+                    '⚠️ Please provide a keyword.\n\nExample:\n`!book CAT exam`\n`!book internal @ 10:00 AM # 09:55 AM`'
                 );
                 return new Response('OK', { status: 200 });
             }
@@ -101,11 +101,13 @@ export default {
             await sendTelegram(env.TELEGRAM_BOT_TOKEN, chatId,
                 '📖 *Saveetha Bot Help*\n\n' +
                 '*How to use:*\n' +
-                '1. Send `!book <keyword> [@ time]` to start booking\n' +
+                '1. Send `!book <keyword> [@ time] [# start time]` to start booking\n' +
                 '2. The bot will scan the Saveetha portal\n' +
                 '3. You\'ll get a Telegram message if booked, or a list of available slots if not!\n\n' +
                 '*Commands:*\n' +
-                '`!book <keyword> [@ time]` — Book a slot (e.g. `!book CAT @ 10:00 AM`)\n' +
+                '`!book <keyword>` — Book a slot immediately\n' +
+                '`!book <keyword> @ 10:00 AM` — Book a specific slot time\n' +
+                '`!book <keyword> # 06:00 PM` — Timer Mode: Wait until 6:00 PM IST to start scanning\n' +
                 '`!status` — Check bot status\n\n' +
                 '*Note:* One booking job runs at a time.'
             );

@@ -11,11 +11,55 @@ let KEYWORD_ENV = process.env.KEYWORD || '';
 
 let KEYWORD = KEYWORD_ENV;
 let TARGET_TIME = '';
+let START_TIME = '';
+
+if (KEYWORD_ENV.includes('#')) {
+    const parts = KEYWORD_ENV.split('#');
+    KEYWORD_ENV = parts[0].trim();
+    START_TIME = parts[1].trim();
+}
 
 if (KEYWORD_ENV.includes('@')) {
     const parts = KEYWORD_ENV.split('@');
     KEYWORD = parts[0].trim();
     TARGET_TIME = parts[1].trim();
+} else {
+    KEYWORD = KEYWORD_ENV.trim();
+}
+
+// Helper to calculate delay based on "HH:MM AM/PM"
+function getDelayMsUntil(timeStr) {
+    if (!timeStr) return 0;
+    const now = new Date();
+    // Assuming Indian Standard Time if server is local, but GitHub Actions is UTC.
+    // Wait, GitHub actions runs in UTC!
+    // The user will input IST time because they are in India. We should offset it.
+    // Let's use simple logic: offset by IST (+5:30)
+    // Actually, getting current IST time:
+    const utcNow = new Date();
+    const istNow = new Date(utcNow.getTime() + (5.5 * 60 * 60 * 1000));
+    
+    const match = timeStr.match(/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i);
+    if (!match) return 0;
+    
+    let hours = parseInt(match[1], 10);
+    const mins = parseInt(match[2], 10);
+    const isPM = match[3] && match[3].toLowerCase() === 'pm';
+    const isAM = match[3] && match[3].toLowerCase() === 'am';
+    
+    if (isPM && hours < 12) hours += 12;
+    if (isAM && hours === 12) hours = 0;
+    
+    const targetIST = new Date(istNow);
+    targetIST.setHours(hours, mins, 0, 0);
+    
+    let diff = targetIST.getTime() - istNow.getTime();
+    if (diff < 0) {
+        // If it passed today, assume tomorrow
+        targetIST.setDate(targetIST.getDate() + 1);
+        diff = targetIST.getTime() - istNow.getTime();
+    }
+    return diff;
 }
 
 // ── Telegram Helper ────────────────────────────────────────────────────────────
@@ -67,6 +111,14 @@ async function runBookingBot() {
     if (!TELEGRAM_BOT_TOKEN || !CHAT_ID) {
         console.error('[Bot] TELEGRAM_BOT_TOKEN or CHAT_ID not set!');
         process.exit(1);
+    }
+
+    const delayMs = getDelayMsUntil(START_TIME);
+    if (delayMs > 0) {
+        const delayMins = Math.round(delayMs / 60000);
+        console.log(`[Bot] Timer Mode: Waiting ${delayMins} minutes until ${START_TIME} IST...`);
+        await sendTelegram(`⏱️ *Timer Mode Active*\nWaiting ${delayMins} minute(s) before checking slots for *${KEYWORD}* (Starts at ${START_TIME}).`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
     console.log(`[Bot] Starting booking for: "${KEYWORD}"${TARGET_TIME ? ` at "${TARGET_TIME}"` : ''}`);
