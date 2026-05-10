@@ -1,0 +1,50 @@
+name: 📚 Book Saveetha Slot
+
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: 'Exam slot keyword to search for'
+        required: true
+        default: ''
+      chat_id:
+        description: 'Telegram chat ID to send result to'
+        required: true
+
+jobs:
+  book:
+    name: Run Saveetha Booking Bot
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: cloud-bot/package-lock.json
+
+      - name: 📦 Install dependencies
+        run: |
+          cd cloud-bot
+          npm install
+
+      - name: 🎭 Install Playwright + Chromium
+        run: |
+          cd cloud-bot
+          npx playwright install chromium --with-deps
+
+      - name: 🤖 Run Saveetha Booking Bot
+        env:
+          SAVEETHA_USER: ${{ secrets.SAVEETHA_USER }}
+          SAVEETHA_PASS: ${{ secrets.SAVEETHA_PASS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          KEYWORD: ${{ github.event.inputs.keyword }}
+        run: |
+          cd cloud-bot
+          node book-only.js

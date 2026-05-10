@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Saveetha Exam Auto Booker",
+  "version": "1.0.0",
+  "description": "Automatically books exam slots on learner.saveetha.in for you.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "alarms",
+    "notifications",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://learner.saveetha.in/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://learner.saveetha.in/academicevents/event-booking/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

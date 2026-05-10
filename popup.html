@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Saveetha Exam Auto-Booker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo-icon">🎓</div>
+      <div>
+        <h1 class="title">Auto Booker</h1>
+        <p class="subtitle">Saveetha Exam Slots</p>
+      </div>
+    </div>
+    <div class="status-badge" id="statusBadge">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusLabel">Idle</span>
+    </div>
+  </header>
+
+  <!-- Main card -->
+  <main class="main">
+
+    <!-- Auto-Book Toggle -->
+    <section class="card">
+      <div class="card-row">
+        <div>
+          <div class="card-label">Auto-Book</div>
+          <div class="card-desc">Automatically book open slots</div>
+        </div>
+        <label class="toggle" id="autoBookToggle">
+          <input type="checkbox" id="autoBookCheck" />
+          <span class="slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Keyword Filter -->
+    <section class="card">
+      <div class="field-label">Keyword Filter</div>
+      <div class="field-desc">Only book slots matching this keyword (leave blank for all)</div>
+      <input
+        type="text"
+        id="keywordInput"
+        class="text-input"
+        placeholder="e.g. Internal Assessment..."
+      />
+    </section>
+
+    <!-- Specific Slot Time Filter -->
+    <section class="card">
+      <div class="field-label">Specific Slot Time</div>
+      <div class="field-desc">Only book slots matching this time (leave blank for all)</div>
+      <input
+        type="text"
+        id="timeInput"
+        class="text-input"
+        placeholder="e.g. 10:00 AM, 02:00 PM, Slot 2..."
+      />
+    </section>
+
+    <!-- Purpose -->
+    <section class="card">
+      <div class="field-label">Purpose for Attending</div>
+      <div class="field-desc">Auto-filled in the booking form before clicking Book Now</div>
+      <input
+        type="text"
+        id="purposeInput"
+        class="text-input"
+        placeholder="e.g. To attend as part of my academic curriculum..."
+      />
+    </section>
+
+    <!-- Check Interval -->
+    <section class="card">
+      <div class="field-label">Check Interval</div>
+      <div class="field-desc">How often to scan the booking page</div>
+      <div class="select-wrapper">
+        <select id="intervalSelect" class="select-input">
+          <option value="5s">Every 5 seconds (Fast Scan)</option>
+          <option value="1">Every 1 minute</option>
+          <option value="3">Every 3 minutes</option>
+          <option value="5" selected>Every 5 minutes</option>
+          <option value="10">Every 10 minutes</option>
+          <option value="30">Every 30 minutes</option>
+        </select>
+        <span class="select-arrow">▾</span>
+      </div>
+    </section>
+
+    <!-- Actions -->
+    <div class="action-row">
+      <button class="btn btn-primary" id="scanNowBtn">
+        <span>⚡</span> Scan Now
+      </button>
+      <button class="btn btn-secondary" id="openPageBtn">
+        <span>🌐</span> Open Page
+      </button>
+    </div>
+
+    <!-- Last Status -->
+    <section class="status-card" id="statusCard">
+      <div class="status-icon" id="statusIcon">📡</div>
+      <div class="status-text" id="statusText">Ready to scan...</div>
+      <div class="status-time" id="statusTime"></div>
+    </section>
+
+    <!-- Booking Log -->
+    <section class="log-section">
+      <div class="log-header">
+        <span>📋 Booking Log</span>
+        <button class="clear-btn" id="clearLogBtn">Clear</button>
+      </div>
+      <div class="log-list" id="logList">
+        <div class="log-empty">No bookings yet</div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span>learner.saveetha.in</span>
+    <span class="version">v1.0.0</span>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
