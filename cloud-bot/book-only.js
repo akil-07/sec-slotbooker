@@ -7,62 +7,9 @@ const SAVEETHA_USER = process.env.SAVEETHA_USER;
 const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-let KEYWORD_ENV = process.env.KEYWORD || '';
 
-let KEYWORD = KEYWORD_ENV;
-let TARGET_TIME = '';
-let START_TIME = '';
+// ─── Telegram Helpers ────────────────────────────────────────────────────────
 
-if (KEYWORD_ENV.includes('#')) {
-    const parts = KEYWORD_ENV.split('#');
-    KEYWORD_ENV = parts[0].trim();
-    START_TIME = parts[1].trim();
-}
-
-if (KEYWORD_ENV.includes('@')) {
-    const parts = KEYWORD_ENV.split('@');
-    KEYWORD = parts[0].trim();
-    TARGET_TIME = parts[1].trim();
-} else {
-    KEYWORD = KEYWORD_ENV.trim();
-}
-
-// Helper to calculate delay based on "HH:MM AM/PM"
-function getDelayMsUntil(timeStr) {
-    if (!timeStr) return 0;
-    const now = new Date();
-    // Assuming Indian Standard Time if server is local, but GitHub Actions is UTC.
-    // Wait, GitHub actions runs in UTC!
-    // The user will input IST time because they are in India. We should offset it.
-    // Let's use simple logic: offset by IST (+5:30)
-    // Actually, getting current IST time:
-    const utcNow = new Date();
-    const istNow = new Date(utcNow.getTime() + (5.5 * 60 * 60 * 1000));
-    
-    const match = timeStr.match(/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i);
-    if (!match) return 0;
-    
-    let hours = parseInt(match[1], 10);
-    const mins = parseInt(match[2], 10);
-    const isPM = match[3] && match[3].toLowerCase() === 'pm';
-    const isAM = match[3] && match[3].toLowerCase() === 'am';
-    
-    if (isPM && hours < 12) hours += 12;
-    if (isAM && hours === 12) hours = 0;
-    
-    const targetIST = new Date(istNow);
-    targetIST.setHours(hours, mins, 0, 0);
-    
-    let diff = targetIST.getTime() - istNow.getTime();
-    if (diff < 0) {
-        // If it passed today, assume tomorrow
-        targetIST.setDate(targetIST.getDate() + 1);
-        diff = targetIST.getTime() - istNow.getTime();
-    }
-    return diff;
-}
-
-// ── Telegram Helper ────────────────────────────────────────────────────────────
 async function sendTelegram(text) {
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -84,46 +31,324 @@ async function sendTelegramPhoto(photoPath, caption) {
         const formData = new FormData();
         formData.append('chat_id', CHAT_ID);
         formData.append('caption', caption);
-        
         const buffer = fs.readFileSync(photoPath);
         const blob = new Blob([buffer], { type: 'image/png' });
         formData.append('photo', blob, 'screenshot.png');
-
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
-        const res = await fetch(url, {
-            method: 'POST',
-            body: formData
-        });
+        const res = await fetch(url, { method: 'POST', body: formData });
         const data = await res.json();
-        if (!data.ok) console.error('[Telegram] Error sending photo:', data.description);
+        if (!data.ok) console.error('[Telegram] Photo error:', data.description);
         else console.log('[Telegram] Photo sent.');
     } catch (e) {
         console.error('[Telegram] Failed to send photo:', e.message);
     }
 }
 
-// ── Main Booking Bot ───────────────────────────────────────────────────────────
-async function runBookingBot() {
-    if (!SAVEETHA_USER || !SAVEETHA_PASS) {
-        console.error('[Bot] SAVEETHA_USER or SAVEETHA_PASS not set!');
+async function getTelegramUpdates(offset) {
+    try {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=30&offset=${offset}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data.ok) return [];
+        return data.result || [];
+    } catch (e) {
+        console.error('[Telegram] getUpdates error:', e.message);
+        return [];
+    }
+}
+
+// ─── Time Helper ─────────────────────────────────────────────────────────────
+
+function getDelayMsUntil(timeStr) {
+    if (!timeStr) return 0;
+    const now = new Date();
+    const match = timeStr.match(/(\d{1,2})[\.:] ?(\d{2})\s*(AM|PM|am|pm)?/i);
+    if (!match) return 0;
+
+    let hours = parseInt(match[1], 10);
+    const mins = parseInt(match[2], 10);
+    const isPM = match[3] && match[3].toLowerCase() === 'pm';
+    const isAM = match[3] && match[3].toLowerCase() === 'am';
+
+    if (isPM && hours < 12) hours += 12;
+    if (isAM && hours === 12) hours = 0;
+
+    const target = new Date(now);
+    target.setHours(hours, mins, 0, 0);
+    let diff = target.getTime() - now.getTime();
+    if (diff < 0) {
+        target.setDate(target.getDate() + 1);
+        diff = target.getTime() - now.getTime();
+    }
+    return diff;
+}
+
+// ─── Booking Logic ────────────────────────────────────────────────────────────
+
+async function runBookingOnPage(page, targetKeyword, targetTime) {
+    console.log(`[Bot] Navigating to Event Booking page...`);
+    await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+    });
+
+    // Check if session expired — if redirected to login page, re-login
+    const currentUrl = page.url();
+    if (currentUrl.includes('/login')) {
+        console.log('[Bot] Session expired — re-logging in...');
+        await doLogin(page);
+        await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+        });
+    }
+
+    console.log(`[Bot] Scanning for slots matching: "${targetKeyword}"${targetTime ? ` at "${targetTime}"` : ''}...`);
+
+    const evaluation = await page.evaluate((params) => {
+        const { kw, time } = params;
+        const results = [];
+        const allAvailable = [];
+        const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
+        const btns = Array.from(allClickable).filter(el => {
+            if (el.offsetParent === null) return false;
+            const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+            return text === 'book' || text === 'book now' || text === 'register' ||
+                   text === 'book slot' || text === 'enroll' ||
+                   text.startsWith('book') || text.includes('waitlist');
+        });
+
+        function normalize(str) {
+            if (!str) return '';
+            return str.toLowerCase()
+                .replace(/[^a-z0-9\s]/g, '')
+                .replace(/\s+/g, ' ')
+                .replace(/(\d)(am|pm)/g, '$1 $2')
+                .trim();
+        }
+
+        function extractStartTime(normalizedText) {
+            const match = normalizedText.match(/\b(\d{1,2})\s*(am|pm)\b/);
+            if (!match) return '';
+            return match[1] + ' ' + match[2];
+        }
+
+        const kwNorm = normalize(kw);
+        const timeNorm = normalize(time);
+
+        for (let i = 0; i < btns.length; i++) {
+            const btn = btns[i];
+            let current = btn;
+            let card = null;
+            for (let d = 0; d < 10; d++) {
+                if (!current || current === document.body) break;
+                current = current.parentElement;
+                if (!current) break;
+                const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
+                const rect = current.getBoundingClientRect();
+                if (hasHeading && rect.height > 50 && rect.height < 2500) {
+                    card = current;
+                    break;
+                }
+            }
+
+            const fullTextRaw = card ? card.innerText : btn.innerText;
+            const fullTextNorm = normalize(fullTextRaw);
+            const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
+            const isWaitlist = btnText.includes('waitlist');
+
+            let summary = fullTextRaw.replace(/\n+/g, ' | ').trim();
+            if (summary.length > 80) summary = summary.substring(0, 80) + '...';
+            allAvailable.push(summary);
+
+            let matchKeyword = !kwNorm || fullTextNorm.includes(kwNorm);
+            let matchTime = true;
+            if (timeNorm) {
+                const startTime = extractStartTime(fullTextNorm);
+                matchTime = startTime === timeNorm;
+            }
+
+            if (matchKeyword && matchTime) {
+                results.push({ index: i, fullText: fullTextNorm, isWaitlist });
+            }
+        }
+        return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
+    }, { kw: targetKeyword, time: targetTime });
+
+    const slotsFound = evaluation.slotsFound;
+    const availableSlots = evaluation.availableSlots;
+
+    if (slotsFound.length === 0) {
+        console.log('[Bot] No slot found.');
+        const availableMsg = availableSlots.length > 0
+            ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n')
+            : '\n\nNo slots are currently available on the page.';
+        await sendTelegram(`⚠️ No slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${availableMsg}`);
+        return;
+    }
+
+    console.log(`[Bot] Match found: ${slotsFound[0].fullText.substring(0, 60)}...`);
+
+    const tagged = await page.evaluate((targetData) => {
+        document.querySelectorAll('[data-saveetha-btn],[data-saveetha-input]').forEach(el => {
+            el.removeAttribute('data-saveetha-btn');
+            el.removeAttribute('data-saveetha-input');
+        });
+
+        const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
+        const btns = Array.from(allClickable).filter(el => {
+            if (el.offsetParent === null) return false;
+            const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+            return text === 'book' || text === 'book now' || text === 'register' ||
+                   text === 'book slot' || text === 'enroll' ||
+                   text.startsWith('book') || text.includes('waitlist');
+        });
+
+        const btn = btns[targetData.index];
+        if (!btn) return { success: false, reason: 'Button vanished' };
+
+        let current = btn;
+        let card = null;
+        for (let d = 0; d < 10; d++) {
+            if (!current || current === document.body) break;
+            current = current.parentElement;
+            if (!current) break;
+            const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
+            const rect = current.getBoundingClientRect();
+            if (hasHeading && rect.height > 50 && rect.height < 2500) {
+                card = current;
+                break;
+            }
+        }
+
+        btn.setAttribute('data-saveetha-btn', 'target');
+        let purposeFound = false;
+        if (card) {
+            const inputs = card.querySelectorAll('input[type="text"], textarea, input:not([type])');
+            for (const inp of inputs) {
+                if (inp.offsetParent === null) continue;
+                const p = (inp.placeholder || '').toLowerCase();
+                const n = (inp.getAttribute('name') || '').toLowerCase();
+                const a = (inp.getAttribute('aria-label') || '').toLowerCase();
+                if (p.includes('purpose') || p.includes('reason') || p.includes('attend') ||
+                    n.includes('purpose') || a.includes('purpose')) {
+                    inp.setAttribute('data-saveetha-input', 'purpose');
+                    purposeFound = true;
+                    break;
+                }
+            }
+            if (!purposeFound) {
+                const inputs2 = card.querySelectorAll('input[type="text"], textarea, input:not([type])');
+                for (const inp of inputs2) {
+                    if (inp.offsetParent !== null) {
+                        inp.setAttribute('data-saveetha-input', 'purpose');
+                        purposeFound = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return { success: true, purposeFound };
+    }, slotsFound[0]);
+
+    if (!tagged.success) {
+        await sendTelegram(`⚠️ Found the slot but failed to tag it: ${tagged.reason}`);
+        return;
+    }
+
+    const bookBtn = page.locator('[data-saveetha-btn="target"]');
+    await bookBtn.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(500);
+
+    if (tagged.purposeFound) {
+        const purposeInput = page.locator('[data-saveetha-input="purpose"]');
+        console.log('[Bot] Filling purpose input...');
+        await purposeInput.scrollIntoViewIfNeeded();
+        await purposeInput.click({ force: true });
+        await page.waitForTimeout(400);
+        await page.keyboard.press('Control+A');
+        await page.keyboard.press('Delete');
+        await page.waitForTimeout(200);
+        await purposeInput.pressSequentially('To attend as part of academic curriculum', { delay: 50 });
+        await page.waitForTimeout(600);
+    }
+
+    console.log('[Bot] Clicking Book Now...');
+    await bookBtn.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(300);
+    await bookBtn.click({ force: true });
+    console.log('[Bot] Book Now clicked!');
+    await page.waitForTimeout(2000);
+
+    // Handle confirmation modals
+    try {
+        const swal2Confirm = page.locator('.swal2-confirm');
+        if (await swal2Confirm.count() > 0) {
+            console.log('[Bot] SweetAlert2 confirm found — clicking...');
+            await swal2Confirm.first().click();
+            await page.waitForTimeout(1500);
+        } else {
+            const modalBtns = page.locator('.modal button, [role="dialog"] button, .swal-button');
+            const count = await modalBtns.count();
+            for (let i = 0; i < count; i++) {
+                const t = (await modalBtns.nth(i).innerText().catch(() => '')).toLowerCase().trim();
+                if (t === 'ok' || t === 'confirm' || t === 'yes' || t === 'book') {
+                    console.log(`[Bot] Modal button "${t}" — clicking...`);
+                    await modalBtns.nth(i).click();
+                    await page.waitForTimeout(1500);
+                    break;
+                }
+            }
+        }
+    } catch (modalErr) {
+        console.log('[Bot] Modal check:', modalErr.message);
+    }
+
+    await page.waitForTimeout(1500);
+    const finalUrl = page.url();
+    console.log(`[Bot] Final URL: ${finalUrl}`);
+
+    const actionStr = slotsFound[0].isWaitlist ? '📋 Waitlisted' : '✅ Booked';
+    const tmpPath = path.join(__dirname, '_tmp_screenshot.png');
+    await page.screenshot({ path: tmpPath, fullPage: false });
+    await sendTelegramPhoto(
+        tmpPath,
+        `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`
+    );
+    try { fs.unlinkSync(tmpPath); } catch (_) {}
+}
+
+// ─── Login ────────────────────────────────────────────────────────────────────
+
+async function doLogin(page) {
+    console.log('[Bot] Logging in...');
+    await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForSelector('input[type="text"], input[name="uid"], #username', { timeout: 15000 });
+
+    const userInputs = await page.$$('input[type="text"], input[name="uid"], #username');
+    if (userInputs.length > 0) await userInputs[0].fill(SAVEETHA_USER);
+
+    const passInputs = await page.$$('input[type="password"]');
+    if (passInputs.length > 0) await passInputs[0].fill(SAVEETHA_PASS);
+
+    const loginBtns = await page.$$('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
+    if (loginBtns.length > 0) await loginBtns[0].click();
+    else await page.keyboard.press('Enter');
+
+    await page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => null);
+    console.log('[Bot] Logged in successfully. Current URL:', page.url());
+}
+
+// ─── Main: Persistent Bot Loop ────────────────────────────────────────────────
+
+async function main() {
+    if (!SAVEETHA_USER || !SAVEETHA_PASS || !TELEGRAM_BOT_TOKEN || !CHAT_ID) {
+        console.error('[Bot] Missing required environment variables!');
         process.exit(1);
     }
-    if (!TELEGRAM_BOT_TOKEN || !CHAT_ID) {
-        console.error('[Bot] TELEGRAM_BOT_TOKEN or CHAT_ID not set!');
-        process.exit(1);
-    }
 
-    const delayMs = getDelayMsUntil(START_TIME);
-    if (delayMs > 0) {
-        const delayMins = Math.round(delayMs / 60000);
-        console.log(`[Bot] Timer Mode: Waiting ${delayMins} minutes until ${START_TIME} IST...`);
-        await sendTelegram(`⏱️ *Timer Mode Active*\nWaiting ${delayMins} minute(s) before checking slots for *${KEYWORD}* (Starts at ${START_TIME}).`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-    }
-
-    console.log(`[Bot] Starting booking for: "${KEYWORD}"${TARGET_TIME ? ` at "${TARGET_TIME}"` : ''}`);
-    await sendTelegram(`⏳ Starting booking bot for *${KEYWORD || 'any slot'}*${TARGET_TIME ? ` at *${TARGET_TIME}*` : ''}...\nScanning Saveetha portal...`);
-
+    // Launch browser ONCE and keep it alive
+    console.log('[Bot] Launching browser...');
     const browser = await chromium.launch({
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
@@ -131,264 +356,109 @@ async function runBookingBot() {
     const context = await browser.newContext();
     const page = await context.newPage();
 
+    // Login ONCE at startup
     try {
-        // ── LOGIN ────────────────────────────────────────────────────────────
-        console.log('[Bot] Navigating to login...');
-        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-        await page.waitForSelector('input[type="text"], input[name="uid"], #username', { timeout: 15000 });
-
-        const userInputs = await page.$$('input[type="text"], input[name="uid"], #username');
-        if (userInputs.length > 0) await userInputs[0].fill(SAVEETHA_USER);
-
-        const passInputs = await page.$$('input[type="password"]');
-        if (passInputs.length > 0) await passInputs[0].fill(SAVEETHA_PASS);
-
-        const loginBtns = await page.$$('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
-        if (loginBtns.length > 0) await loginBtns[0].click();
-        else await page.keyboard.press('Enter');
-
-        console.log('[Bot] Logged in, waiting for redirect...');
-        await page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => null);
-
-        // ── NAVIGATE TO BOOKING ───────────────────────────────────────────────
-        console.log('[Bot] Navigating to Event Booking page...');
-        await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-        console.log(`[Bot] Scanning for slots...`);
-
-        const evaluation = await page.evaluate((params) => {
-            const { kw, time } = params;
-            const results = [];
-            const allAvailable = [];
-            const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
-            const btns = Array.from(allClickable).filter(el => {
-                if (el.offsetParent === null) return false;
-                const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
-                return text === 'book' || text === 'book now' || text === 'register' ||
-                       text === 'book slot' || text === 'enroll' ||
-                       text.startsWith('book') || text.includes('waitlist');
-            });
-
-            function normalize(str) {
-                if (!str) return '';
-                // Remove punctuation, collapse spaces, then insert space between digit and am/pm
-                // So "3 p.m." -> "3 pm" and "3pm" -> "3 pm" both match
-                return str.toLowerCase()
-                    .replace(/[^a-z0-9\s]/g, '')
-                    .replace(/\s+/g, ' ')
-                    .replace(/(\d)(am|pm)/g, '$1 $2')
-                    .trim();
-            }
-
-            // Extracts the FIRST time (start time) from a normalized card string
-            // e.g. "viva may 11 2026 2 pm 3 pm venue" -> "2 pm"
-            function extractStartTime(normalizedText) {
-                const match = normalizedText.match(/\b(\d{1,2})\s*(am|pm)\b/);
-                if (!match) return '';
-                return match[1] + ' ' + match[2]; // e.g. "2 pm"
-            }
-
-            const kwNorm = normalize(kw);
-            const timeNorm = normalize(time);
-
-            for (let i = 0; i < btns.length; i++) {
-                const btn = btns[i];
-                let current = btn;
-                let card = null;
-                for (let d = 0; d < 10; d++) {
-                    if (!current || current === document.body) break;
-                    current = current.parentElement;
-                    if (!current) break;
-                    const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
-                    const rect = current.getBoundingClientRect();
-                    if (hasHeading && rect.height > 50 && rect.height < 2500) {
-                        card = current;
-                        break;
-                    }
-                }
-
-                const fullTextRaw = card ? card.innerText : btn.innerText;
-                const fullTextNorm = normalize(fullTextRaw);
-                const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
-                const isWaitlist = btnText.includes('waitlist');
-
-                // Extract summary for available slots list
-                let summary = fullTextRaw.replace(/\n+/g, ' | ').trim();
-                if (summary.length > 80) summary = summary.substring(0, 80) + '...';
-                allAvailable.push(summary);
-
-                let matchKeyword = !kwNorm || fullTextNorm.includes(kwNorm);
-                // Match time against START time only (first time in card), not end time
-                let matchTime = true;
-                if (timeNorm) {
-                    const startTime = extractStartTime(fullTextNorm);
-                    matchTime = startTime === timeNorm;
-                }
-
-                if (matchKeyword && matchTime) {
-                    results.push({ index: i, fullText: fullTextNorm, isWaitlist });
-                }
-            }
-            return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
-        }, { kw: KEYWORD, time: TARGET_TIME });
-
-        const slotsFound = evaluation.slotsFound;
-        const availableSlots = evaluation.availableSlots;
-
-            if (slotsFound.length > 0) {
-                console.log(`[Bot] Match found: ${slotsFound[0].fullText.substring(0, 60)}...`);
-
-                const tagged = await page.evaluate((targetData) => {
-                    document.querySelectorAll('[data-saveetha-btn],[data-saveetha-input]').forEach(el => {
-                        el.removeAttribute('data-saveetha-btn');
-                        el.removeAttribute('data-saveetha-input');
-                    });
-
-                    const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
-                    const btns = Array.from(allClickable).filter(el => {
-                        if (el.offsetParent === null) return false;
-                        const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
-                        return text === 'book' || text === 'book now' || text === 'register' ||
-                               text === 'book slot' || text === 'enroll' ||
-                               text.startsWith('book') || text.includes('waitlist');
-                    });
-
-                    const btn = btns[targetData.index];
-                    if (!btn) return { success: false, reason: 'Button vanished' };
-
-                    let current = btn;
-                    let card = null;
-                    for (let d = 0; d < 10; d++) {
-                        if (!current || current === document.body) break;
-                        current = current.parentElement;
-                        if (!current) break;
-                        const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
-                        const rect = current.getBoundingClientRect();
-                        if (hasHeading && rect.height > 50 && rect.height < 2500) {
-                            card = current;
-                            break;
-                        }
-                    }
-
-                    btn.setAttribute('data-saveetha-btn', 'target');
-
-                    let purposeFound = false;
-                    if (card) {
-                        const inputs = card.querySelectorAll('input[type="text"], textarea, input:not([type])');
-                        for (const inp of inputs) {
-                            if (inp.offsetParent === null) continue;
-                            const p = (inp.placeholder || '').toLowerCase();
-                            const n = (inp.getAttribute('name') || '').toLowerCase();
-                            const a = (inp.getAttribute('aria-label') || '').toLowerCase();
-                            if (p.includes('purpose') || p.includes('reason') || p.includes('attend') ||
-                                n.includes('purpose') || a.includes('purpose')) {
-                                inp.setAttribute('data-saveetha-input', 'purpose');
-                                purposeFound = true;
-                                break;
-                            }
-                        }
-                        if (!purposeFound) {
-                            const inputs2 = card.querySelectorAll('input[type="text"], textarea, input:not([type])');
-                            for (const inp of inputs2) {
-                                if (inp.offsetParent !== null) {
-                                    inp.setAttribute('data-saveetha-input', 'purpose');
-                                    purposeFound = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    return { success: true, purposeFound };
-                }, slotsFound[0]);
-
-                if (tagged.success) {
-                    const bookBtn = page.locator('[data-saveetha-btn="target"]');
-                    await bookBtn.scrollIntoViewIfNeeded();
-                    await page.waitForTimeout(500);
-
-                    if (tagged.purposeFound) {
-                        const purposeInput = page.locator('[data-saveetha-input="purpose"]');
-                        console.log('[Bot] Filling purpose input...');
-                        await purposeInput.scrollIntoViewIfNeeded();
-                        await purposeInput.click({ force: true });
-                        await page.waitForTimeout(400);
-                        await page.keyboard.press('Control+A');
-                        await page.keyboard.press('Delete');
-                        await page.waitForTimeout(200);
-                        await purposeInput.pressSequentially('To attend as part of academic curriculum', { delay: 50 });
-                        await page.waitForTimeout(600);
-                    }
-
-                    console.log('[Bot] Clicking Book Now...');
-                    await bookBtn.scrollIntoViewIfNeeded();
-                    await page.waitForTimeout(300);
-                    await bookBtn.click({ force: true });
-                    console.log('[Bot] Book Now clicked!');
-
-                    await page.waitForTimeout(2000);
-
-                    // Handle confirmation modals
-                    try {
-                        const swal2Confirm = page.locator('.swal2-confirm');
-                        if (await swal2Confirm.count() > 0) {
-                            console.log('[Bot] SweetAlert2 confirm found — clicking...');
-                            await swal2Confirm.first().click();
-                            await page.waitForTimeout(1500);
-                        } else {
-                            const modalBtns = page.locator('.modal button, [role="dialog"] button, .swal-button');
-                            const count = await modalBtns.count();
-                            for (let i = 0; i < count; i++) {
-                                const t = (await modalBtns.nth(i).innerText().catch(() => '')).toLowerCase().trim();
-                                if (t === 'ok' || t === 'confirm' || t === 'yes' || t === 'book') {
-                                    console.log(`[Bot] Modal button "${t}" — clicking...`);
-                                    await modalBtns.nth(i).click();
-                                    await page.waitForTimeout(1500);
-                                    break;
-                                }
-                            }
-                        }
-                    } catch (modalErr) {
-                        console.log('[Bot] Modal check:', modalErr.message);
-                    }
-
-                    await page.waitForTimeout(1500);
-                    const currentUrl = page.url();
-                    console.log(`[Bot] Final URL: ${currentUrl}`);
-
-                    const actionStr = slotsFound[0].isWaitlist ? '📋 Waitlisted' : '✅ Booked';
-                    
-                    // Take screenshot
-                    const tmpPath = path.join(__dirname, '_tmp_screenshot.png');
-                    await page.screenshot({ path: tmpPath, fullPage: false });
-
-                    await sendTelegramPhoto(
-                        tmpPath,
-                        `${actionStr} Successfully!\n\n🎯 Slot: ${KEYWORD}${TARGET_TIME ? ` at ${TARGET_TIME}` : ''}\n🔗 URL: ${currentUrl}\n\nThe booking process is complete! 🎉`
-                    );
-
-                    try { fs.unlinkSync(tmpPath); } catch (_) {}
-                } else {
-                    console.log(`[Bot] Tagging failed: ${tagged.reason}`);
-                    await sendTelegram(`⚠️ Found the slot but failed to book: ${tagged.reason}`);
-                }
-
-            } else {
-                console.log('[Bot] No slot found.');
-                const availableMsg = availableSlots.length > 0 
-                    ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n') 
-                    : '\n\nNo slots are currently available on the page.';
-                await sendTelegram(`⚠️ No slot found for *"${KEYWORD}"*${TARGET_TIME ? ` at *${TARGET_TIME}*` : ''}.${availableMsg}`);
-            }
-
+        await doLogin(page);
+        await sendTelegram(`✅ *Saveetha Bot is Online!*\nLogged in and ready.\n\nSend \`!book <keyword>\` to book a slot.\nExample: \`!book viva @ 2 pm\`\nOptional timer: \`!book viva # 14:00\``);
     } catch (err) {
-        console.error('[Bot] Error:', err);
-        await sendTelegram(`❌ *Error occurred:*\n${err.message}`);
-    } finally {
+        console.error('[Bot] Login failed:', err.message);
+        await sendTelegram(`❌ Login failed: ${err.message}`);
         await browser.close();
-        console.log('[Bot] Browser closed. Done.');
+        process.exit(1);
+    }
+
+    // Track active bookings to prevent overlaps
+    let isBooking = false;
+
+    // Poll Telegram for messages
+    let offset = 0;
+    console.log('[Bot] Polling Telegram for commands...');
+
+    while (true) {
+        try {
+            const updates = await getTelegramUpdates(offset);
+
+            for (const update of updates) {
+                offset = update.update_id + 1;
+
+                const msg = update.message || update.channel_post;
+                if (!msg || !msg.text) continue;
+
+                // Only accept messages from your own chat ID
+                const fromChatId = String(msg.chat.id);
+                if (fromChatId !== String(CHAT_ID)) {
+                    console.log(`[Bot] Ignoring message from unknown chat: ${fromChatId}`);
+                    continue;
+                }
+
+                const text = msg.text.trim();
+
+                // Status check command
+                if (text === '!status') {
+                    await sendTelegram(`✅ Bot is running and logged in.\n${isBooking ? '⏳ Currently processing a booking...' : '🟢 Ready to book!'}`);
+                    continue;
+                }
+
+                if (!text.toLowerCase().startsWith('!book')) continue;
+
+                if (isBooking) {
+                    await sendTelegram(`⚠️ Already processing a booking. Please wait until it finishes.`);
+                    continue;
+                }
+
+                // Parse !book command
+                let keyword = text.substring(5).trim();
+                let targetTime = '';
+                let startTime = '';
+
+                if (keyword.includes('#')) {
+                    const parts = keyword.split('#');
+                    keyword = parts[0].trim();
+                    startTime = parts[1].trim();
+                }
+                if (keyword.includes('@')) {
+                    const parts = keyword.split('@');
+                    keyword = parts[0].trim();
+                    targetTime = parts[1].trim();
+                }
+
+                console.log(`[Bot] Command: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${startTime ? ` # ${startTime}` : ''}`);
+
+                isBooking = true;
+
+                // Run booking in background (don't block the poll loop)
+                (async () => {
+                    try {
+                        if (startTime) {
+                            const delayMs = getDelayMsUntil(startTime);
+                            if (delayMs > 0) {
+                                const delayMins = Math.round(delayMs / 60000);
+                                await sendTelegram(`⏱️ *Timer Mode Active*\nWaiting ${delayMins} minute(s) before booking *${keyword}* (starts at ${startTime}).`);
+                                await new Promise(resolve => setTimeout(resolve, delayMs));
+                            }
+                        }
+
+                        await sendTelegram(`⏳ Booking *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}...\nPlease wait!`);
+                        await runBookingOnPage(page, keyword, targetTime);
+                    } catch (err) {
+                        console.error('[Bot] Booking error:', err.message);
+                        await sendTelegram(`❌ Error during booking: ${err.message}`);
+                    } finally {
+                        isBooking = false;
+                    }
+                })();
+            }
+        } catch (pollErr) {
+            console.error('[Bot] Poll error:', pollErr.message);
+        }
+
+        // Small pause between polls (getUpdates uses long-polling of 30s already)
+        await new Promise(resolve => setTimeout(resolve, 1000));
     }
 }
 
-runBookingBot();
+main().catch(async (err) => {
+    console.error('[Bot] Fatal error:', err);
+    await sendTelegram(`❌ *Bot crashed:* ${err.message}`).catch(() => {});
+    process.exit(1);
+});

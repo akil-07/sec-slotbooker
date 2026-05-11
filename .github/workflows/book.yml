@@ -1,21 +1,15 @@
-name: 📚 Book Saveetha Slot
+name: 🤖 Saveetha Telegram Bot (Persistent)
 
 on:
-  workflow_dispatch:
-    inputs:
-      keyword:
-        description: 'Exam slot keyword to search for'
-        required: true
-        default: ''
-      chat_id:
-        description: 'Telegram chat ID to send result to'
-        required: true
+  workflow_dispatch:   # Manual start from GitHub UI or Telegram
+  schedule:
+    - cron: '0 */5 * * *'   # Auto-restart every 5 hours (before GitHub's 6h limit kills it)
 
 jobs:
-  book:
-    name: Run Saveetha Booking Bot
+  bot:
+    name: Run Persistent Telegram Bot
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 340   # ~5h 40min — safely under GitHub's 6h limit
 
     steps:
       - name: 📥 Checkout code
@@ -38,13 +32,18 @@ jobs:
           cd cloud-bot
           npx playwright install chromium --with-deps
 
-      - name: 🤖 Run Saveetha Booking Bot
+      - name: 🤖 Run Persistent Telegram Bot (up to 5.5 hours)
         env:
           SAVEETHA_USER: ${{ secrets.SAVEETHA_USER }}
           SAVEETHA_PASS: ${{ secrets.SAVEETHA_PASS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ github.event.inputs.chat_id }}
-          KEYWORD: ${{ github.event.inputs.keyword }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           cd cloud-bot
-          node book-only.js
+          node book-only.js &
+          BOT_PID=$!
+          echo "Bot running with PID $BOT_PID"
+          # Run for 5.5 hours (19800 seconds), then gracefully stop
+          sleep 19800
+          echo "Time limit reached — stopping bot gracefully."
+          kill $BOT_PID 2>/dev/null || true
