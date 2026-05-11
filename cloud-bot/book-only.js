@@ -181,6 +181,14 @@ async function runBookingBot() {
                     .trim();
             }
 
+            // Extracts the FIRST time (start time) from a normalized card string
+            // e.g. "viva may 11 2026 2 pm 3 pm venue" -> "2 pm"
+            function extractStartTime(normalizedText) {
+                const match = normalizedText.match(/\b(\d{1,2})\s*(am|pm)\b/);
+                if (!match) return '';
+                return match[1] + ' ' + match[2]; // e.g. "2 pm"
+            }
+
             const kwNorm = normalize(kw);
             const timeNorm = normalize(time);
 
@@ -211,7 +219,12 @@ async function runBookingBot() {
                 allAvailable.push(summary);
 
                 let matchKeyword = !kwNorm || fullTextNorm.includes(kwNorm);
-                let matchTime = !timeNorm || fullTextNorm.includes(timeNorm);
+                // Match time against START time only (first time in card), not end time
+                let matchTime = true;
+                if (timeNorm) {
+                    const startTime = extractStartTime(fullTextNorm);
+                    matchTime = startTime === timeNorm;
+                }
 
                 if (matchKeyword && matchTime) {
                     results.push({ index: i, fullText: fullTextNorm, isWaitlist });
