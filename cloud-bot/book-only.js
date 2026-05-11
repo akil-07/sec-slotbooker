@@ -85,7 +85,7 @@ function getDelayMsUntil(timeStr) {
 
 // ─── Booking Logic ────────────────────────────────────────────────────────────
 
-async function runBookingOnPage(page, targetKeyword, targetTime) {
+async function runBookingOnPage(page, targetKeyword, targetTime, silent = false) {
     console.log(`[Bot] Navigating to Event Booking page...`);
     await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
         waitUntil: 'domcontentloaded',
@@ -180,11 +180,13 @@ async function runBookingOnPage(page, targetKeyword, targetTime) {
 
     if (slotsFound.length === 0) {
         console.log('[Bot] No slot found.');
-        const availableMsg = availableSlots.length > 0
-            ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n')
-            : '\n\nNo slots are currently available on the page.';
-        await sendTelegram(`⚠️ No slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${availableMsg}`);
-        return;
+        if (!silent) {
+            const availableMsg = availableSlots.length > 0
+                ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n')
+                : '\n\nNo slots are currently available on the page.';
+            await sendTelegram(`⚠️ No slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${availableMsg}`);
+        }
+        return false;
     }
 
     console.log(`[Bot] Match found: ${slotsFound[0].fullText.substring(0, 60)}...`);
@@ -316,6 +318,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime) {
         `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`
     );
     try { fs.unlinkSync(tmpPath); } catch (_) {}
+    return true;
 }
 
 async function runUnbookingOnPage(page, targetKeyword, targetTime) {
@@ -547,12 +550,13 @@ async function main() {
                     continue;
                 }
 
-                // ── !book / !unbook ───────────────────────────────────────
+                // ── !book / !unbook / !scan ──────────────────────────────
                 const isUnbook = text.toLowerCase().startsWith('!unbook');
-                if (!text.toLowerCase().startsWith('!book') && !isUnbook) continue;
+                const isScan = text.toLowerCase().startsWith('!scan');
+                if (!text.toLowerCase().startsWith('!book') && !isUnbook && !isScan) continue;
 
                 // Parse command
-                let keyword = text.substring(isUnbook ? 7 : 5).trim();
+                let keyword = text.substring(isUnbook ? 7 : (isScan ? 5 : 5)).trim();
                 let targetTime = '';
                 let startTime = '';
 
@@ -606,16 +610,33 @@ async function main() {
                             return;
                         }
 
-                        // Create a NEW page for this specific task
                         taskPage = await context.newPage();
                         task.page = taskPage;
-                        task.phase = isUnbook ? 'Cancelling slot' : 'Booking on portal';
                         
-                        await sendTelegram(`⏳ Processing *${isUnbook ? 'Cancellation' : 'Booking'}* for *${keyword}*...`);
-                        
-                        if (isUnbook) {
+                        if (isScan) {
+                            let scanCount = 1;
+                            while (!task.stopRequested) {
+                                task.phase = `Scanning (Check #${scanCount})`;
+                                if (scanCount === 1) await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*\nChecking every 60 seconds...`);
+                                
+                                const success = await runBookingOnPage(taskPage, keyword, targetTime, true);
+                                if (success) break;
+                                
+                                scanCount++;
+                                // Wait 60 seconds before next scan
+                                for (let i = 0; i < 30; i++) {
+                                    if (task.stopRequested) break;
+                                    await new Promise(r => setTimeout(r, 2000));
+                                }
+                                if (task.stopRequested) break;
+                            }
+                        } else if (isUnbook) {
+                            task.phase = 'Cancelling slot';
+                            await sendTelegram(`⏳ Processing Cancellation for *${keyword}*...`);
                             await runUnbookingOnPage(taskPage, keyword, targetTime);
                         } else {
+                            task.phase = 'Booking on portal';
+                            await sendTelegram(`⏳ Processing Booking for *${keyword}*...`);
                             await runBookingOnPage(taskPage, keyword, targetTime);
                         }
                     } catch (err) {
