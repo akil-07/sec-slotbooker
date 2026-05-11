@@ -318,6 +318,102 @@ async function runBookingOnPage(page, targetKeyword, targetTime) {
     try { fs.unlinkSync(tmpPath); } catch (_) {}
 }
 
+async function runUnbookingOnPage(page, targetKeyword, targetTime) {
+    console.log(`[Bot] Navigating to Event Booking page for Unbooking...`);
+    await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+    });
+
+    const currentUrl = page.url();
+    if (currentUrl.includes('/login')) {
+        await doLogin(page);
+        await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+        });
+    }
+
+    console.log(`[Bot] Scanning for slots to CANCEL: "${targetKeyword}"...`);
+
+    const evaluation = await page.evaluate((params) => {
+        const { kw, time } = params;
+        const results = [];
+        const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
+        
+        const btns = Array.from(allClickable).filter(el => {
+            if (el.offsetParent === null) return false;
+            const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+            return text === 'cancel' || text === 'unbook' || text === 'remove' || text === 'withdraw' || text.includes('cancel');
+        });
+
+        function normalize(str) {
+            if (!str) return '';
+            return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+        }
+
+        const kwNorm = normalize(kw);
+
+        for (let i = 0; i < btns.length; i++) {
+            const btn = btns[i];
+            let current = btn;
+            let card = null;
+            for (let d = 0; d < 10; d++) {
+                if (!current || current === document.body) break;
+                current = current.parentElement;
+                if (!current) break;
+                const hasHeading = current.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]');
+                if (hasHeading) { card = current; break; }
+            }
+
+            const fullTextNorm = normalize(card ? card.innerText : btn.innerText);
+            if (fullTextNorm.includes(kwNorm)) {
+                results.push({ index: i, fullText: fullTextNorm });
+            }
+        }
+        return { slotsFound: results };
+    }, { kw: targetKeyword, time: targetTime });
+
+    if (evaluation.slotsFound.length === 0) {
+        await sendTelegram(`⚠️ Could not find any booked slot matching *"${targetKeyword}"* to cancel.`);
+        return;
+    }
+
+    // Click the cancel button
+    const tagged = await page.evaluate((targetData) => {
+        const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
+        const btns = Array.from(allClickable).filter(el => {
+            if (el.offsetParent === null) return false;
+            const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+            return text === 'cancel' || text === 'unbook' || text === 'remove' || text === 'withdraw' || text.includes('cancel');
+        });
+        const btn = btns[targetData.index];
+        if (!btn) return false;
+        btn.setAttribute('data-saveetha-cancel', 'true');
+        return true;
+    }, evaluation.slotsFound[0]);
+
+    if (tagged) {
+        console.log('[Bot] Clicking Cancel/Unbook...');
+        await page.locator('[data-saveetha-cancel="true"]').click({ force: true });
+        await page.waitForTimeout(2000);
+
+        // Handle confirmation
+        try {
+            const confirmBtn = page.locator('.swal2-confirm, .modal button:has-text("Yes"), .modal button:has-text("Confirm")');
+            if (await confirmBtn.count() > 0) {
+                await confirmBtn.first().click();
+                await page.waitForTimeout(2000);
+            }
+        } catch (e) {}
+
+        const tmpPath = path.join(__dirname, '_cancel_screenshot.png');
+        await page.screenshot({ path: tmpPath });
+        await sendTelegramPhoto(tmpPath, `🛑 *Slot Cancelled Successfully!*\n\n🎯 Slot: ${targetKeyword}\n\nCancellation complete.`);
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+    }
+}
+
 // ─── Login ────────────────────────────────────────────────────────────────────
 
 async function doLogin(page) {
@@ -451,12 +547,6 @@ async function main() {
                     continue;
                 }
 
-                if (!text.toLowerCase().startsWith('!book')) continue;
-
-                if (isBooking) {
-                    await sendTelegram(`⚠️ Already processing a booking. Please wait until it finishes.`);
-                    continue;
-                }
 
                 // Parse !book command
                 let keyword = text.substring(5).trim();
@@ -516,10 +606,15 @@ async function main() {
                         // Create a NEW page for this specific task
                         taskPage = await context.newPage();
                         task.page = taskPage;
-                        task.phase = 'Booking on portal';
+                        task.phase = isUnbook ? 'Cancelling slot' : 'Booking on portal';
                         
-                        await sendTelegram(`⏳ Processing *${keyword}* now...`);
-                        await runBookingOnPage(taskPage, keyword, targetTime);
+                        await sendTelegram(`⏳ Processing *${isUnbook ? 'Cancellation' : 'Booking'}* for *${keyword}*...`);
+                        
+                        if (isUnbook) {
+                            await runUnbookingOnPage(taskPage, keyword, targetTime);
+                        } else {
+                            await runBookingOnPage(taskPage, keyword, targetTime);
+                        }
                     } catch (err) {
                         console.error(`[Bot] Task ${taskId} Error:`, err.message);
                         await sendTelegram(`❌ Error [${keyword}]: ${err.message}`);
