@@ -367,10 +367,9 @@ async function main() {
         process.exit(1);
     }
 
-    // Track active bookings to prevent overlaps
-    let isBooking = false;
-    let currentBookingInfo = null;  // { keyword, targetTime, startTime, phase }
-    let stopRequested = false;      // Flag to cancel current booking
+    // Track active bookings
+    let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page }
+    let taskIdCounter = 0;
 
     // Poll Telegram for messages
     let offset = 0;
@@ -397,35 +396,57 @@ async function main() {
 
                 // ── !status ──────────────────────────────────────────────
                 if (text === '!status') {
-                    await sendTelegram(`✅ Bot is running and logged in.\n${isBooking ? '⏳ Currently processing a booking...' : '🟢 Ready to book!'}`);
+                    const count = activeTasks.size;
+                    await sendTelegram(`✅ Bot is running and logged in.\n${count > 0 ? `⏳ Currently processing ${count} booking(s).` : '🟢 Ready to book!'}`);
                     continue;
                 }
 
                 // ── !progress ─────────────────────────────────────────────
                 if (text === '!progress') {
-                    if (!isBooking || !currentBookingInfo) {
-                        await sendTelegram(`🟢 *No active booking.*\nBot is idle and ready.\n\nSend \`!book <keyword>\` to start.`);
+                    if (activeTasks.size === 0) {
+                        await sendTelegram(`🟢 *No active bookings.*\nBot is idle and ready.`);
                     } else {
-                        const { keyword, targetTime, startTime, phase } = currentBookingInfo;
-                        await sendTelegram(
-                            `⏳ *Booking In Progress*\n\n` +
-                            `🎯 *Keyword:* ${keyword}\n` +
-                            `${targetTime ? `🕐 *Target Time:* ${targetTime}\n` : ''}` +
-                            `${startTime ? `⏱️ *Timer Start:* ${startTime}\n` : ''}` +
-                            `📍 *Phase:* ${phase}\n\n` +
-                            `Send \`!stop\` to cancel.`
-                        );
+                        let statusMsg = `⏳ *Active Bookings (${activeTasks.size})*\n\n`;
+                        activeTasks.forEach((task, id) => {
+                            statusMsg += `🔹 *${task.keyword}*\n` +
+                                         `📍 Phase: ${task.phase}\n` +
+                                         `${task.targetTime ? `🕐 Target: ${task.targetTime}\n` : ''}` +
+                                         `${task.startTime ? `⏱️ Start: ${task.startTime}\n` : ''}\n`;
+                        });
+                        statusMsg += `_To stop one: !stop <keyword>_`;
+                        await sendTelegram(statusMsg);
                     }
                     continue;
                 }
 
                 // ── !stop ─────────────────────────────────────────────────
-                if (text === '!stop') {
-                    if (!isBooking) {
-                        await sendTelegram(`🟢 No active booking to stop. Bot is idle.`);
+                if (text.toLowerCase().startsWith('!stop')) {
+                    const arg = text.substring(5).trim().toLowerCase();
+                    
+                    if (activeTasks.size === 0) {
+                        await sendTelegram(`🟢 No active bookings to stop.`);
+                        continue;
+                    }
+
+                    if (arg === 'all') {
+                        activeTasks.forEach(task => task.stopRequested = true);
+                        await sendTelegram(`🛑 *Stopping all tasks...*`);
+                    } else if (arg) {
+                        let found = false;
+                        activeTasks.forEach((task, id) => {
+                            if (task.keyword.toLowerCase().includes(arg)) {
+                                task.stopRequested = true;
+                                found = true;
+                            }
+                        });
+                        if (found) await sendTelegram(`🛑 Stop requested for tasks matching: *${arg}*`);
+                        else await sendTelegram(`⚠️ No active task found for: *${arg}*`);
                     } else {
-                        stopRequested = true;
-                        await sendTelegram(`🛑 *Stop requested!*\nCancelling the current booking for *${currentBookingInfo?.keyword || 'unknown'}*...`);
+                        // Stop the most recent one
+                        const lastId = Array.from(activeTasks.keys()).pop();
+                        const task = activeTasks.get(lastId);
+                        task.stopRequested = true;
+                        await sendTelegram(`🛑 Stopping most recent task: *${task.keyword}*`);
                     }
                     continue;
                 }
@@ -453,45 +474,58 @@ async function main() {
                     targetTime = parts[1].trim();
                 }
 
-                console.log(`[Bot] Command: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${startTime ? ` # ${startTime}` : ''}`);
+                if (!keyword) {
+                    await sendTelegram(`⚠️ Please provide a keyword. Example: \`!book CAT\``);
+                    continue;
+                }
 
-                isBooking = true;
-                stopRequested = false;
-                currentBookingInfo = { keyword, targetTime, startTime, phase: 'Initializing' };
+                const taskId = ++taskIdCounter;
+                const task = { 
+                    keyword, targetTime, startTime, 
+                    phase: 'Initializing', 
+                    stopRequested: false,
+                    page: null 
+                };
+                activeTasks.set(taskId, task);
+
+                console.log(`[Bot] New Task [${taskId}]: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${startTime ? ` # ${startTime}` : ''}`);
 
                 // Run booking in background (don't block the poll loop)
                 (async () => {
+                    let taskPage = null;
                     try {
                         if (startTime) {
                             const delayMs = getDelayMsUntil(startTime);
                             if (delayMs > 0) {
                                 const delayMins = Math.round(delayMs / 60000);
-                                await sendTelegram(`⏱️ *Timer Mode Active*\nWaiting ${delayMins} minute(s) before booking *${keyword}* (starts at ${startTime}).\n\nSend \`!stop\` to cancel.`);
-                                currentBookingInfo.phase = `Waiting until ${startTime}`;
-                                // Wait in small chunks so !stop can interrupt
+                                await sendTelegram(`⏱️ *Timer Active [${keyword}]*\nWaiting ${delayMins} min(s) until ${startTime}.\n_You can still start other bookings!_`);
+                                task.phase = `Waiting until ${startTime}`;
                                 const endTime = Date.now() + delayMs;
                                 while (Date.now() < endTime) {
-                                    if (stopRequested) break;
+                                    if (task.stopRequested) break;
                                     await new Promise(resolve => setTimeout(resolve, 2000));
                                 }
                             }
                         }
 
-                        if (stopRequested) {
-                            await sendTelegram(`🛑 Booking for *${keyword}* was cancelled.`);
+                        if (task.stopRequested) {
+                            await sendTelegram(`🛑 Task *${keyword}* was cancelled.`);
                             return;
                         }
 
-                        currentBookingInfo.phase = 'Booking slot on Saveetha portal';
-                        await sendTelegram(`⏳ Booking *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}...\nPlease wait!\n\nSend \`!stop\` to cancel.`);
-                        await runBookingOnPage(page, keyword, targetTime);
+                        // Create a NEW page for this specific task
+                        taskPage = await context.newPage();
+                        task.page = taskPage;
+                        task.phase = 'Booking on portal';
+                        
+                        await sendTelegram(`⏳ Processing *${keyword}* now...`);
+                        await runBookingOnPage(taskPage, keyword, targetTime);
                     } catch (err) {
-                        console.error('[Bot] Booking error:', err.message);
-                        await sendTelegram(`❌ Error during booking: ${err.message}`);
+                        console.error(`[Bot] Task ${taskId} Error:`, err.message);
+                        await sendTelegram(`❌ Error [${keyword}]: ${err.message}`);
                     } finally {
-                        isBooking = false;
-                        stopRequested = false;
-                        currentBookingInfo = null;
+                        if (taskPage) await taskPage.close().catch(() => {});
+                        activeTasks.delete(taskId);
                     }
                 })();
             }
