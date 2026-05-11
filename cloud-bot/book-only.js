@@ -547,9 +547,12 @@ async function main() {
                     continue;
                 }
 
+                // ── !book / !unbook ───────────────────────────────────────
+                const isUnbook = text.toLowerCase().startsWith('!unbook');
+                if (!text.toLowerCase().startsWith('!book') && !isUnbook) continue;
 
-                // Parse !book command
-                let keyword = text.substring(5).trim();
+                // Parse command
+                let keyword = text.substring(isUnbook ? 7 : 5).trim();
                 let targetTime = '';
                 let startTime = '';
 
