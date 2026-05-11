@@ -38,6 +38,7 @@ jobs:
           SAVEETHA_PASS: ${{ secrets.SAVEETHA_PASS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          TZ: Asia/Kolkata
         run: |
           cd cloud-bot
           node book-only.js &
