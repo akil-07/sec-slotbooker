@@ -172,7 +172,13 @@ async function runBookingBot() {
 
             function normalize(str) {
                 if (!str) return '';
-                return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+                // Remove punctuation, collapse spaces, then insert space between digit and am/pm
+                // So "3 p.m." -> "3 pm" and "3pm" -> "3 pm" both match
+                return str.toLowerCase()
+                    .replace(/[^a-z0-9\s]/g, '')
+                    .replace(/\s+/g, ' ')
+                    .replace(/(\d)(am|pm)/g, '$1 $2')
+                    .trim();
             }
 
             const kwNorm = normalize(kw);
