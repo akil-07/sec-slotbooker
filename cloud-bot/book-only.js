@@ -521,6 +521,290 @@ async function doLogin(page, user, pass) {
     console.log('[Bot] Logged in. Current URL:', page.url());
 }
 
+// ─── Timetable Scraper ───────────────────────────────────────────────────────
+
+/**
+ * Scrapes today's schedule from people_schedule page.
+ * Returns an array of { slot, venue, timeStr, hour, minute } sorted by time.
+ */
+async function fetchTimetable(context, config) {
+    const page = await context.newPage();
+    try {
+        console.log(`[Timetable] Fetching schedule for ${config.name}...`);
+        await page.goto('https://learner.saveetha.in/academics/people_schedule/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+        });
+
+        // If redirected to login, re-login
+        if (page.url().includes('/login')) {
+            console.log(`[Timetable] Session expired for ${config.name} — re-logging in...`);
+            await doLogin(page, config.user, config.pass);
+            await page.goto('https://learner.saveetha.in/academics/people_schedule/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+            });
+        }
+
+        // Wait for table/schedule content
+        await page.waitForTimeout(3000);
+
+        const slots = await page.evaluate(() => {
+            const results = [];
+            const today = new Date();
+            const todayStr = today.toLocaleDateString('en-IN', { weekday: 'long' }).toLowerCase();
+            const todayDate = today.toISOString().split('T')[0]; // YYYY-MM-DD
+
+            function parseTime(timeText) {
+                if (!timeText) return null;
+                // Match patterns like "9:00 AM", "09:00", "9.00AM"
+                const m = timeText.match(/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i);
+                if (!m) return null;
+                let h = parseInt(m[1], 10);
+                const min = parseInt(m[2], 10);
+                const period = (m[3] || '').toLowerCase();
+                if (period === 'pm' && h < 12) h += 12;
+                if (period === 'am' && h === 12) h = 0;
+                return { hour: h, minute: min, timeStr: timeText.trim() };
+            }
+
+            // Strategy 1: Look for table rows with time, slot and venue columns
+            const tables = document.querySelectorAll('table');
+            for (const table of tables) {
+                const rows = table.querySelectorAll('tr');
+                for (const row of rows) {
+                    const cells = Array.from(row.querySelectorAll('td, th')).map(c => c.innerText.trim());
+                    if (cells.length < 2) continue;
+                    const rowText = cells.join(' ').toLowerCase();
+
+                    // Check if this row relates to today (day name or date)
+                    const hasToday = rowText.includes(todayStr) || rowText.includes(todayDate) ||
+                        rowText.includes(today.getDate() + '/');
+
+                    // Find the time cell
+                    let timeInfo = null;
+                    let slot = '';
+                    let venue = '';
+
+                    for (let i = 0; i < cells.length; i++) {
+                        const t = parseTime(cells[i]);
+                        if (t && !timeInfo) { timeInfo = t; continue; }
+                        // Heuristic: venue usually contains "hall", "room", "lab", "block", digits
+                        if (/hall|room|lab|block|floor|\d{2,}/i.test(cells[i]) && !venue) {
+                            venue = cells[i];
+                        } else if (cells[i].length > 3 && cells[i].length < 120 && !slot && i > 0) {
+                            slot = cells[i];
+                        }
+                    }
+
+                    if (timeInfo && slot) {
+                        results.push({ slot, venue: venue || 'N/A', ...timeInfo, hasToday });
+                    }
+                }
+            }
+
+            // Strategy 2: Generic cards/divs if no table found
+            if (results.length === 0) {
+                const cards = document.querySelectorAll(
+                    '[class*="schedule"], [class*="timetable"], [class*="slot"], [class*="class"], [class*="period"], [class*="event"]'
+                );
+                for (const card of cards) {
+                    const text = card.innerText || '';
+                    const timeMatch = text.match(/(\d{1,2})[.:](\d{2})\s*(AM|PM)/i);
+                    if (!timeMatch) continue;
+                    const t = parseTime(timeMatch[0]);
+                    if (!t) continue;
+                    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+                    const slot = lines[0] || 'Class';
+                    const venueLine = lines.find(l => /hall|room|lab|block|floor|\d{2,}/i.test(l));
+                    results.push({ slot, venue: venueLine || 'N/A', ...t, hasToday: true });
+                }
+            }
+
+            // Strategy 3: Brute-force scan all visible text nodes for time + context
+            if (results.length === 0) {
+                const allEls = document.querySelectorAll('*');
+                for (const el of allEls) {
+                    if (el.children.length > 0) continue; // leaf nodes only
+                    const text = (el.innerText || '').trim();
+                    const timeMatch = text.match(/^(\d{1,2})[.:](\d{2})\s*(AM|PM)/i);
+                    if (!timeMatch) continue;
+                    const t = parseTime(timeMatch[0]);
+                    if (!t) continue;
+                    // grab sibling/parent context
+                    const parent = el.parentElement;
+                    const parentText = parent ? parent.innerText.trim() : text;
+                    const lines = parentText.split('\n').map(l => l.trim()).filter(Boolean);
+                    const slot = lines.find(l => l.length > 5 && !parseTime(l)) || 'Class';
+                    const venueLine = lines.find(l => /hall|room|lab|block|floor|\d{2,}/i.test(l));
+                    results.push({ slot, venue: venueLine || 'N/A', ...t, hasToday: true });
+                }
+            }
+
+            // Deduplicate by time+slot and sort
+            const seen = new Set();
+            const deduped = results.filter(r => {
+                const key = `${r.hour}:${r.minute}-${r.slot}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+
+            return deduped.sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute));
+        });
+
+        console.log(`[Timetable] Found ${slots.length} slots for ${config.name}`);
+        return slots;
+    } catch (err) {
+        console.error(`[Timetable] Error fetching for ${config.name}:`, err.message);
+        return [];
+    } finally {
+        await page.close().catch(() => {});
+    }
+}
+
+/**
+ * Format timetable slots into a readable Telegram message.
+ */
+function formatTimetable(slots, name) {
+    const today = new Date().toLocaleDateString('en-IN', {
+        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+    });
+    if (!slots || slots.length === 0) {
+        return `📅 *Good Morning ${name}!*\n\n*Today's Timetable (${today})*\n\n✅ No classes scheduled today. Enjoy your day! 🎉`;
+    }
+    let msg = `📅 *Good Morning ${name}!*\n\n*Today's Timetable — ${today}*\n${'─'.repeat(30)}\n\n`;
+    for (const s of slots) {
+        const h = s.hour % 12 || 12;
+        const period = s.hour < 12 ? 'AM' : 'PM';
+        const minStr = String(s.minute).padStart(2, '0');
+        msg += `🕐 *${h}:${minStr} ${period}*\n`;
+        msg += `📚 ${s.slot}\n`;
+        msg += `📍 ${s.venue}\n\n`;
+    }
+    msg += `_Have a productive day! 💪_`;
+    return msg;
+}
+
+// ─── Timetable Scheduler ─────────────────────────────────────────────────────
+
+/**
+ * Starts per-user timetable schedulers:
+ *   1. Daily 8:00 AM → send full timetable
+ *   2. 15 min before each slot → send reminder
+ *
+ * Uses India Standard Time (IST = UTC+5:30).
+ */
+function startTimetableSchedulers(userSessions) {
+    console.log('[Scheduler] Starting timetable schedulers for all users...');
+
+    // Helper: ms until next HH:MM in IST
+    function msUntilIST(targetHour, targetMin) {
+        const now = new Date();
+        // IST offset in ms = +5h30m = 19800000
+        const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+        const nowIST = new Date(now.getTime() + IST_OFFSET);
+        const target = new Date(nowIST);
+        target.setUTCHours(targetHour, targetMin, 0, 0);
+        let diff = target.getTime() - nowIST.getTime();
+        if (diff <= 0) {
+            target.setUTCDate(target.getUTCDate() + 1);
+            diff = target.getTime() - nowIST.getTime();
+        }
+        return diff;
+    }
+
+    // Schedule the 8 AM daily timetable for every user
+    for (const [chatId, session] of userSessions.entries()) {
+        scheduleDailyTimetable(chatId, session);
+        
+        // --- Immediate Check on Startup ---
+        // If the bot starts after 8 AM (e.g. after a restart), 
+        // we still want to schedule reminders for the rest of today.
+        (async () => {
+            try {
+                console.log(`[Scheduler] Initializing today's reminders for ${session.config.name}...`);
+                const slots = await fetchTimetable(session.context, session.config);
+                scheduleSlotReminders(chatId, session, slots);
+            } catch (e) {
+                console.error(`[Scheduler] Startup check failed for ${session.config.name}:`, e.message);
+            }
+        })();
+    }
+
+    function scheduleDailyTimetable(chatId, session) {
+        const delay = msUntilIST(8, 0); // 8:00 AM IST
+        const delayMin = Math.round(delay / 60000);
+        console.log(`[Scheduler] Daily timetable for ${session.config.name} in ${delayMin} min`);
+
+        setTimeout(async () => {
+            await sendDailyTimetable(chatId, session);
+            // Schedule again for the next day
+            scheduleDailyTimetable(chatId, session);
+        }, delay);
+    }
+
+    async function sendDailyTimetable(chatId, session) {
+        try {
+            console.log(`[Scheduler] Sending 8 AM timetable to ${session.config.name}...`);
+            const slots = await fetchTimetable(session.context, session.config);
+            const msg = formatTimetable(slots, session.config.name);
+            await sendTelegram(msg, chatId);
+
+            // Schedule 15-min reminders for each slot today
+            scheduleSlotReminders(chatId, session, slots);
+        } catch (err) {
+            console.error(`[Scheduler] Failed to send timetable to ${session.config.name}:`, err.message);
+        }
+    }
+
+    function scheduleSlotReminders(chatId, session, slots) {
+        if (!slots || slots.length === 0) return;
+        const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+
+        for (const s of slots) {
+            const now = new Date();
+            const nowIST = new Date(now.getTime() + IST_OFFSET);
+
+            // Build the slot's start time in UTC today (IST - offset)
+            const slotIST = new Date(nowIST);
+            slotIST.setUTCHours(s.hour, s.minute, 0, 0);
+
+            // Reminder = 15 minutes before slot
+            const reminderTime = slotIST.getTime() - 15 * 60 * 1000;
+            const delay = reminderTime - nowIST.getTime();
+
+            if (delay <= 0) {
+                console.log(`[Scheduler] Skipping past slot: ${s.slot} at ${s.hour}:${s.minute}`);
+                continue;
+            }
+
+            const delayMin = Math.round(delay / 60000);
+            console.log(`[Scheduler] Reminder for "${s.slot}" in ${delayMin} min (${session.config.name})`);
+
+            setTimeout(async () => {
+                try {
+                    const h = s.hour % 12 || 12;
+                    const period = s.hour < 12 ? 'AM' : 'PM';
+                    const minStr = String(s.minute).padStart(2, '0');
+                    const msg =
+                        `⏰ *Class Reminder — 15 Minutes!*\n\n` +
+                        `📚 *${s.slot}*\n` +
+                        `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
+                        `📍 Venue: *${s.venue}*\n\n` +
+                        `_Get ready! Class starts in 15 minutes. 🚀_`;
+                    await sendTelegram(msg, chatId);
+                    console.log(`[Scheduler] Reminder sent for "${s.slot}" to ${session.config.name}`);
+                } catch (err) {
+                    console.error(`[Scheduler] Reminder error:`, err.message);
+                }
+            }, delay);
+        }
+    }
+
+    console.log('[Scheduler] All timetable schedulers started.');
+}
+
 // ─── Main: Persistent Bot Loop ────────────────────────────────────────────────
 
 async function main() {
@@ -580,7 +864,10 @@ async function main() {
         }
     }, 600000); // Every 10 mins
 
-    await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${userSessions.size} accounts have a tab open and ready on the booking page.`);
+    // ── Start Timetable Schedulers for all users ──────────────────────────────
+    startTimetableSchedulers(userSessions);
+
+    await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${userSessions.size} accounts have a tab open and ready on the booking page.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
 
     // Track active bookings
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page }
@@ -665,6 +952,24 @@ async function main() {
                         const task = activeTasks.get(lastId);
                         task.stopRequested = true;
                         await sendTelegram(`🛑 Stopping most recent task: *${task.keyword}*`);
+                    }
+                    continue;
+                }
+
+                // ── !timetable (manual fetch) ─────────────────────────────
+                if (text === '!timetable' || text === '!tt') {
+                    const session = userSessions.get(fromChatId);
+                    if (!session) {
+                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
+                        continue;
+                    }
+                    await sendTelegram(`⏳ Fetching your timetable, please wait...`, fromChatId);
+                    try {
+                        const slots = await fetchTimetable(session.context, session.config);
+                        const msg = formatTimetable(slots, session.config.name);
+                        await sendTelegram(msg, fromChatId);
+                    } catch (err) {
+                        await sendTelegram(`❌ Failed to fetch timetable: ${err.message}`, fromChatId);
                     }
                     continue;
                 }
