@@ -8,26 +8,71 @@ const CHAT_ID = process.env.CHAT_ID;
 const SAVEETHA_USER = process.env.SAVEETHA_USER;
 const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
 const ACCOUNTS_JSON = process.env.ACCOUNTS_JSON;
+const GIST_TOKEN = process.env.GIST_TOKEN;
+const GIST_ID_ENV = process.env.GIST_ID;
+const ADMIN_CHAT_ID = '6374825608';
 
-// Parse accounts mapping
+// User Registry
 let ACCOUNTS = {};
-try {
-    if (ACCOUNTS_JSON) {
-        ACCOUNTS = JSON.parse(ACCOUNTS_JSON);
-        console.log('[Bot] Loaded accounts for chat IDs:', Object.keys(ACCOUNTS).join(', '));
-    } else {
-        console.warn('[Bot] ACCOUNTS_JSON not set — falling back to single user.');
-        // Fallback to single user if JSON not provided
-        ACCOUNTS[CHAT_ID] = {
-            user: SAVEETHA_USER,
-            pass: SAVEETHA_PASS,
-            name: 'Primary User'
-        };
-        console.log('[Bot] Single user fallback, chat ID:', CHAT_ID);
+let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, isBusy }
+
+// ─── Gist Persistence Logic ──────────────────────────────────────────────────
+
+async function loadGist() {
+    if (!GIST_TOKEN || !GIST_ID_ENV) {
+        console.log('[Gist] GIST_TOKEN or GIST_ID not set. Runtime users will not persist.');
+        return {};
     }
-} catch (e) {
-    console.error('[Bot] Failed to parse ACCOUNTS_JSON:', e.message);
-    console.error('[Bot] Raw ACCOUNTS_JSON value:', ACCOUNTS_JSON);
+    try {
+        const res = await fetch(`https://api.github.com/gists/${GIST_ID_ENV}`, {
+            headers: { 'Authorization': `token ${GIST_TOKEN}` }
+        });
+        const data = await res.json();
+        if (data.files && data.files['users.json']) {
+            return JSON.parse(data.files['users.json'].content);
+        }
+    } catch (e) {
+        console.error('[Gist] Load error:', e.message);
+    }
+    return {};
+}
+
+async function updateGist(users) {
+    if (!GIST_TOKEN || !GIST_ID_ENV) return;
+    try {
+        await fetch(`https://api.github.com/gists/${GIST_ID_ENV}`, {
+            method: 'PATCH',
+            headers: { 
+                'Authorization': `token ${GIST_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                files: { 'users.json': { content: JSON.stringify(users, null, 2) } }
+            })
+        });
+        console.log('[Gist] Updated successfully.');
+    } catch (e) {
+        console.error('[Gist] Update error:', e.message);
+    }
+}
+
+// ─── Account Initialization ──────────────────────────────────────────────────
+
+async function initAccounts() {
+    // 1. Load hardcoded secret users
+    try {
+        if (ACCOUNTS_JSON) {
+            ACCOUNTS = JSON.parse(ACCOUNTS_JSON);
+            console.log('[Bot] Loaded hardcoded accounts:', Object.keys(ACCOUNTS).join(', '));
+        } else {
+            ACCOUNTS[CHAT_ID] = { user: SAVEETHA_USER, pass: SAVEETHA_PASS, name: 'Primary User' };
+        }
+    } catch (e) { console.error('[Bot] ACCOUNTS_JSON parse error'); }
+
+    // 2. Load dynamic users from Gist
+    const gistUsers = await loadGist();
+    Object.assign(ACCOUNTS, gistUsers);
+    console.log('[Bot] Total authorized users:', Object.keys(ACCOUNTS).length);
 }
 
 function getUserConfig(chatId) {
@@ -805,6 +850,100 @@ function startTimetableSchedulers(userSessions) {
     console.log('[Scheduler] All timetable schedulers started.');
 }
 
+async function spawnUserSession(browser, chatId, config) {
+    try {
+        console.log(`[Bot] Spawning session for ${config.name} (${chatId})...`);
+        const userContext = await browser.newContext();
+        const hotPage = await userContext.newPage();
+        
+        await doLogin(hotPage, config.user, config.pass);
+        
+        console.log(`[Bot] Preparing Hot Tab for ${config.name}...`);
+        await hotPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { 
+            waitUntil: 'networkidle', 
+            timeout: 60000 
+        });
+        
+        const session = { 
+            context: userContext, 
+            config, 
+            persistentPage: hotPage,
+            isBusy: false 
+        };
+        USER_SESSIONS.set(chatId, session);
+
+        // Start specific scheduler
+        scheduleDailyTimetableForUser(chatId, session);
+        (async () => {
+            try {
+                const slots = await fetchTimetable(session.context, session.config);
+                scheduleSlotReminders(chatId, session, slots);
+            } catch (e) {}
+        })();
+
+        console.log(`[Bot] Session Ready: ${config.name}`);
+        return true;
+    } catch (err) {
+        console.error(`[Bot] Failed to spawn session for ${config.name}:`, err.message);
+        return false;
+    }
+}
+
+// Extract these from the original function so they can be called individually
+function scheduleDailyTimetableForUser(chatId, session) {
+    const delay = msUntilIST(8, 0); 
+    setTimeout(async () => {
+        await sendDailyTimetable(chatId, session);
+        scheduleDailyTimetableForUser(chatId, session);
+    }, delay);
+}
+
+function msUntilIST(targetHour, targetMin) {
+    const now = new Date();
+    const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+    const nowIST = new Date(now.getTime() + IST_OFFSET);
+    const target = new Date(nowIST);
+    target.setUTCHours(targetHour, targetMin, 0, 0);
+    let diff = target.getTime() - nowIST.getTime();
+    if (diff <= 0) {
+        target.setUTCDate(target.getUTCDate() + 1);
+        diff = target.getTime() - nowIST.getTime();
+    }
+    return diff;
+}
+
+async function sendDailyTimetable(chatId, session) {
+    try {
+        const slots = await fetchTimetable(session.context, session.config);
+        const msg = formatTimetable(slots, session.config.name);
+        await sendTelegram(msg, chatId);
+        scheduleSlotReminders(chatId, session, slots);
+    } catch (err) {}
+}
+
+function scheduleSlotReminders(chatId, session, slots) {
+    if (!slots || slots.length === 0) return;
+    const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+    for (const s of slots) {
+        const now = new Date();
+        const nowIST = new Date(now.getTime() + IST_OFFSET);
+        const slotIST = new Date(nowIST);
+        slotIST.setUTCHours(s.hour, s.minute, 0, 0);
+        const reminderTime = slotIST.getTime() - 15 * 60 * 1000;
+        const delay = reminderTime - nowIST.getTime();
+        if (delay <= 0) continue;
+        setTimeout(async () => {
+            try {
+                const h = s.hour % 12 || 12;
+                const period = s.hour < 12 ? 'AM' : 'PM';
+                const minStr = String(s.minute).padStart(2, '0');
+                const msg = `⏰ *Class Reminder — 15 Minutes!*\n\n📚 *${s.slot}*\n🕐 Starts at: *${h}:${minStr} ${period}*\n📍 Venue: *${s.venue}*`;
+                await sendTelegram(msg, chatId);
+            } catch (err) {}
+        }, delay);
+    }
+}
+
 // ─── Main: Persistent Bot Loop ────────────────────────────────────────────────
 
 async function main() {
@@ -821,38 +960,15 @@ async function main() {
     });
 
     // Pre-login each user and keep a "Hot Tab" ready on the booking page
-    const userSessions = new Map(); // chatId -> { context, config, persistentPage, isBusy }
-    console.log('[Bot] Pre-logging in and preparing Hot Tabs for all accounts...');
+    await initAccounts();
     
     for (const [chatId, config] of Object.entries(ACCOUNTS)) {
-        try {
-            const userContext = await browser.newContext();
-            const hotPage = await userContext.newPage();
-            
-            await doLogin(hotPage, config.user, config.pass);
-            
-            // Navigate to the booking page immediately so it's ready
-            console.log(`[Bot] Preparing Hot Tab for ${config.name}...`);
-            await hotPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { 
-                waitUntil: 'networkidle', 
-                timeout: 60000 
-            });
-            
-            userSessions.set(chatId, { 
-                context: userContext, 
-                config, 
-                persistentPage: hotPage,
-                isBusy: false 
-            });
-            console.log(`[Bot] Hot Tab Ready: ${config.name}`);
-        } catch (err) {
-            console.error(`[Bot] Failed to prepare session for ${config.name}:`, err.message);
-        }
+        await spawnUserSession(browser, chatId, config);
     }
 
     // Optional: Keep-alive loop to prevent sessions from timing out
     setInterval(async () => {
-        for (const [chatId, session] of userSessions.entries()) {
+        for (const [chatId, session] of USER_SESSIONS.entries()) {
             if (!session.isBusy) {
                 try {
                     // Just refresh or check if still on booking page every 10 mins
@@ -865,9 +981,9 @@ async function main() {
     }, 600000); // Every 10 mins
 
     // ── Start Timetable Schedulers for all users ──────────────────────────────
-    startTimetableSchedulers(userSessions);
+    // (Note: Handled inside spawnUserSession now)
 
-    await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${userSessions.size} accounts have a tab open and ready on the booking page.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
+    await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${USER_SESSIONS.size} accounts have a tab open and ready on the booking page.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
 
     // Track active bookings
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page }
@@ -901,7 +1017,7 @@ async function main() {
 
                 // ── !help ─────────────────────────────────────────────────
                 if (text === '!help' || text === '/start') {
-                    const helpMsg = 
+                    let helpMsg = 
                         `📖 *Saveetha Bot Help*\n\n` +
                         `*Booking Commands:*\n` +
                         `\`!book <keyword>\` — Book immediately\n` +
@@ -915,8 +1031,16 @@ async function main() {
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active tasks\n` +
                         `\`!stop <keyword>\` — Stop a specific task\n` +
-                        `\`!stop all\` — Stop everything\n\n` +
-                        `_Tip: Use "all" with !stop to clear the queue._`;
+                        `\`!stop all\` — Stop everything\n`;
+
+                    if (fromChatId === ADMIN_CHAT_ID) {
+                        helpMsg += `\n*👑 Admin Commands:*\n` +
+                                   `\`!adduser <id> <user> <pass> <name>\` — Add user\n` +
+                                   `\`!removeuser <id>\` — Remove user\n` +
+                                   `\`!listusers\` — Show all users\n`;
+                    }
+                    
+                    helpMsg += `\n_Tip: Use "all" with !stop to clear the queue._`;
                     await sendTelegram(helpMsg, fromChatId);
                     continue;
                 }
@@ -978,9 +1102,65 @@ async function main() {
                     continue;
                 }
 
-                // ── !timetable (manual fetch) ─────────────────────────────
+                // 👑 ADMIN COMMANDS
+                if (fromChatId === ADMIN_CHAT_ID) {
+                    if (text.startsWith('!adduser')) {
+                        const parts = text.split(' ').filter(Boolean);
+                        if (parts.length < 5) {
+                            await sendTelegram(`Format: \`!adduser <chatId> <user> <pass> <name>\``, ADMIN_CHAT_ID);
+                            continue;
+                        }
+                        const nId = parts[1], nU = parts[2], nP = parts[3], nName = parts.slice(4).join(' ');
+                        const newConfig = { user: nU, pass: nP, name: nName };
+                        
+                        await sendTelegram(`⏳ Adding ${nName}...`, ADMIN_CHAT_ID);
+                        const success = await spawnUserSession(browser, nId, newConfig);
+                        if (success) {
+                            const dynamicUsers = await loadGist();
+                            dynamicUsers[nId] = newConfig;
+                            await updateGist(dynamicUsers);
+                            ACCOUNTS[nId] = newConfig;
+                            await sendTelegram(`✅ Added ${nName} successfully!`, ADMIN_CHAT_ID);
+                            await sendTelegram(`🎉 Welcome ${nName}! Your account is now connected. Try \`!help\` to begin.`, nId);
+                        } else {
+                            await sendTelegram(`❌ Failed to login ${nName}. Check credentials.`, ADMIN_CHAT_ID);
+                        }
+                        continue;
+                    }
+
+                    if (text.startsWith('!removeuser')) {
+                        const parts = text.split(' ');
+                        const rId = parts[1];
+                        if (!rId) return;
+                        
+                        const session = USER_SESSIONS.get(rId);
+                        if (session) {
+                            await session.persistentPage.close().catch(() => {});
+                            await session.context.close().catch(() => {});
+                            USER_SESSIONS.delete(rId);
+                        }
+                        
+                        const dynamicUsers = await loadGist();
+                        delete dynamicUsers[rId];
+                        await updateGist(dynamicUsers);
+                        delete ACCOUNTS[rId];
+                        
+                        await sendTelegram(`🛑 Removed user ${rId}.`, ADMIN_CHAT_ID);
+                        continue;
+                    }
+
+                    if (text === '!listusers') {
+                        let list = `👥 *Authorized Users*\n\n`;
+                        for (const [id, config] of Object.entries(ACCOUNTS)) {
+                            const status = USER_SESSIONS.has(id) ? '🟢 Online' : '🔴 Offline';
+                            list += `• *${config.name}* (\`${id}\`)\n  └ User: ${config.user} | ${status}\n\n`;
+                        }
+                        await sendTelegram(list, ADMIN_CHAT_ID);
+                        continue;
+                    }
+                }
                 if (text === '!timetable' || text === '!tt') {
-                    const session = userSessions.get(fromChatId);
+                    const session = USER_SESSIONS.get(fromChatId);
                     if (!session) {
                         await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
                         continue;
@@ -1057,7 +1237,7 @@ async function main() {
                         }
 
                         // Get user's pre-authenticated session
-                        const session = userSessions.get(fromChatId);
+                        const session = USER_SESSIONS.get(fromChatId);
                         if (!session) {
                             await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
                             return;
@@ -1110,12 +1290,10 @@ async function main() {
                         console.error(`[Bot] Task ${taskId} Error:`, err.message);
                         await sendTelegram(`❌ Error [${keyword}]: ${err.message}`, fromChatId);
                     } finally {
-                        // Only close the page if it's NOT the persistent "Hot Tab"
-                        const session = userSessions.get(fromChatId);
+                        const session = USER_SESSIONS.get(fromChatId);
                         if (taskPage) {
                             if (session && taskPage === session.persistentPage) {
                                 session.isBusy = false;
-                                // Reset to booking page for next time
                                 await taskPage.goto('https://learner.saveetha.in/academicevents/event-booking/').catch(() => {});
                             } else {
                                 await taskPage.close().catch(() => {});
