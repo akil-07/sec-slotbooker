@@ -897,7 +897,29 @@ async function main() {
                     continue;
                 }
 
-                const text = msg.text.trim();
+                const text = msg.text.trim().toLowerCase();
+
+                // ── !help ─────────────────────────────────────────────────
+                if (text === '!help' || text === '/start') {
+                    const helpMsg = 
+                        `📖 *Saveetha Bot Help*\n\n` +
+                        `*Booking Commands:*\n` +
+                        `\`!book <keyword>\` — Book immediately\n` +
+                        `\`!book <keyword> @ 10:00 AM\` — Target specific time\n` +
+                        `\`!book <keyword> # 06:00 PM\` — Start scanning at 6 PM IST\n` +
+                        `\`!scan <keyword>\` — Scan every 30s until found\n` +
+                        `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
+                        `*Timetable Commands:*\n` +
+                        `\`!timetable\` or \`!tt\` — Get today's schedule\n\n` +
+                        `*System Commands:*\n` +
+                        `\`!status\` — Check if bot is alive\n` +
+                        `\`!progress\` — View active tasks\n` +
+                        `\`!stop <keyword>\` — Stop a specific task\n` +
+                        `\`!stop all\` — Stop everything\n\n` +
+                        `_Tip: Use "all" with !stop to clear the queue._`;
+                    await sendTelegram(helpMsg, fromChatId);
+                    continue;
+                }
 
                 // ── !status ──────────────────────────────────────────────
                 if (text === '!status') {
