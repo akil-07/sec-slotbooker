@@ -449,21 +449,64 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
 
 async function doLogin(page, user, pass) {
     console.log(`[Bot] Logging in as ${user}...`);
-    await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForSelector('input[type="text"], input[name="uid"], #username', { timeout: 15000 });
+    await page.goto('https://learner.saveetha.in/login', { waitUntil: 'networkidle', timeout: 60000 });
 
-    const userInputs = await page.$$('input[type="text"], input[name="uid"], #username');
-    if (userInputs.length > 0) await userInputs[0].fill(user);
+    // Try multiple selectors for the username field
+    const userSelectors = [
+        'input[name="uid"]',
+        'input[name="username"]',
+        '#username',
+        'input[type="text"]',
+        'input[placeholder*="user" i]',
+        'input[placeholder*="id" i]',
+        'input[placeholder*="roll" i]'
+    ];
 
-    const passInputs = await page.$$('input[type="password"]');
-    if (passInputs.length > 0) await passInputs[0].fill(pass);
+    let userInput = null;
+    for (const sel of userSelectors) {
+        try {
+            await page.waitForSelector(sel, { timeout: 5000, state: 'visible' });
+            userInput = page.locator(sel).first();
+            break;
+        } catch (_) {}
+    }
 
-    const loginBtns = await page.$$('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
-    if (loginBtns.length > 0) await loginBtns[0].click();
-    else await page.keyboard.press('Enter');
+    if (!userInput) throw new Error('Could not find username input on login page.');
 
-    await page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => null);
-    console.log('[Bot] Logged in successfully. Current URL:', page.url());
+    // Fill using React-compatible method
+    await userInput.click({ force: true });
+    await userInput.fill('');
+    await userInput.type(user, { delay: 50 });
+
+    const passInput = page.locator('input[type="password"]').first();
+    await passInput.click({ force: true });
+    await passInput.fill('');
+    await passInput.type(pass, { delay: 50 });
+
+    // Click login button
+    const loginSelectors = [
+        'button[type="submit"]',
+        'input[type="submit"]',
+        'button:has-text("Login")',
+        'button:has-text("Sign in")',
+        'button:has-text("Log in")'
+    ];
+
+    let clicked = false;
+    for (const sel of loginSelectors) {
+        try {
+            const btn = page.locator(sel).first();
+            if (await btn.count() > 0) {
+                await btn.click({ force: true });
+                clicked = true;
+                break;
+            }
+        } catch (_) {}
+    }
+    if (!clicked) await page.keyboard.press('Enter');
+
+    await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 }).catch(() => null);
+    console.log('[Bot] Logged in. Current URL:', page.url());
 }
 
 // ─── Main: Persistent Bot Loop ────────────────────────────────────────────────
