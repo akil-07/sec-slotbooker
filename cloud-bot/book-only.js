@@ -188,7 +188,19 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false,
             if (summary.length > 80) summary = summary.substring(0, 80) + '...';
             allAvailable.push(summary);
 
-            let matchKeyword = !kwNorm || fullTextNorm.includes(kwNorm);
+            // Get the title/heading text separately for smarter matching
+            const titleEl = card ? card.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]') : null;
+            const titleTextNorm = normalize(titleEl ? titleEl.innerText : '');
+
+            // Use whole-word regex so "world" doesn't match "real-world" or "worldwide"
+            const kwWords = kwNorm.split(' ').filter(Boolean);
+            function wholeWordMatch(text, words) {
+                return words.every(w => new RegExp('\\b' + w + '\\b').test(text));
+            }
+
+            // Prioritize title match; fall back to full card text
+            let matchKeyword = !kwNorm || wholeWordMatch(titleTextNorm, kwWords) || wholeWordMatch(fullTextNorm, kwWords);
+
             let matchTime = true;
             if (timeNorm) {
                 const startTime = extractStartTime(fullTextNorm);
