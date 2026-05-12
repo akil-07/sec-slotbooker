@@ -523,10 +523,24 @@ async function main() {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
-    const context = await browser.newContext();
 
-    console.log('[Bot] Polling Telegram for commands...');
-    await sendTelegram(`✅ *Saveetha Multi-User Bot is Online!*\nReady to handle multiple accounts.`);
+    // Pre-login each user in their own context (instant booking later)
+    const userSessions = new Map(); // chatId -> { context, config }
+    console.log('[Bot] Pre-logging in all accounts...');
+    for (const [chatId, config] of Object.entries(ACCOUNTS)) {
+        try {
+            const userContext = await browser.newContext();
+            const loginPage = await userContext.newPage();
+            await doLogin(loginPage, config.user, config.pass);
+            await loginPage.close(); // Close the login page, keep the context (cookies stay!)
+            userSessions.set(chatId, { context: userContext, config });
+            console.log(`[Bot] Pre-logged in: ${config.name} (${chatId})`);
+        } catch (err) {
+            console.error(`[Bot] Failed to pre-login ${config.name}:`, err.message);
+        }
+    }
+
+    await sendTelegram(`✅ *Saveetha Bot is Online!*\nAll ${userSessions.size} account(s) are logged in and ready to book instantly!`);
 
     // Track active bookings
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page }
@@ -675,13 +689,16 @@ async function main() {
                             return;
                         }
 
-                        taskPage = await context.newPage();
+                        // Get user's pre-authenticated context — no login needed!
+                        const session = userSessions.get(fromChatId);
+                        if (!session) {
+                            await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
+                            return;
+                        }
+                        taskPage = await session.context.newPage();
                         taskPage._userConfig = userConfig;
                         task.page = taskPage;
 
-                        // Perform login for this specific task page
-                        await sendTelegram(`🔐 Logging in for *${userConfig.name || keyword}*...`, fromChatId);
-                        await doLogin(taskPage, userConfig.user, userConfig.pass);
                         await sendTelegram(`🚀 *Booking has started!*\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}\nPlease wait...`, fromChatId);
                         
                         if (isScan) {
