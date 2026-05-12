@@ -3,10 +3,36 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
-const SAVEETHA_USER = process.env.SAVEETHA_USER;
-const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
+const SAVEETHA_USER = process.env.SAVEETHA_USER;
+const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
+const ACCOUNTS_JSON = process.env.ACCOUNTS_JSON;
+
+// Parse accounts mapping
+let ACCOUNTS = {};
+try {
+    if (ACCOUNTS_JSON) {
+        ACCOUNTS = JSON.parse(ACCOUNTS_JSON);
+        console.log('[Bot] Loaded accounts for chat IDs:', Object.keys(ACCOUNTS).join(', '));
+    } else {
+        console.warn('[Bot] ACCOUNTS_JSON not set — falling back to single user.');
+        // Fallback to single user if JSON not provided
+        ACCOUNTS[CHAT_ID] = {
+            user: SAVEETHA_USER,
+            pass: SAVEETHA_PASS,
+            name: 'Primary User'
+        };
+        console.log('[Bot] Single user fallback, chat ID:', CHAT_ID);
+    }
+} catch (e) {
+    console.error('[Bot] Failed to parse ACCOUNTS_JSON:', e.message);
+    console.error('[Bot] Raw ACCOUNTS_JSON value:', ACCOUNTS_JSON);
+}
+
+function getUserConfig(chatId) {
+    return ACCOUNTS[chatId] || null;
+}
 
 // ─── Telegram Helpers ────────────────────────────────────────────────────────
 
@@ -96,7 +122,8 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false)
     const currentUrl = page.url();
     if (currentUrl.includes('/login')) {
         console.log('[Bot] Session expired — re-logging in...');
-        await doLogin(page);
+        const config = page._userConfig;
+        await doLogin(page, config.user, config.pass);
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
             waitUntil: 'domcontentloaded',
             timeout: 60000
@@ -419,16 +446,16 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime) {
 
 // ─── Login ────────────────────────────────────────────────────────────────────
 
-async function doLogin(page) {
-    console.log('[Bot] Logging in...');
+async function doLogin(page, user, pass) {
+    console.log(`[Bot] Logging in as ${user}...`);
     await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForSelector('input[type="text"], input[name="uid"], #username', { timeout: 15000 });
 
     const userInputs = await page.$$('input[type="text"], input[name="uid"], #username');
-    if (userInputs.length > 0) await userInputs[0].fill(SAVEETHA_USER);
+    if (userInputs.length > 0) await userInputs[0].fill(user);
 
     const passInputs = await page.$$('input[type="password"]');
-    if (passInputs.length > 0) await passInputs[0].fill(SAVEETHA_PASS);
+    if (passInputs.length > 0) await passInputs[0].fill(pass);
 
     const loginBtns = await page.$$('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
     if (loginBtns.length > 0) await loginBtns[0].click();
@@ -447,24 +474,15 @@ async function main() {
     }
 
     // Launch browser ONCE and keep it alive
-    console.log('[Bot] Launching browser...');
+    console.log('[Bot] Launching multi-user browser...');
     const browser = await chromium.launch({
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
     const context = await browser.newContext();
-    const page = await context.newPage();
 
-    // Login ONCE at startup
-    try {
-        await doLogin(page);
-        await sendTelegram(`✅ *Saveetha Bot is Online!*\nLogged in and ready.\n\nSend \`!book <keyword>\` to book a slot.\nExample: \`!book viva @ 2 pm\`\nOptional timer: \`!book viva # 14:00\``);
-    } catch (err) {
-        console.error('[Bot] Login failed:', err.message);
-        await sendTelegram(`❌ Login failed: ${err.message}`);
-        await browser.close();
-        process.exit(1);
-    }
+    console.log('[Bot] Polling Telegram for commands...');
+    await sendTelegram(`✅ *Saveetha Multi-User Bot is Online!*\nReady to handle multiple accounts.`);
 
     // Track active bookings
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page }
@@ -484,10 +502,13 @@ async function main() {
                 const msg = update.message || update.channel_post;
                 if (!msg || !msg.text) continue;
 
-                // Only accept messages from your own chat ID
+                // Check if user is authorized
                 const fromChatId = String(msg.chat.id);
-                if (fromChatId !== String(CHAT_ID)) {
-                    console.log(`[Bot] Ignoring message from unknown chat: ${fromChatId}`);
+                const userConfig = getUserConfig(fromChatId);
+                
+                if (!userConfig) {
+                    console.log(`[Bot] Ignoring message from unauthorized chat: ${fromChatId}`);
+                    // Optional: await sendTelegram(`⚠️ Your Chat ID (${fromChatId}) is not authorized for this bot.`);
                     continue;
                 }
 
@@ -611,7 +632,11 @@ async function main() {
                         }
 
                         taskPage = await context.newPage();
+                        taskPage._userConfig = userConfig; // Attach config to page for expiry handling
                         task.page = taskPage;
+
+                        // Perform login for this specific task page
+                        await doLogin(taskPage, userConfig.user, userConfig.pass);
                         
                         if (isScan) {
                             let scanCount = 1;
