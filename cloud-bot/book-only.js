@@ -524,23 +524,51 @@ async function main() {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 
-    // Pre-login each user in their own context (instant booking later)
-    const userSessions = new Map(); // chatId -> { context, config }
-    console.log('[Bot] Pre-logging in all accounts...');
+    // Pre-login each user and keep a "Hot Tab" ready on the booking page
+    const userSessions = new Map(); // chatId -> { context, config, persistentPage, isBusy }
+    console.log('[Bot] Pre-logging in and preparing Hot Tabs for all accounts...');
+    
     for (const [chatId, config] of Object.entries(ACCOUNTS)) {
         try {
             const userContext = await browser.newContext();
-            const loginPage = await userContext.newPage();
-            await doLogin(loginPage, config.user, config.pass);
-            await loginPage.close(); // Close the login page, keep the context (cookies stay!)
-            userSessions.set(chatId, { context: userContext, config });
-            console.log(`[Bot] Pre-logged in: ${config.name} (${chatId})`);
+            const hotPage = await userContext.newPage();
+            
+            await doLogin(hotPage, config.user, config.pass);
+            
+            // Navigate to the booking page immediately so it's ready
+            console.log(`[Bot] Preparing Hot Tab for ${config.name}...`);
+            await hotPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { 
+                waitUntil: 'networkidle', 
+                timeout: 60000 
+            });
+            
+            userSessions.set(chatId, { 
+                context: userContext, 
+                config, 
+                persistentPage: hotPage,
+                isBusy: false 
+            });
+            console.log(`[Bot] Hot Tab Ready: ${config.name}`);
         } catch (err) {
-            console.error(`[Bot] Failed to pre-login ${config.name}:`, err.message);
+            console.error(`[Bot] Failed to prepare session for ${config.name}:`, err.message);
         }
     }
 
-    await sendTelegram(`✅ *Saveetha Bot is Online!*\nAll ${userSessions.size} account(s) are logged in and ready to book instantly!`);
+    // Optional: Keep-alive loop to prevent sessions from timing out
+    setInterval(async () => {
+        for (const [chatId, session] of userSessions.entries()) {
+            if (!session.isBusy) {
+                try {
+                    // Just refresh or check if still on booking page every 10 mins
+                    if (!session.persistentPage.url().includes('event-booking')) {
+                        await session.persistentPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'domcontentloaded' });
+                    }
+                } catch (e) {}
+            }
+        }
+    }, 600000); // Every 10 mins
+
+    await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${userSessions.size} accounts have a tab open and ready on the booking page.`);
 
     // Track active bookings
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page }
@@ -689,17 +717,29 @@ async function main() {
                             return;
                         }
 
-                        // Get user's pre-authenticated context — no login needed!
+                        // Get user's pre-authenticated session
                         const session = userSessions.get(fromChatId);
                         if (!session) {
                             await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
                             return;
                         }
-                        taskPage = await session.context.newPage();
+
+                        // Use the "Hot Tab" if it's not busy, otherwise open a temporary one
+                        let isUsingPersistent = false;
+                        if (!session.isBusy) {
+                            taskPage = session.persistentPage;
+                            session.isBusy = true;
+                            isUsingPersistent = true;
+                            console.log(`[Bot] Using Hot Tab for ${userConfig.name}`);
+                        } else {
+                            taskPage = await session.context.newPage();
+                            console.log(`[Bot] Hot Tab busy, opened temp tab for ${userConfig.name}`);
+                        }
+
                         taskPage._userConfig = userConfig;
                         task.page = taskPage;
 
-                        await sendTelegram(`🚀 *Booking has started!*\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}\nPlease wait...`, fromChatId);
+                        await sendTelegram(`🚀 *Booking has started!* (Using ${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}\nPlease wait...`, fromChatId);
                         
                         if (isScan) {
                             let scanCount = 1;
@@ -731,7 +771,17 @@ async function main() {
                         console.error(`[Bot] Task ${taskId} Error:`, err.message);
                         await sendTelegram(`❌ Error [${keyword}]: ${err.message}`, fromChatId);
                     } finally {
-                        if (taskPage) await taskPage.close().catch(() => {});
+                        // Only close the page if it's NOT the persistent "Hot Tab"
+                        const session = userSessions.get(fromChatId);
+                        if (taskPage) {
+                            if (session && taskPage === session.persistentPage) {
+                                session.isBusy = false;
+                                // Reset to booking page for next time
+                                await taskPage.goto('https://learner.saveetha.in/academicevents/event-booking/').catch(() => {});
+                            } else {
+                                await taskPage.close().catch(() => {});
+                            }
+                        }
                         activeTasks.delete(taskId);
                     }
                 })();
