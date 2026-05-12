@@ -36,13 +36,13 @@ function getUserConfig(chatId) {
 
 // ─── Telegram Helpers ────────────────────────────────────────────────────────
 
-async function sendTelegram(text) {
+async function sendTelegram(text, chatId = CHAT_ID) {
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
         const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: CHAT_ID, text, parse_mode: 'Markdown' })
+            body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
         });
         const data = await res.json();
         if (!data.ok) console.error('[Telegram] Error:', data.description);
@@ -52,10 +52,10 @@ async function sendTelegram(text) {
     }
 }
 
-async function sendTelegramPhoto(photoPath, caption) {
+async function sendTelegramPhoto(photoPath, caption, chatId = CHAT_ID) {
     try {
         const formData = new FormData();
-        formData.append('chat_id', CHAT_ID);
+        formData.append('chat_id', chatId);
         formData.append('caption', caption);
         const buffer = fs.readFileSync(photoPath);
         const blob = new Blob([buffer], { type: 'image/png' });
@@ -111,7 +111,7 @@ function getDelayMsUntil(timeStr) {
 
 // ─── Booking Logic ────────────────────────────────────────────────────────────
 
-async function runBookingOnPage(page, targetKeyword, targetTime, silent = false) {
+async function runBookingOnPage(page, targetKeyword, targetTime, silent = false, chatId = CHAT_ID) {
     console.log(`[Bot] Navigating to Event Booking page...`);
     await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
         waitUntil: 'domcontentloaded',
@@ -211,7 +211,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false)
             const availableMsg = availableSlots.length > 0
                 ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n')
                 : '\n\nNo slots are currently available on the page.';
-            await sendTelegram(`⚠️ No slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${availableMsg}`);
+            await sendTelegram(`⚠️ No slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${availableMsg}`, chatId);
         }
         return false;
     }
@@ -342,13 +342,14 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false)
     await page.screenshot({ path: tmpPath, fullPage: false });
     await sendTelegramPhoto(
         tmpPath,
-        `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`
+        `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`,
+        chatId
     );
     try { fs.unlinkSync(tmpPath); } catch (_) {}
     return true;
 }
 
-async function runUnbookingOnPage(page, targetKeyword, targetTime) {
+async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT_ID) {
     console.log(`[Bot] Navigating to Event Booking page for Unbooking...`);
     await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
         waitUntil: 'domcontentloaded',
@@ -405,7 +406,7 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime) {
     }, { kw: targetKeyword, time: targetTime });
 
     if (evaluation.slotsFound.length === 0) {
-        await sendTelegram(`⚠️ Could not find any booked slot matching *"${targetKeyword}"* to cancel.`);
+        await sendTelegram(`⚠️ Could not find any booked slot matching *"${targetKeyword}"* to cancel.`, chatId);
         return;
     }
 
@@ -439,7 +440,7 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime) {
 
         const tmpPath = path.join(__dirname, '_cancel_screenshot.png');
         await page.screenshot({ path: tmpPath });
-        await sendTelegramPhoto(tmpPath, `🛑 *Slot Cancelled Successfully!*\n\n🎯 Slot: ${targetKeyword}\n\nCancellation complete.`);
+        await sendTelegramPhoto(tmpPath, `🛑 *Slot Cancelled Successfully!*\n\n🎯 Slot: ${targetKeyword}\n\nCancellation complete.`, chatId);
         try { fs.unlinkSync(tmpPath); } catch (_) {}
     }
 }
@@ -517,14 +518,14 @@ async function main() {
                 // ── !status ──────────────────────────────────────────────
                 if (text === '!status') {
                     const count = activeTasks.size;
-                    await sendTelegram(`✅ Bot is running and logged in.\n${count > 0 ? `⏳ Currently processing ${count} booking(s).` : '🟢 Ready to book!'}`);
+                    await sendTelegram(`✅ Bot is running and logged in.\n${count > 0 ? `⏳ Currently processing ${count} booking(s).` : '🟢 Ready to book!'}`, fromChatId);
                     continue;
                 }
 
                 // ── !progress ─────────────────────────────────────────────
                 if (text === '!progress') {
                     if (activeTasks.size === 0) {
-                        await sendTelegram(`🟢 *No active bookings.*\nBot is idle and ready.`);
+                        await sendTelegram(`🟢 *No active bookings.*\nBot is idle and ready.`, fromChatId);
                     } else {
                         let statusMsg = `⏳ *Active Bookings (${activeTasks.size})*\n\n`;
                         activeTasks.forEach((task, id) => {
@@ -534,7 +535,7 @@ async function main() {
                                          `${task.startTime ? `⏱️ Start: ${task.startTime}\n` : ''}\n`;
                         });
                         statusMsg += `_To stop one: !stop <keyword>_`;
-                        await sendTelegram(statusMsg);
+                        await sendTelegram(statusMsg, fromChatId);
                     }
                     continue;
                 }
@@ -593,7 +594,7 @@ async function main() {
                 }
 
                 if (!keyword) {
-                    await sendTelegram(`⚠️ Please provide a keyword. Example: \`!book CAT\``);
+                    await sendTelegram(`⚠️ Please provide a keyword. Example: \`!book CAT\``, fromChatId);
                     continue;
                 }
 
@@ -616,7 +617,7 @@ async function main() {
                             const delayMs = getDelayMsUntil(startTime);
                             if (delayMs > 0) {
                                 const delayMins = Math.round(delayMs / 60000);
-                                await sendTelegram(`⏱️ *Timer Active [${keyword}]*\nWaiting ${delayMins} min(s) until ${startTime}.\n_You can still start other bookings!_`);
+                                await sendTelegram(`⏱️ *Timer Active [${keyword}]*\nWaiting ${delayMins} min(s) until ${startTime}.\n_You can still start other bookings!_`, fromChatId);
                                 task.phase = `Waiting until ${startTime}`;
                                 const endTime = Date.now() + delayMs;
                                 while (Date.now() < endTime) {
@@ -627,7 +628,7 @@ async function main() {
                         }
 
                         if (task.stopRequested) {
-                            await sendTelegram(`🛑 Task *${keyword}* was cancelled.`);
+                            await sendTelegram(`🛑 Task *${keyword}* was cancelled.`, fromChatId);
                             return;
                         }
 
@@ -642,9 +643,9 @@ async function main() {
                             let scanCount = 1;
                             while (!task.stopRequested) {
                                 task.phase = `Scanning (Check #${scanCount})`;
-                                if (scanCount === 1) await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*\nChecking every 60 seconds...`);
+                                if (scanCount === 1) await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*\nChecking every 60 seconds...`, fromChatId);
                                 
-                                const success = await runBookingOnPage(taskPage, keyword, targetTime, true);
+                                const success = await runBookingOnPage(taskPage, keyword, targetTime, true, fromChatId);
                                 if (success) break;
                                 
                                 scanCount++;
@@ -657,16 +658,16 @@ async function main() {
                             }
                         } else if (isUnbook) {
                             task.phase = 'Cancelling slot';
-                            await sendTelegram(`⏳ Processing Cancellation for *${keyword}*...`);
-                            await runUnbookingOnPage(taskPage, keyword, targetTime);
+                            await sendTelegram(`⏳ Processing Cancellation for *${keyword}*...`, fromChatId);
+                            await runUnbookingOnPage(taskPage, keyword, targetTime, fromChatId);
                         } else {
                             task.phase = 'Booking on portal';
-                            await sendTelegram(`⏳ Processing Booking for *${keyword}*...`);
-                            await runBookingOnPage(taskPage, keyword, targetTime);
+                            await sendTelegram(`⏳ Processing Booking for *${keyword}*...`, fromChatId);
+                            await runBookingOnPage(taskPage, keyword, targetTime, false, fromChatId);
                         }
                     } catch (err) {
                         console.error(`[Bot] Task ${taskId} Error:`, err.message);
-                        await sendTelegram(`❌ Error [${keyword}]: ${err.message}`);
+                        await sendTelegram(`❌ Error [${keyword}]: ${err.message}`, fromChatId);
                     } finally {
                         if (taskPage) await taskPage.close().catch(() => {});
                         activeTasks.delete(taskId);
