@@ -1062,14 +1062,14 @@ async function main() {
                             let scanCount = 1;
                             while (!task.stopRequested) {
                                 task.phase = `Scanning (Check #${scanCount})`;
-                                if (scanCount === 1) await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*\nChecking every 60 seconds...`, fromChatId);
+                                if (scanCount === 1) await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*\nChecking every 30 seconds... Use !stop to cancel.`, fromChatId);
                                 
                                 const success = await runBookingOnPage(taskPage, keyword, targetTime, true, fromChatId);
                                 if (success) break;
                                 
                                 scanCount++;
-                                // Wait 60 seconds before next scan
-                                for (let i = 0; i < 30; i++) {
+                                // Wait 30 seconds before next scan
+                                for (let i = 0; i < 15; i++) {
                                     if (task.stopRequested) break;
                                     await new Promise(r => setTimeout(r, 2000));
                                 }
