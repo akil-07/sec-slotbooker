@@ -676,11 +676,13 @@ async function main() {
                         }
 
                         taskPage = await context.newPage();
-                        taskPage._userConfig = userConfig; // Attach config to page for expiry handling
+                        taskPage._userConfig = userConfig;
                         task.page = taskPage;
 
                         // Perform login for this specific task page
+                        await sendTelegram(`🔐 Logging in for *${userConfig.name || keyword}*...`, fromChatId);
                         await doLogin(taskPage, userConfig.user, userConfig.pass);
+                        await sendTelegram(`🚀 *Booking has started!*\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}\nPlease wait...`, fromChatId);
                         
                         if (isScan) {
                             let scanCount = 1;
