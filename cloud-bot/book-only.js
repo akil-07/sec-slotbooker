@@ -538,7 +538,7 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
 
 async function doLogin(page, user, pass) {
     console.log(`[Bot] Logging in as ${user}...`);
-    await page.goto('https://learner.saveetha.in/login', { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     // Try multiple selectors for the username field
     const userSelectors = [
@@ -594,7 +594,7 @@ async function doLogin(page, user, pass) {
     }
     if (!clicked) await page.keyboard.press('Enter');
 
-    await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 }).catch(() => null);
+    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
     console.log('[Bot] Logged in. Current URL:', page.url());
 }
 
@@ -971,7 +971,7 @@ async function spawnUserSession(browser, chatId, config) {
         
         console.log(`[Bot] Preparing Hot Tab for ${config.name}...`);
         await hotPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { 
-            waitUntil: 'networkidle', 
+            waitUntil: 'domcontentloaded', 
             timeout: 60000 
         });
         
