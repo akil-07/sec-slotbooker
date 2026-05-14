@@ -614,33 +614,50 @@ async function fetchTimetable(context, config) {
             }
 
             // ── Strategy 0: Saveetha people_schedule labeled-card format (PRIMARY) ──
-            // We find specific card containers that contain both "SLOT :" and "VENUE :"
-            const allDivs = Array.from(document.querySelectorAll('div, section, article'));
-            const cards = allDivs.filter(el => {
-                const txt = el.innerText || '';
-                return /SLOT\s*:/i.test(txt) && /VENUE\s*:/i.test(txt) && txt.length < 800;
-            }).filter((el, index, self) => {
-                // Keep only leaf-most cards (no containers of other cards)
-                return !self.some((other, otherIdx) => index !== otherIdx && el.contains(other));
-            });
+            // Find all elements that contain BOTH "SLOT :" and "VENUE :" labels.
+            // Sort smallest-first so we get the most granular card element.
+            const allEls = Array.from(document.querySelectorAll('div, li, section, article, tr'));
+            const cardEls = allEls
+                .filter(el => {
+                    const txt = el.innerText || '';
+                    return /SLOT\s*:/i.test(txt) && /VENUE\s*:/i.test(txt);
+                })
+                .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
 
-            for (const card of cards) {
+            // De-duplicate: skip elements that contain a previously selected card
+            const selectedCards = [];
+            for (const el of cardEls) {
+                if (!selectedCards.some(prev => el.contains(prev))) {
+                    selectedCards.push(el);
+                }
+            }
+
+            for (const card of selectedCards) {
                 const lines = (card.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
-                let v = '', s = '', tInfo = null, subj = '';
+                let venue = '', slotCode = '', timeInfo = null, subject = '';
 
                 for (const line of lines) {
                     if (/^VENUE\s*:/i.test(line)) {
-                        v = line.replace(/^VENUE\s*:\s*/i, '').trim();
+                        venue = line.replace(/^VENUE\s*:\s*/i, '').trim();
                     } else if (/^SLOT\s*:/i.test(line)) {
-                        s = line.replace(/^SLOT\s*:\s*/i, '').trim();
-                    } else if (/(AM|PM)/i.test(line) && !tInfo) {
-                        tInfo = parseTime(line);
-                    } else if (line.length > 5 && !/MAY|2026|MON|TUE|WED|THU|FRI|SAT|SUN|VIEW|ATTENDANCE/i.test(line)) {
-                        if (!subj) subj = line;
+                        slotCode = line.replace(/^SLOT\s*:\s*/i, '').trim();
+                    } else if (/(AM|PM)/i.test(line) && !timeInfo) {
+                        timeInfo = parseTime(line);
+                    } else if (line.length > 5 &&
+                        !/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{4}$/i.test(line) &&
+                        !/^(MON|TUE|WED|THU|FRI|SAT|SUN)$/i.test(line) &&
+                        !/VIEW\s*ATTENDANCE/i.test(line)) {
+                        if (!subject) subject = line;
                     }
                 }
-                if (tInfo && (subj || v)) {
-                    results.push({ slot: subj || 'Class', venue: v || 'N/A', ...tInfo, hasToday: true });
+
+                if (timeInfo && (subject || venue)) {
+                    results.push({
+                        slot: subject || 'Class',
+                        venue: venue || 'N/A',
+                        ...timeInfo,
+                        hasToday: true
+                    });
                 }
             }
 
