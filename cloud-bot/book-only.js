@@ -613,32 +613,123 @@ async function fetchTimetable(context, config) {
                 return { hour: h, minute: min, timeStr: timeText.trim() };
             }
 
-            // Strategy 1: Look for table rows with time, slot and venue columns
+            // ── Strategy 0: Saveetha people_schedule labeled-card format (PRIMARY) ──
+            // Cards look like:
+            //   19MA201 – Calculus and Matrix Algebra
+            //   SLOT : 25EJ2150
+            //   01:00 PM - 02:59 PM
+            //   VENUE : 5613
+            // We find elements containing "VENUE :" and extract the value after the colon.
+            const allEls = Array.from(document.querySelectorAll('*'));
+            const venueEls = allEls.filter(el => {
+                const txt = (el.innerText || '').trim();
+                return /VENUE\s*:/i.test(txt) && txt.length < 200;
+            });
+
+            for (const venueEl of venueEls) {
+                const venueText = (venueEl.innerText || '')
+                    .replace(/.*VENUE\s*:\s*/i, '')
+                    .split('\n')[0]
+                    .trim();
+                if (!venueText) continue;
+
+                // Walk up to card container (must have SLOT: and AM/PM time)
+                let card = venueEl.parentElement;
+                for (let d = 0; d < 8; d++) {
+                    if (!card || card === document.body) break;
+                    const ct = card.innerText || '';
+                    if (/SLOT\s*:/i.test(ct) && /(AM|PM)/i.test(ct)) break;
+                    card = card.parentElement;
+                }
+                if (!card || card === document.body) continue;
+
+                const cardText = card.innerText || '';
+                const lines = cardText.split('\n').map(l => l.trim()).filter(Boolean);
+
+                // Subject = first line that is not a label or time line
+                const subject = lines.find(l =>
+                    l.length > 5 &&
+                    !/^SLOT\s*:/i.test(l) &&
+                    !/^VENUE\s*:/i.test(l) &&
+                    !/(AM|PM)/i.test(l)
+                ) || 'Class';
+
+                // Time = first line containing AM or PM
+                const timeLine = lines.find(l => /(AM|PM)/i.test(l));
+                const timeInfo = timeLine ? parseTime(timeLine) : null;
+                if (!timeInfo) continue;
+
+                results.push({ slot: subject, venue: venueText, ...timeInfo, hasToday: true });
+            }
+
+            // ── Strategy 1: Table rows (fallback) ─────────────────────────────────
             const tables = document.querySelectorAll('table');
             for (const table of tables) {
                 const rows = table.querySelectorAll('tr');
+
+                // First pass: detect which column index is the venue column from headers
+                let venueColIndex = -1;
+                let slotColIndex = -1;
+                let timeColIndex = -1;
+                const headerRow = table.querySelector('tr:first-child');
+                if (headerRow) {
+                    const headers = Array.from(headerRow.querySelectorAll('th, td'))
+                        .map(c => c.innerText.trim().toLowerCase());
+                    headers.forEach((h, i) => {
+                        if (/venue|location|room|place|hall/i.test(h)) venueColIndex = i;
+                        if (/slot|subject|course|class|title|module/i.test(h)) slotColIndex = i;
+                        if (/time|period|hour/i.test(h)) timeColIndex = i;
+                    });
+                }
+
                 for (const row of rows) {
                     const cells = Array.from(row.querySelectorAll('td, th')).map(c => c.innerText.trim());
                     if (cells.length < 2) continue;
                     const rowText = cells.join(' ').toLowerCase();
 
+                    // Skip header rows
+                    if (row.querySelectorAll('th').length === cells.length) continue;
+
                     // Check if this row relates to today (day name or date)
                     const hasToday = rowText.includes(todayStr) || rowText.includes(todayDate) ||
                         rowText.includes(today.getDate() + '/');
 
-                    // Find the time cell
                     let timeInfo = null;
                     let slot = '';
                     let venue = '';
 
-                    for (let i = 0; i < cells.length; i++) {
-                        const t = parseTime(cells[i]);
-                        if (t && !timeInfo) { timeInfo = t; continue; }
-                        // Heuristic: venue usually contains "hall", "room", "lab", "block", digits
-                        if (/hall|room|lab|block|floor|\d{2,}/i.test(cells[i]) && !venue) {
-                            venue = cells[i];
-                        } else if (cells[i].length > 3 && cells[i].length < 120 && !slot && i > 0) {
-                            slot = cells[i];
+                    // Use detected column indices if available
+                    if (venueColIndex >= 0 && venueColIndex < cells.length) {
+                        venue = cells[venueColIndex];
+                    }
+                    if (slotColIndex >= 0 && slotColIndex < cells.length) {
+                        slot = cells[slotColIndex];
+                    }
+                    if (timeColIndex >= 0 && timeColIndex < cells.length) {
+                        timeInfo = parseTime(cells[timeColIndex]);
+                    }
+
+                    // Fallback: scan all cells for time, slot, venue heuristically
+                    if (!timeInfo || !slot) {
+                        for (let i = 0; i < cells.length; i++) {
+                            const t = parseTime(cells[i]);
+                            if (t && !timeInfo) { timeInfo = t; continue; }
+                            // Broadened venue keywords: also catch names like AB1, MB Block, IT Dept, B1, etc.
+                            if (!venue && /hall|room|lab|block|floor|dept|building|wing|annex|\bab\b|\bmb\b|\bit\b|\b[a-z]?\d{1,4}\b/i.test(cells[i]) && cells[i].length < 60) {
+                                venue = cells[i];
+                            } else if (!slot && cells[i].length > 3 && cells[i].length < 120 && i > 0) {
+                                slot = cells[i];
+                            }
+                        }
+                        // Last resort: if still no venue, grab the last unused cell
+                        if (!venue && cells.length >= 3) {
+                            for (let i = cells.length - 1; i >= 0; i--) {
+                                const c = cells[i];
+                                if (c && c !== slot && !parseTime(c) && c.length < 80) {
+                                    venue = c;
+                                    break;
+                                }
+                            }
                         }
                     }
 
@@ -648,41 +739,28 @@ async function fetchTimetable(context, config) {
                 }
             }
 
-            // Strategy 2: Generic cards/divs if no table found
+            // ── Strategy 2: Generic class/schedule divs (last resort) ─────────────
             if (results.length === 0) {
                 const cards = document.querySelectorAll(
                     '[class*="schedule"], [class*="timetable"], [class*="slot"], [class*="class"], [class*="period"], [class*="event"]'
                 );
                 for (const card of cards) {
                     const text = card.innerText || '';
-                    const timeMatch = text.match(/(\d{1,2})[.:](\d{2})\s*(AM|PM)/i);
+                    const timeMatch = text.match(/(\d{1,2})[.:] ?(\d{2})\s*(AM|PM)/i);
                     if (!timeMatch) continue;
                     const t = parseTime(timeMatch[0]);
                     if (!t) continue;
                     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-                    const slot = lines[0] || 'Class';
-                    const venueLine = lines.find(l => /hall|room|lab|block|floor|\d{2,}/i.test(l));
-                    results.push({ slot, venue: venueLine || 'N/A', ...t, hasToday: true });
-                }
-            }
-
-            // Strategy 3: Brute-force scan all visible text nodes for time + context
-            if (results.length === 0) {
-                const allEls = document.querySelectorAll('*');
-                for (const el of allEls) {
-                    if (el.children.length > 0) continue; // leaf nodes only
-                    const text = (el.innerText || '').trim();
-                    const timeMatch = text.match(/^(\d{1,2})[.:](\d{2})\s*(AM|PM)/i);
-                    if (!timeMatch) continue;
-                    const t = parseTime(timeMatch[0]);
-                    if (!t) continue;
-                    // grab sibling/parent context
-                    const parent = el.parentElement;
-                    const parentText = parent ? parent.innerText.trim() : text;
-                    const lines = parentText.split('\n').map(l => l.trim()).filter(Boolean);
-                    const slot = lines.find(l => l.length > 5 && !parseTime(l)) || 'Class';
-                    const venueLine = lines.find(l => /hall|room|lab|block|floor|\d{2,}/i.test(l));
-                    results.push({ slot, venue: venueLine || 'N/A', ...t, hasToday: true });
+                    // Prefer labeled fields if present
+                    const vLabel = lines.find(l => /^VENUE\s*:/i.test(l));
+                    const sLabel = lines.find(l => /^SLOT\s*:/i.test(l));
+                    const venue = vLabel
+                        ? vLabel.replace(/^VENUE\s*:\s*/i, '').trim()
+                        : (lines.find(l => /hall|room|lab|block|floor|dept/i.test(l) && l !== lines[0]) || 'N/A');
+                    const slot = sLabel
+                        ? sLabel.replace(/^SLOT\s*:\s*/i, '').trim()
+                        : (lines.find(l => l.length > 5 && !/(AM|PM)/i.test(l)) || 'Class');
+                    results.push({ slot, venue, ...t, hasToday: true });
                 }
             }
 
@@ -832,14 +910,15 @@ function startTimetableSchedulers(userSessions) {
                     const h = s.hour % 12 || 12;
                     const period = s.hour < 12 ? 'AM' : 'PM';
                     const minStr = String(s.minute).padStart(2, '0');
+                    const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : '(Venue not found — check timetable)';
                     const msg =
                         `⏰ *Class Reminder — 15 Minutes!*\n\n` +
                         `📚 *${s.slot}*\n` +
                         `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
-                        `📍 Venue: *${s.venue}*\n\n` +
+                        `📍 Venue: *${venueDisplay}*\n\n` +
                         `_Get ready! Class starts in 15 minutes. 🚀_`;
                     await sendTelegram(msg, chatId);
-                    console.log(`[Scheduler] Reminder sent for "${s.slot}" to ${session.config.name}`);
+                    console.log(`[Scheduler] Reminder sent for "${s.slot}" (venue: ${venueDisplay}) to ${session.config.name}`);
                 } catch (err) {
                     console.error(`[Scheduler] Reminder error:`, err.message);
                 }
