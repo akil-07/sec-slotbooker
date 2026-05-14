@@ -15,16 +15,18 @@ const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || process.env.CHAT_ID || '63748
 // User Registry
 let ACCOUNTS = {};
 let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, isBusy }
+let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
 
 // ─── Gist Persistence Logic ──────────────────────────────────────────────────
 
 async function loadGist() {
-    if (!GIST_TOKEN || !GIST_ID_ENV) {
-        console.log('[Gist] GIST_TOKEN or GIST_ID not set. Runtime users will not persist.');
+    if (!GIST_TOKEN || !GIST_ID_ENV || !apiRequest) {
+        if (!apiRequest) console.log('[Gist] API Request context not ready.');
+        else console.log('[Gist] GIST_TOKEN or GIST_ID not set. Runtime users will not persist.');
         return {};
     }
     try {
-        const res = await fetch(`https://api.github.com/gists/${GIST_ID_ENV}`, {
+        const res = await apiRequest.get(`https://api.github.com/gists/${GIST_ID_ENV}`, {
             headers: { 'Authorization': `token ${GIST_TOKEN}` }
         });
         const data = await res.json();
@@ -38,17 +40,16 @@ async function loadGist() {
 }
 
 async function updateGist(users) {
-    if (!GIST_TOKEN || !GIST_ID_ENV) return;
+    if (!GIST_TOKEN || !GIST_ID_ENV || !apiRequest) return;
     try {
-        await fetch(`https://api.github.com/gists/${GIST_ID_ENV}`, {
-            method: 'PATCH',
+        await apiRequest.patch(`https://api.github.com/gists/${GIST_ID_ENV}`, {
             headers: { 
                 'Authorization': `token ${GIST_TOKEN}`,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
+            data: {
                 files: { 'users.json': { content: JSON.stringify(users, null, 2) } }
-            })
+            }
         });
         console.log('[Gist] Updated successfully.');
     } catch (e) {
@@ -82,12 +83,11 @@ function getUserConfig(chatId) {
 // ─── Telegram Helpers ────────────────────────────────────────────────────────
 
 async function sendTelegram(text, chatId = CHAT_ID) {
+    if (!apiRequest) return;
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
+        const res = await apiRequest.post(url, {
+            data: { chat_id: chatId, text, parse_mode: 'Markdown' }
         });
         const data = await res.json();
         if (!data.ok) console.error('[Telegram] Error:', data.description);
@@ -98,15 +98,20 @@ async function sendTelegram(text, chatId = CHAT_ID) {
 }
 
 async function sendTelegramPhoto(photoPath, caption, chatId = CHAT_ID) {
+    if (!apiRequest) return;
     try {
-        const formData = new FormData();
-        formData.append('chat_id', chatId);
-        formData.append('caption', caption);
-        const buffer = fs.readFileSync(photoPath);
-        const blob = new Blob([buffer], { type: 'image/png' });
-        formData.append('photo', blob, 'screenshot.png');
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
-        const res = await fetch(url, { method: 'POST', body: formData });
+        const res = await apiRequest.post(url, {
+            multipart: {
+                chat_id: chatId,
+                caption: caption,
+                photo: {
+                    name: 'screenshot.png',
+                    mimeType: 'image/png',
+                    buffer: fs.readFileSync(photoPath)
+                }
+            }
+        });
         const data = await res.json();
         if (!data.ok) console.error('[Telegram] Photo error:', data.description);
         else console.log('[Telegram] Photo sent.');
@@ -116,9 +121,10 @@ async function sendTelegramPhoto(photoPath, caption, chatId = CHAT_ID) {
 }
 
 async function getTelegramUpdates(offset) {
+    if (!apiRequest) return [];
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=30&offset=${offset}`;
-        const res = await fetch(url);
+        const res = await apiRequest.get(url);
         const data = await res.json();
         if (!data.ok) return [];
         return data.result || [];
@@ -1075,6 +1081,9 @@ async function main() {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
+
+    // Initialize global API request context to bypass Node's fetch blocks
+    apiRequest = await browser.newContext().then(ctx => ctx.request);
 
     // Pre-login each user and keep a "Hot Tab" ready on the booking page
     await initAccounts();
