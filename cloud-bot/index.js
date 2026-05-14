@@ -188,19 +188,18 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                 
                 const fullTextRaw = card ? card.innerText : btn.innerText;
                 const fullTextNorm = normalize(fullTextRaw);
-                const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
-                const isWaitlist = btnText.includes('waitlist');
-
-                // Extract a summary for available slots
-                let summary = fullTextRaw.replace(/\n+/g, ' | ').trim();
-                if (summary.length > 80) summary = summary.substring(0, 80) + '...';
-                allAvailable.push(summary);
-
-                let matchKeyword = !kwNorm || fullTextNorm.includes(kwNorm);
-                let matchTime = !timeNorm || fullTextNorm.includes(timeNorm);
+                // ⛔ Check "Opening Soon" or "Already Booked" status
+                const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
+                const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');
 
                 if (matchKeyword && matchTime) {
-                    results.push({ index: i, fullText: fullTextNorm, isWaitlist });
+                    if (isOpeningSoon) {
+                        results.push({ index: i, fullText: fullTextNorm, isWaitlist, isOpeningSoon: true });
+                    } else if (isAlreadyBooked) {
+                        results.push({ index: i, fullText: fullTextNorm, isWaitlist, isAlreadyBooked: true });
+                    } else {
+                        results.push({ index: i, fullText: fullTextNorm, isWaitlist });
+                    }
                 }
             }
             return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
@@ -209,8 +208,11 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
         const slotsFound = evaluation.slotsFound;
         const availableSlots = evaluation.availableSlots;
 
-        if (slotsFound.length > 0) {
-            console.log(`[Playwright] Match found: ${slotsFound[0].fullText.substring(0, 60)}...`);
+        // Filter out non-bookable results for the actual booking logic, but keep them for reporting
+        const bookableSlots = slotsFound.filter(s => !s.isOpeningSoon && !s.isAlreadyBooked);
+
+        if (bookableSlots.length > 0) {
+            console.log(`[Playwright] Match found: ${bookableSlots[0].fullText.substring(0, 60)}...`);
                 
                 // Tag the button and its card with data attributes using evaluate
                 const tagged = await page.evaluate((targetData) => {
@@ -274,7 +276,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                     }
                     
                     return { success: true, purposeFound };
-                }, slotsFound[0]);
+                }, bookableSlots[0]);
                 
                 console.log(`[Playwright] Tag result: success=${tagged.success}, purposeFound=${tagged.purposeFound}`);
 
@@ -344,11 +346,23 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                     message.reply(`⚠️ Found the slot but failed to book: ${tagged.reason}`);
                 }
         } else {
-            console.log('[Playwright] No slot found.');
-            const availableMsg = availableSlots.length > 0 
-                ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n') 
-                : '\n\nNo slots are currently available on the page.';
-            message.reply(`⚠️ No slot found for "${targetKeyword}"${targetTime ? ` at ${targetTime}` : ''}.${availableMsg}`);
+            console.log('[Playwright] No bookable slot found.');
+            let reasonMsg = '';
+            const openingSoon = slotsFound.find(s => s.isOpeningSoon);
+            const alreadyBooked = slotsFound.find(s => s.isAlreadyBooked);
+
+            if (openingSoon) {
+                reasonMsg = `\n\n🕒 *Status:* Found the slot, but it says "Opening Soon".`;
+            } else if (alreadyBooked) {
+                reasonMsg = `\n\n✅ *Status:* You are already booked/registered for this slot.`;
+            } else {
+                const displayedSlots = availableSlots.slice(0, 15);
+                const moreCount = availableSlots.length - displayedSlots.length;
+                reasonMsg = availableSlots.length > 0 
+                    ? `\n\n*Available Slots:*\n` + displayedSlots.map(s => `- ${s}`).join('\n') + (moreCount > 0 ? `\n_...and ${moreCount} more slots_` : '')
+                    : '\n\nNo slots are currently available on the page.';
+            }
+            message.reply(`⚠️ No bookable slot found for "${targetKeyword}"${targetTime ? ` at ${targetTime}` : ''}.${reasonMsg}`);
         }
         
     } catch (err) {

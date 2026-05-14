@@ -258,15 +258,18 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
                 matchVenue = fullTextNorm.includes(venueNorm);
             }
 
-            // ⛔ Skip "Opening Soon" cards — not bookable yet
+            // ⛔ Check "Opening Soon" or "Already Booked" status
             const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
-            if (isOpeningSoon) {
-                // Still track it for the "available" summary but don't try to book it
-                continue;
-            }
+            const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');
 
             if (matchKeyword && matchTime && matchVenue) {
-                results.push({ index: i, fullText: fullTextNorm, isWaitlist });
+                if (isOpeningSoon) {
+                    results.push({ index: i, fullText: fullTextNorm, isWaitlist, isOpeningSoon: true });
+                } else if (isAlreadyBooked) {
+                    results.push({ index: i, fullText: fullTextNorm, isWaitlist, isAlreadyBooked: true });
+                } else {
+                    results.push({ index: i, fullText: fullTextNorm, isWaitlist });
+                }
             }
         }
         return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
@@ -275,18 +278,34 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
     const slotsFound = evaluation.slotsFound;
     const availableSlots = evaluation.availableSlots;
 
-    if (slotsFound.length === 0) {
-        console.log('[Bot] No slot found.');
+    // Filter out non-bookable results for the actual booking logic, but keep them for reporting
+    const bookableSlots = slotsFound.filter(s => !s.isOpeningSoon && !s.isAlreadyBooked);
+
+    if (bookableSlots.length === 0) {
+        console.log('[Bot] No bookable slot found.');
         if (!silent) {
-            const availableMsg = availableSlots.length > 0
-                ? `\n\n*Available Slots:*\n` + availableSlots.map(s => `- ${s}`).join('\n')
-                : '\n\nNo slots are currently available on the page.';
-            await sendTelegram(`⚠️ No slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${availableMsg}`, chatId);
+            let reasonMsg = '';
+            const openingSoon = slotsFound.find(s => s.isOpeningSoon);
+            const alreadyBooked = slotsFound.find(s => s.isAlreadyBooked);
+
+            if (openingSoon) {
+                reasonMsg = `\n\n🕒 *Status:* Found the slot, but it says "Opening Soon".`;
+            } else if (alreadyBooked) {
+                reasonMsg = `\n\n✅ *Status:* You are already booked/registered for this slot.`;
+            } else {
+                const displayedSlots = availableSlots.slice(0, 15);
+                const moreCount = availableSlots.length - displayedSlots.length;
+                reasonMsg = availableSlots.length > 0
+                    ? `\n\n*Available Slots:*\n` + displayedSlots.map(s => `- ${s}`).join('\n') + (moreCount > 0 ? `\n_...and ${moreCount} more slots_` : '')
+                    : '\n\nNo slots are currently available on the page.';
+            }
+
+            await sendTelegram(`⚠️ No bookable slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${reasonMsg}`, chatId);
         }
         return false;
     }
 
-    console.log(`[Bot] Match found: ${slotsFound[0].fullText.substring(0, 60)}...`);
+    console.log(`[Bot] Match found: ${bookableSlots[0].fullText.substring(0, 60)}...`);
 
     const tagged = await page.evaluate((targetData) => {
         document.querySelectorAll('[data-saveetha-btn],[data-saveetha-input]').forEach(el => {
@@ -351,8 +370,8 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
     }, slotsFound[0]);
 
     if (!tagged.success) {
-        await sendTelegram(`⚠️ Found the slot but failed to tag it: ${tagged.reason}`);
-        return;
+        await sendTelegram(`⚠️ Found the slot but failed to tag it: ${tagged.reason}`, chatId);
+        return false;
     }
 
     const bookBtn = page.locator('[data-saveetha-btn="target"]');
@@ -1379,10 +1398,18 @@ async function main() {
                                         console.log(`[Bot] Scan #${scanCount}: Slot found and booked for "${keyword}"`);
                                         break;
                                     }
-                                    console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 30s...`);
+                                    if (scanCount === 1) {
+                                        console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", reporting to user...`);
+                                        // On first fail, we send a notification so the user knows it's not there yet
+                                        await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
+                                    } else {
+                                        console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 30s...`);
+                                    }
                                 } catch (scanErr) {
                                     console.error(`[Bot] Scan #${scanCount} error for "${keyword}":`, scanErr.message);
-                                    // Don't break — just log and retry after 30s
+                                    if (scanCount === 1) {
+                                        await sendTelegram(`❌ Error during initial scan: ${scanErr.message}`, fromChatId);
+                                    }
                                 }
 
                                 scanCount++;
