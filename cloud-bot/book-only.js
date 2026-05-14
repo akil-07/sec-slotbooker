@@ -252,6 +252,13 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false,
                 matchTime = startTime === timeNorm;
             }
 
+            // ⛔ Skip "Opening Soon" cards — not bookable yet
+            const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
+            if (isOpeningSoon) {
+                // Still track it for the "available" summary but don't try to book it
+                continue;
+            }
+
             if (matchKeyword && matchTime) {
                 results.push({ index: i, fullText: fullTextNorm, isWaitlist });
             }
