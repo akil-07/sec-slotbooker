@@ -1,0 +1,6 @@
+node_modules/
+.env
+_tmp_screenshot.png
+_cancel_screenshot.png
+.wwebjs_auth/
+.wwebjs_cache/

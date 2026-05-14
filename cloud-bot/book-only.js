@@ -10,7 +10,7 @@ const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
 const ACCOUNTS_JSON = process.env.ACCOUNTS_JSON;
 const GIST_TOKEN = process.env.GIST_TOKEN;
 const GIST_ID_ENV = process.env.GIST_ID;
-const ADMIN_CHAT_ID = '6374825608';
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || process.env.CHAT_ID || '6374825608';
 
 // User Registry
 let ACCOUNTS = {};
