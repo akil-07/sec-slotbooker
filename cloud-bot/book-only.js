@@ -156,7 +156,7 @@ function getDelayMsUntil(timeStr) {
 
 // ─── Booking Logic ────────────────────────────────────────────────────────────
 
-async function runBookingOnPage(page, targetKeyword, targetTime, silent = false, chatId = CHAT_ID) {
+async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, silent = false, chatId = CHAT_ID) {
     console.log(`[Bot] Navigating to Event Booking page...`);
     await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
         waitUntil: 'domcontentloaded',
@@ -175,10 +175,10 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false,
         });
     }
 
-    console.log(`[Bot] Scanning for slots matching: "${targetKeyword}"${targetTime ? ` at "${targetTime}"` : ''}...`);
+    console.log(`[Bot] Scanning for slots matching: "${targetKeyword}"${targetTime ? ` at "${targetTime}"` : ''}${targetVenue ? ` in "${targetVenue}"` : ''}...`);
 
     const evaluation = await page.evaluate((params) => {
-        const { kw, time } = params;
+        const { kw, time, venue } = params;
         const results = [];
         const allAvailable = [];
         const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
@@ -207,6 +207,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false,
 
         const kwNorm = normalize(kw);
         const timeNorm = normalize(time);
+        const venueNorm = normalize(venue);
 
         for (let i = 0; i < btns.length; i++) {
             const btn = btns[i];
@@ -252,6 +253,11 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false,
                 matchTime = startTime === timeNorm;
             }
 
+            let matchVenue = true;
+            if (venueNorm) {
+                matchVenue = fullTextNorm.includes(venueNorm);
+            }
+
             // ⛔ Skip "Opening Soon" cards — not bookable yet
             const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
             if (isOpeningSoon) {
@@ -259,12 +265,12 @@ async function runBookingOnPage(page, targetKeyword, targetTime, silent = false,
                 continue;
             }
 
-            if (matchKeyword && matchTime) {
+            if (matchKeyword && matchTime && matchVenue) {
                 results.push({ index: i, fullText: fullTextNorm, isWaitlist });
             }
         }
         return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
-    }, { kw: targetKeyword, time: targetTime });
+    }, { kw: targetKeyword, time: targetTime, venue: targetVenue });
 
     const slotsFound = evaluation.slotsFound;
     const availableSlots = evaluation.availableSlots;
@@ -1114,6 +1120,7 @@ async function main() {
                         `*Booking Commands:*\n` +
                         `\`!book <keyword>\` — Book immediately\n` +
                         `\`!book <keyword> @ 10:00 AM\` — Target specific time\n` +
+                        `\`!book <keyword> $ 5511\` — Target specific room/venue\n` +
                         `\`!book <keyword> # 06:00 PM\` — Start scanning at 6 PM IST\n` +
                         `\`!scan <keyword>\` — Scan every 30s until found\n` +
                         `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
@@ -1276,12 +1283,18 @@ async function main() {
                 // Parse command
                 let keyword = text.substring(isUnbook ? 7 : (isScan ? 5 : 5)).trim();
                 let targetTime = '';
+                let targetVenue = '';
                 let startTime = '';
 
                 if (keyword.includes('#')) {
                     const parts = keyword.split('#');
                     keyword = parts[0].trim();
                     startTime = parts[1].trim();
+                }
+                if (keyword.includes('$')) {
+                    const parts = keyword.split('$');
+                    keyword = parts[0].trim();
+                    targetVenue = parts[1].trim();
                 }
                 if (keyword.includes('@')) {
                     const parts = keyword.split('@');
@@ -1296,14 +1309,14 @@ async function main() {
 
                 const taskId = ++taskIdCounter;
                 const task = { 
-                    keyword, targetTime, startTime, 
+                    keyword, targetTime, targetVenue, startTime, 
                     phase: 'Initializing', 
                     stopRequested: false,
                     page: null 
                 };
                 activeTasks.set(taskId, task);
 
-                console.log(`[Bot] New Task [${taskId}]: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${startTime ? ` # ${startTime}` : ''}`);
+                console.log(`[Bot] New Task [${taskId}]: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${targetVenue ? ` $ ${targetVenue}` : ''}${startTime ? ` # ${startTime}` : ''}`);
 
                 // Run booking in background (don't block the poll loop)
                 (async () => {
@@ -1350,7 +1363,7 @@ async function main() {
                         taskPage._userConfig = userConfig;
                         task.page = taskPage;
 
-                        await sendTelegram(`🚀 *Booking has started!* (Using ${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}\nPlease wait...`, fromChatId);
+                        await sendTelegram(`🚀 *Booking has started!* (Using ${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
                         
                         if (isScan) {
                             let scanCount = 1;
@@ -1361,7 +1374,7 @@ async function main() {
                                 }
 
                                 try {
-                                    const success = await runBookingOnPage(taskPage, keyword, targetTime, true, fromChatId);
+                                    const success = await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, true, fromChatId);
                                     if (success) {
                                         console.log(`[Bot] Scan #${scanCount}: Slot found and booked for "${keyword}"`);
                                         break;
@@ -1386,7 +1399,7 @@ async function main() {
                         } else {
                             task.phase = 'Booking on portal';
                             await sendTelegram(`⏳ Processing Booking for *${keyword}*...`, fromChatId);
-                            await runBookingOnPage(taskPage, keyword, targetTime, false, fromChatId);
+                            await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
                         }
                     } catch (err) {
                         console.error(`[Bot] Task ${taskId} Error:`, err.message);
