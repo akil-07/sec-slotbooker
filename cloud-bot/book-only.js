@@ -1349,18 +1349,28 @@ async function main() {
                             let scanCount = 1;
                             while (!task.stopRequested) {
                                 task.phase = `Scanning (Check #${scanCount})`;
-                                if (scanCount === 1) await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*\nChecking every 30 seconds... Use !stop to cancel.`, fromChatId);
-                                
-                                const success = await runBookingOnPage(taskPage, keyword, targetTime, true, fromChatId);
-                                if (success) break;
-                                
+                                if (scanCount === 1) {
+                                    await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*\nChecking every 30 seconds... Use \`!stop\` to cancel.`, fromChatId);
+                                }
+
+                                try {
+                                    const success = await runBookingOnPage(taskPage, keyword, targetTime, true, fromChatId);
+                                    if (success) {
+                                        console.log(`[Bot] Scan #${scanCount}: Slot found and booked for "${keyword}"`);
+                                        break;
+                                    }
+                                    console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 30s...`);
+                                } catch (scanErr) {
+                                    console.error(`[Bot] Scan #${scanCount} error for "${keyword}":`, scanErr.message);
+                                    // Don't break — just log and retry after 30s
+                                }
+
                                 scanCount++;
-                                // Wait 30 seconds before next scan
+                                // Wait 30 seconds before next scan (check stopRequested every 2s)
                                 for (let i = 0; i < 15; i++) {
                                     if (task.stopRequested) break;
                                     await new Promise(r => setTimeout(r, 2000));
                                 }
-                                if (task.stopRequested) break;
                             }
                         } else if (isUnbook) {
                             task.phase = 'Cancelling slot';
