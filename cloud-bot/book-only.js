@@ -801,9 +801,10 @@ function formatTimetable(slots, name) {
         const h = s.hour % 12 || 12;
         const period = s.hour < 12 ? 'AM' : 'PM';
         const minStr = String(s.minute).padStart(2, '0');
+        const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : 'N/A (Check Portal)';
         msg += `🕐 *${h}:${minStr} ${period}*\n`;
         msg += `📚 ${s.slot}\n`;
-        msg += `📍 ${s.venue}\n\n`;
+        msg += `📍 Venue: *${venueDisplay}*\n\n`;
     }
     msg += `_Have a productive day! 💪_`;
     return msg;
@@ -1016,7 +1017,13 @@ function scheduleSlotReminders(chatId, session, slots) {
                 const h = s.hour % 12 || 12;
                 const period = s.hour < 12 ? 'AM' : 'PM';
                 const minStr = String(s.minute).padStart(2, '0');
-                const msg = `⏰ *Class Reminder — 15 Minutes!*\n\n📚 *${s.slot}*\n🕐 Starts at: *${h}:${minStr} ${period}*\n📍 Venue: *${s.venue}*`;
+                const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : 'N/A (Check Portal)';
+                const msg = 
+                    `⏰ *Class Reminder — 15 Minutes!*\n\n` +
+                    `📚 *${s.slot}*\n` +
+                    `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
+                    `📍 Venue: *${venueDisplay}*\n\n` +
+                    `_Get ready! Class starts in 15 minutes. 🚀_`;
                 await sendTelegram(msg, chatId);
             } catch (err) {}
         }, delay);
