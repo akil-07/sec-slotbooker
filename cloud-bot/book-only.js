@@ -614,52 +614,34 @@ async function fetchTimetable(context, config) {
             }
 
             // ── Strategy 0: Saveetha people_schedule labeled-card format (PRIMARY) ──
-            // Cards look like:
-            //   19MA201 – Calculus and Matrix Algebra
-            //   SLOT : 25EJ2150
-            //   01:00 PM - 02:59 PM
-            //   VENUE : 5613
-            // We find elements containing "VENUE :" and extract the value after the colon.
-            const allEls = Array.from(document.querySelectorAll('*'));
-            const venueEls = allEls.filter(el => {
-                const txt = (el.innerText || '').trim();
-                return /VENUE\s*:/i.test(txt) && txt.length < 200;
+            // We find specific card containers that contain both "SLOT :" and "VENUE :"
+            const allDivs = Array.from(document.querySelectorAll('div, section, article'));
+            const cards = allDivs.filter(el => {
+                const txt = el.innerText || '';
+                return /SLOT\s*:/i.test(txt) && /VENUE\s*:/i.test(txt) && txt.length < 800;
+            }).filter((el, index, self) => {
+                // Keep only leaf-most cards (no containers of other cards)
+                return !self.some((other, otherIdx) => index !== otherIdx && el.contains(other));
             });
 
-            for (const venueEl of venueEls) {
-                const venueText = (venueEl.innerText || '')
-                    .replace(/.*VENUE\s*:\s*/i, '')
-                    .split('\n')[0]
-                    .trim();
-                if (!venueText) continue;
+            for (const card of cards) {
+                const lines = (card.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
+                let v = '', s = '', tInfo = null, subj = '';
 
-                // Walk up to card container (must have SLOT: and AM/PM time)
-                let card = venueEl.parentElement;
-                for (let d = 0; d < 8; d++) {
-                    if (!card || card === document.body) break;
-                    const ct = card.innerText || '';
-                    if (/SLOT\s*:/i.test(ct) && /(AM|PM)/i.test(ct)) break;
-                    card = card.parentElement;
+                for (const line of lines) {
+                    if (/^VENUE\s*:/i.test(line)) {
+                        v = line.replace(/^VENUE\s*:\s*/i, '').trim();
+                    } else if (/^SLOT\s*:/i.test(line)) {
+                        s = line.replace(/^SLOT\s*:\s*/i, '').trim();
+                    } else if (/(AM|PM)/i.test(line) && !tInfo) {
+                        tInfo = parseTime(line);
+                    } else if (line.length > 5 && !/MAY|2026|MON|TUE|WED|THU|FRI|SAT|SUN|VIEW|ATTENDANCE/i.test(line)) {
+                        if (!subj) subj = line;
+                    }
                 }
-                if (!card || card === document.body) continue;
-
-                const cardText = card.innerText || '';
-                const lines = cardText.split('\n').map(l => l.trim()).filter(Boolean);
-
-                // Subject = first line that is not a label or time line
-                const subject = lines.find(l =>
-                    l.length > 5 &&
-                    !/^SLOT\s*:/i.test(l) &&
-                    !/^VENUE\s*:/i.test(l) &&
-                    !/(AM|PM)/i.test(l)
-                ) || 'Class';
-
-                // Time = first line containing AM or PM
-                const timeLine = lines.find(l => /(AM|PM)/i.test(l));
-                const timeInfo = timeLine ? parseTime(timeLine) : null;
-                if (!timeInfo) continue;
-
-                results.push({ slot: subject, venue: venueText, ...timeInfo, hasToday: true });
+                if (tInfo && (subj || v)) {
+                    results.push({ slot: subj || 'Class', venue: v || 'N/A', ...tInfo, hasToday: true });
+                }
             }
 
             // ── Strategy 1: Table rows (fallback) ─────────────────────────────────
