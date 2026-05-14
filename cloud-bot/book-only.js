@@ -373,7 +373,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
             }
         }
         return { success: true, purposeFound };
-    }, slotsFound[0]);
+    }, bookableSlots[0]);
 
     if (!tagged.success) {
         await sendTelegram(`⚠️ Found the slot but failed to tag it: ${tagged.reason}`, chatId);
@@ -432,7 +432,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
     const finalUrl = page.url();
     console.log(`[Bot] Final URL: ${finalUrl}`);
 
-    const actionStr = slotsFound[0].isWaitlist ? '📋 Waitlisted' : '✅ Booked';
+    const actionStr = bookableSlots[0].isWaitlist ? '📋 Waitlisted' : '✅ Booked';
     const tmpPath = path.join(__dirname, '_tmp_screenshot.png');
     await page.screenshot({ path: tmpPath, fullPage: false });
     await sendTelegramPhoto(
