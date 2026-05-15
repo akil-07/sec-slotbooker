@@ -27,8 +27,16 @@ async function loadGist() {
     }
     try {
         const res = await apiRequest.get(`https://api.github.com/gists/${GIST_ID_ENV}`, {
-            headers: { 'Authorization': `token ${GIST_TOKEN}` }
+            headers: { 
+                'Authorization': `token ${GIST_TOKEN}`,
+                'User-Agent': 'SaveethaBot/1.0',
+                'Accept': 'application/vnd.github.v3+json'
+            }
         });
+        if (!res.ok()) {
+            console.error('[Gist] Load failed with status:', res.status());
+            return {};
+        }
         const data = await res.json();
         if (data.files && data.files['users.json']) {
             return JSON.parse(data.files['users.json'].content);
@@ -42,16 +50,22 @@ async function loadGist() {
 async function updateGist(users) {
     if (!GIST_TOKEN || !GIST_ID_ENV || !apiRequest) return;
     try {
-        await apiRequest.patch(`https://api.github.com/gists/${GIST_ID_ENV}`, {
+        const res = await apiRequest.patch(`https://api.github.com/gists/${GIST_ID_ENV}`, {
             headers: { 
                 'Authorization': `token ${GIST_TOKEN}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'SaveethaBot/1.0',
+                'Accept': 'application/vnd.github.v3+json'
             },
             data: {
                 files: { 'users.json': { content: JSON.stringify(users, null, 2) } }
             }
         });
-        console.log('[Gist] Updated successfully.');
+        if (!res.ok()) {
+            console.error('[Gist] Update failed with status:', res.status());
+        } else {
+            console.log('[Gist] Updated successfully.');
+        }
     } catch (e) {
         console.error('[Gist] Update error:', e.message);
     }
