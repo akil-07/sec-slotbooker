@@ -20,15 +20,18 @@ let apiRequest = null; // Playwright request context for bypassing Node fetch bl
 // ─── Gist Persistence Logic ──────────────────────────────────────────────────
 
 async function loadGist() {
-    if (!GIST_TOKEN || !GIST_ID_ENV || !apiRequest) {
+    const token = process.env.GIST_TOKEN || GIST_TOKEN;
+    const gistId = process.env.GIST_ID || GIST_ID_ENV;
+    
+    if (!token || !gistId || !apiRequest) {
         if (!apiRequest) console.log('[Gist] API Request context not ready.');
         else console.log('[Gist] GIST_TOKEN or GIST_ID not set. Runtime users will not persist.');
         return {};
     }
     try {
-        const res = await apiRequest.get(`https://api.github.com/gists/${GIST_ID_ENV}`, {
+        const res = await apiRequest.get(`https://api.github.com/gists/${gistId}`, {
             headers: { 
-                'Authorization': `token ${GIST_TOKEN}`,
+                'Authorization': `token ${token}`,
                 'User-Agent': 'SaveethaBot/1.0',
                 'Accept': 'application/vnd.github.v3+json'
             }
@@ -48,11 +51,14 @@ async function loadGist() {
 }
 
 async function updateGist(users) {
-    if (!GIST_TOKEN || !GIST_ID_ENV || !apiRequest) return;
+    const token = process.env.GIST_TOKEN || GIST_TOKEN;
+    const gistId = process.env.GIST_ID || GIST_ID_ENV;
+    
+    if (!token || !gistId || !apiRequest) return;
     try {
-        const res = await apiRequest.patch(`https://api.github.com/gists/${GIST_ID_ENV}`, {
+        const res = await apiRequest.patch(`https://api.github.com/gists/${gistId}`, {
             headers: { 
-                'Authorization': `token ${GIST_TOKEN}`,
+                'Authorization': `token ${token}`,
                 'Content-Type': 'application/json',
                 'User-Agent': 'SaveethaBot/1.0',
                 'Accept': 'application/vnd.github.v3+json'
@@ -137,8 +143,8 @@ async function sendTelegramPhoto(photoPath, caption, chatId = CHAT_ID) {
 async function getTelegramUpdates(offset) {
     if (!apiRequest) return [];
     try {
-        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=30&offset=${offset}`;
-        const res = await apiRequest.get(url);
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&offset=${offset}`;
+        const res = await apiRequest.get(url, { timeout: 40000 });
         const data = await res.json();
         if (!data.ok) return [];
         return data.result || [];
