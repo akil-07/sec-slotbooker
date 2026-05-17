@@ -1050,10 +1050,10 @@ function formatAttendance(data, userName) {
 
 // ─── Bunk Calculator ──────────────────────────────────────────────────────────
 
-async function fetchBunkStats(context, config) {
+async function fetchBunkStatsForIndex(context, config, targetIndex) {
     const page = await context.newPage();
     try {
-        console.log(`[Bunk] Fetching bunk stats for ${config.name}...`);
+        console.log(`[Bunk] Fetching bunk stats for index ${targetIndex}...`);
         await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
             waitUntil: 'domcontentloaded',
             timeout: 60000
@@ -1068,75 +1068,70 @@ async function fetchBunkStats(context, config) {
         }
         await page.waitForTimeout(3000);
 
-        const results = [];
         const loc = page.locator('text="View Slot Details"');
         const count = await loc.count();
         
-        console.log(`[Bunk] Found ${count} subjects to check...`);
-        for (let i = 0; i < count; i++) {
-            // Click i-th subject details
-            await page.locator('text="View Slot Details"').nth(i).click();
-            await page.waitForTimeout(2000); // Wait for modal/page to load
-            
-            const pageText = await page.innerText('body');
-            
-            const attRegex = /Overall Attendance\s+([\d.]+)%?\s+Present\s+([\d.]+)\s*\/\s*([\d.]+)/i;
-            const sesRegex = /Total Sessions\s+(\d+)\s+Upcoming:\s*(\d+)/i;
-            
-            const attMatch = pageText.match(attRegex);
-            const sesMatch = pageText.match(sesRegex);
-            
-            if (attMatch && sesMatch) {
-                let subject = await page.evaluate(() => {
-                    const el = Array.from(document.querySelectorAll('*')).find(e => {
-                        const t = e.innerText.trim();
-                        // Look for standard subject codes like 19CS408
-                        return /^(\d{2}[A-Z]{2,4}\d{3,4}|[A-Z]+)\s*-\s+/.test(t) && t.split('\n').length === 1 && t.length < 150;
-                    });
-                    return el ? el.innerText.trim() : 'Unknown Subject';
+        if (targetIndex >= count) {
+            throw new Error(`Subject number ${targetIndex + 1} not found. There are only ${count} subjects.`);
+        }
+
+        // Click the specific subject
+        await page.locator('text="View Slot Details"').nth(targetIndex).click();
+        await page.waitForTimeout(2000); // Wait for modal/page to load
+        
+        const pageText = await page.innerText('body');
+        
+        const attRegex = /Overall Attendance\s+([\d.]+)%?\s+Present\s+([\d.]+)\s*\/\s*([\d.]+)/i;
+        const sesRegex = /Total Sessions\s+(\d+)\s+Upcoming:\s*(\d+)/i;
+        
+        const attMatch = pageText.match(attRegex);
+        const sesMatch = pageText.match(sesRegex);
+        
+        let result = null;
+        if (attMatch && sesMatch) {
+            let subject = await page.evaluate(() => {
+                const el = Array.from(document.querySelectorAll('*')).find(e => {
+                    const t = (e.innerText || '').trim();
+                    // Look for standard subject codes like 19CS408 or ECA
+                    return /^(\d{2}[A-Z]{2,4}\d{3,4}|[A-Z]+[A-Z\-]*)\s*-\s+/.test(t) && t.split('\n').length === 1 && t.length < 150;
                 });
-                
-                const percent = parseFloat(attMatch[1]);
-                const presentHours = parseFloat(attMatch[2]);
-                const conductedHours = parseFloat(attMatch[3]);
-                const totalSessions = parseInt(sesMatch[1]);
-                const upcomingSessions = parseInt(sesMatch[2]);
-                
-                const conductedSessions = totalSessions - upcomingSessions;
-                if (conductedSessions > 0) {
-                    const hoursPerSession = conductedHours / conductedSessions;
-                    const remainingHours = upcomingSessions * hoursPerSession;
-                    const totalSemesterHours = conductedHours + remainingHours;
-                    
-                    const targetAttendedHours = Math.ceil(totalSemesterHours * 0.75);
-                    const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
-                    const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
-                    
-                    results.push({
-                        subject,
-                        percent,
-                        presentHours,
-                        conductedHours,
-                        upcomingSessions,
-                        totalSemesterHours,
-                        maxBunkSessions,
-                        targetPercent: 75
-                    });
-                }
-            }
+                return el ? (el.innerText || '').trim() : 'Selected Subject';
+            });
             
-            // Go back
-            const backLoc = page.locator('text="Back to Subjects"');
-            if (await backLoc.count() > 0) {
-                await backLoc.first().click();
-                await page.waitForTimeout(2000);
-            } else {
-                // Fallback: just go to the URL again
-                await page.goto('https://learner.saveetha.in/academics/studentsubjects/', { waitUntil: 'domcontentloaded' });
-                await page.waitForTimeout(2000);
+            const percent = parseFloat(attMatch[1]);
+            const presentHours = parseFloat(attMatch[2]);
+            const conductedHours = parseFloat(attMatch[3]);
+            const totalSessions = parseInt(sesMatch[1]);
+            const upcomingSessions = parseInt(sesMatch[2]);
+            
+            const conductedSessions = totalSessions - upcomingSessions;
+            if (conductedSessions > 0) {
+                const hoursPerSession = conductedHours / conductedSessions;
+                const remainingHours = upcomingSessions * hoursPerSession;
+                const totalSemesterHours = conductedHours + remainingHours;
+                
+                const targetAttendedHours = Math.ceil(totalSemesterHours * 0.75);
+                const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
+                const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
+                
+                result = {
+                    subject,
+                    percent,
+                    presentHours,
+                    conductedHours,
+                    upcomingSessions,
+                    totalSemesterHours,
+                    maxBunkSessions,
+                    targetPercent: 75
+                };
             }
         }
-        return results;
+        
+        if (!result) {
+            throw new Error('Could not find enough session data on this subject to calculate bunking.');
+        }
+
+        return [result]; // wrap in array for formatter
     } catch (err) {
         console.error(`[Bunk] Error for ${config.name}:`, err.message);
         throw err;
@@ -1655,9 +1650,41 @@ async function main() {
                         await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
                         continue;
                     }
-                    await sendTelegram(`🧮 Calculating your bunk stats... This requires clicking through each subject and may take 10-20 seconds. Please wait...`, fromChatId);
+                    await sendTelegram(`⏳ Fetching your subjects...`, fromChatId);
                     try {
-                        const data = await fetchBunkStats(session.context, session.config);
+                        const data = await fetchAttendance(session.context, session.config);
+                        if (!data || data.length === 0) {
+                            await sendTelegram(`⚠️ No subjects found.`, fromChatId);
+                            continue;
+                        }
+                        
+                        let msg = `🧮 *Select a Subject to Calculate Bunk Stats*\n\n`;
+                        data.forEach((item, i) => {
+                             msg += `*${i+1}.* ${item.subject.replace(/([_*`\[])/g, '\\$1')}\n`;
+                        });
+                        msg += `\n_Reply with_ \`!bunk <number>\` _(e.g., !bunk 1) to calculate for a specific subject!_`;
+                        await sendTelegram(msg, fromChatId);
+                    } catch (err) {
+                        await sendTelegram(`❌ Error: ${err.message}`, fromChatId);
+                    }
+                    continue;
+                }
+
+                if (text.startsWith('!bunk ')) {
+                    const session = USER_SESSIONS.get(fromChatId);
+                    if (!session) {
+                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
+                        continue;
+                    }
+                    const idxStr = text.split(' ')[1];
+                    const idx = parseInt(idxStr) - 1;
+                    if (isNaN(idx) || idx < 0) {
+                        await sendTelegram(`❌ Invalid subject number.`, fromChatId);
+                        continue;
+                    }
+                    await sendTelegram(`🧮 Calculating bunk stats for subject #${idx + 1}... Please wait...`, fromChatId);
+                    try {
+                        const data = await fetchBunkStatsForIndex(session.context, session.config, idx);
                         const msg = formatBunkStats(data, session.config.name);
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
