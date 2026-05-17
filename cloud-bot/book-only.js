@@ -1048,6 +1048,131 @@ function formatAttendance(data, userName) {
     return msg.trim();
 }
 
+// ─── Bunk Calculator ──────────────────────────────────────────────────────────
+
+async function fetchBunkStats(context, config) {
+    const page = await context.newPage();
+    try {
+        console.log(`[Bunk] Fetching bunk stats for ${config.name}...`);
+        await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+        });
+
+        if (page.url().includes('/login')) {
+            await doLogin(page, config.user, config.pass);
+            await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+            });
+        }
+        await page.waitForTimeout(3000);
+
+        const results = [];
+        const loc = page.locator('text="View Slot Details"');
+        const count = await loc.count();
+        
+        console.log(`[Bunk] Found ${count} subjects to check...`);
+        for (let i = 0; i < count; i++) {
+            // Click i-th subject details
+            await page.locator('text="View Slot Details"').nth(i).click();
+            await page.waitForTimeout(2000); // Wait for modal/page to load
+            
+            const pageText = await page.innerText('body');
+            
+            const attRegex = /Overall Attendance\s+([\d.]+)%?\s+Present\s+([\d.]+)\s*\/\s*([\d.]+)/i;
+            const sesRegex = /Total Sessions\s+(\d+)\s+Upcoming:\s*(\d+)/i;
+            
+            const attMatch = pageText.match(attRegex);
+            const sesMatch = pageText.match(sesRegex);
+            
+            if (attMatch && sesMatch) {
+                let subject = await page.evaluate(() => {
+                    const el = Array.from(document.querySelectorAll('*')).find(e => {
+                        const t = e.innerText.trim();
+                        // Look for standard subject codes like 19CS408
+                        return /^(\d{2}[A-Z]{2,4}\d{3,4}|[A-Z]+)\s*-\s+/.test(t) && t.split('\n').length === 1 && t.length < 150;
+                    });
+                    return el ? el.innerText.trim() : 'Unknown Subject';
+                });
+                
+                const percent = parseFloat(attMatch[1]);
+                const presentHours = parseFloat(attMatch[2]);
+                const conductedHours = parseFloat(attMatch[3]);
+                const totalSessions = parseInt(sesMatch[1]);
+                const upcomingSessions = parseInt(sesMatch[2]);
+                
+                const conductedSessions = totalSessions - upcomingSessions;
+                if (conductedSessions > 0) {
+                    const hoursPerSession = conductedHours / conductedSessions;
+                    const remainingHours = upcomingSessions * hoursPerSession;
+                    const totalSemesterHours = conductedHours + remainingHours;
+                    
+                    const targetAttendedHours = Math.ceil(totalSemesterHours * 0.75);
+                    const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
+                    const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
+                    
+                    results.push({
+                        subject,
+                        percent,
+                        presentHours,
+                        conductedHours,
+                        upcomingSessions,
+                        totalSemesterHours,
+                        maxBunkSessions,
+                        targetPercent: 75
+                    });
+                }
+            }
+            
+            // Go back
+            const backLoc = page.locator('text="Back to Subjects"');
+            if (await backLoc.count() > 0) {
+                await backLoc.first().click();
+                await page.waitForTimeout(2000);
+            } else {
+                // Fallback: just go to the URL again
+                await page.goto('https://learner.saveetha.in/academics/studentsubjects/', { waitUntil: 'domcontentloaded' });
+                await page.waitForTimeout(2000);
+            }
+        }
+        return results;
+    } catch (err) {
+        console.error(`[Bunk] Error for ${config.name}:`, err.message);
+        throw err;
+    } finally {
+        await page.close().catch(() => {});
+    }
+}
+
+function formatBunkStats(data, userName) {
+    if (!data || data.length === 0) {
+        return `⚠️ Could not calculate bunk stats for ${userName}. (Missing schedule info)`;
+    }
+    
+    let msg = `🛌 *Bunk Calculator (75% Limit) for ${userName}*\n\n`;
+    
+    data.forEach(item => {
+        let sub = item.subject.replace(/([_*`\[])/g, '\\$1');
+        if (sub.length > 55) sub = sub.substring(0, 52) + '...';
+        
+        let status = '';
+        if (item.maxBunkSessions > 0) {
+            status = `🟢 *You can safely bunk ${item.maxBunkSessions} classes!*`;
+        } else if (item.maxBunkSessions === 0) {
+            status = `🟡 *Do NOT bunk anymore!* You are exactly on the line.`;
+        } else {
+            status = `🔴 *Shortage!* You need to attend ${Math.abs(item.maxBunkSessions)} extra classes to reach 75%.`;
+        }
+        
+        msg += `🔹 *${sub}*\n`;
+        msg += `   ├ Current: *${item.percent.toFixed(2)}%*\n`;
+        msg += `   └ ${status}\n\n`;
+    });
+    
+    return msg.trim();
+}
+
 // ─── Timetable Scheduler ─────────────────────────────────────────────────────
 
 /**
@@ -1355,7 +1480,8 @@ async function main() {
                         `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
                         `*Timetable & Attendance Commands:*\n` +
                         `\`!timetable\` or \`!tt\` — Get today's schedule\n` +
-                        `\`!attendance\` or \`!att\` — Get your attendance\n\n` +
+                        `\`!attendance\` or \`!att\` — Get your attendance\n` +
+                        `\`!bunk\` — Calculate how many classes you can bunk (75% limit)\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active tasks\n` +
@@ -1514,10 +1640,28 @@ async function main() {
                     await sendTelegram(`⏳ Fetching your attendance, please wait...`, fromChatId);
                     try {
                         const data = await fetchAttendance(session.context, session.config);
-                        const msg = formatAttendance(data, session.config.name);
+                        let msg = formatAttendance(data, session.config.name);
+                        msg += `\n\n_💡 Tip: Type_ \`!bunk\` _to calculate how many classes you can skip while maintaining 75%!_`;
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch attendance: ${err.message}`, fromChatId);
+                    }
+                    continue;
+                }
+
+                if (text === '!bunk') {
+                    const session = USER_SESSIONS.get(fromChatId);
+                    if (!session) {
+                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
+                        continue;
+                    }
+                    await sendTelegram(`🧮 Calculating your bunk stats... This requires clicking through each subject and may take 10-20 seconds. Please wait...`, fromChatId);
+                    try {
+                        const data = await fetchBunkStats(session.context, session.config);
+                        const msg = formatBunkStats(data, session.config.name);
+                        await sendTelegram(msg, fromChatId);
+                    } catch (err) {
+                        await sendTelegram(`❌ Failed to calculate bunk stats: ${err.message}`, fromChatId);
                     }
                     continue;
                 }
