@@ -867,6 +867,153 @@ function formatTimetable(slots, name) {
     return msg;
 }
 
+// ─── Attendance Scraper ───────────────────────────────────────────────────────
+
+/**
+ * Scrapes attendance from studentsubjects page.
+ */
+async function fetchAttendance(context, config) {
+    const page = await context.newPage();
+    try {
+        console.log(`[Attendance] Fetching attendance for ${config.name}...`);
+        await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+        });
+
+        // If redirected to login, re-login
+        if (page.url().includes('/login')) {
+            console.log(`[Attendance] Session expired for ${config.name} — re-logging in...`);
+            await doLogin(page, config.user, config.pass);
+            await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+            });
+        }
+
+        // Wait for table/schedule content
+        await page.waitForTimeout(3000);
+
+        const attendanceData = await page.evaluate(() => {
+            const results = [];
+            
+            // ── Strategy 1: Table rows ─────────────────────────────────
+            const tables = document.querySelectorAll('table');
+            for (const table of tables) {
+                const rows = table.querySelectorAll('tr');
+                if (rows.length < 2) continue;
+                
+                const headerRow = table.querySelector('tr:first-child');
+                let subjectCol = -1, percentCol = -1, attendedCol = -1, totalCol = -1;
+                
+                if (headerRow) {
+                    const headers = Array.from(headerRow.querySelectorAll('th, td')).map(c => c.innerText.trim().toLowerCase());
+                    headers.forEach((h, i) => {
+                        if (h.includes('subject') || h.includes('course') || h.includes('name')) subjectCol = i;
+                        if (h.includes('%') || h.includes('percentage') || h.includes('percent')) percentCol = i;
+                        if (h.includes('present') || h.includes('attended') || h.includes('attend')) attendedCol = i;
+                        if (h.includes('total') || h.includes('conducted')) totalCol = i;
+                    });
+                }
+                
+                if (subjectCol === -1) subjectCol = 0; // fallback to first column
+                
+                for (let i = 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    // Skip if it's just headers
+                    if (row.querySelectorAll('th').length === row.querySelectorAll('th, td').length) continue;
+                    
+                    const cells = Array.from(row.querySelectorAll('td, th')).map(c => c.innerText.trim());
+                    if (cells.length < 2) continue;
+                    
+                    let subject = cells[subjectCol] || '';
+                    let percent = percentCol !== -1 ? cells[percentCol] : '';
+                    let attended = attendedCol !== -1 ? cells[attendedCol] : '';
+                    let total = totalCol !== -1 ? cells[totalCol] : '';
+                    
+                    if (!percent) {
+                        for (const cell of cells) {
+                            if (cell.includes('%')) { percent = cell; break; }
+                        }
+                    }
+                    if (!attended && !total) {
+                        for (const cell of cells) {
+                            const match = cell.match(/^(\d+)\s*\/\s*(\d+)$/);
+                            if (match) { attended = match[1]; total = match[2]; break; }
+                        }
+                    }
+                    
+                    if (subject) {
+                        results.push({ subject, percent, attended, total });
+                    }
+                }
+                if (results.length > 0) break; // Use the first table that yields results
+            }
+
+            // ── Strategy 2: Cards ──────────────────────────────────────
+            if (results.length === 0) {
+               const cards = Array.from(document.querySelectorAll('div, li, section, article')).filter(el => {
+                   return (el.innerText || '').includes('%');
+               }).sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+               
+               const selectedCards = [];
+               for (const el of cards) {
+                   if (!selectedCards.some(prev => el.contains(prev)) && el.innerText.length < 300) {
+                       selectedCards.push(el);
+                   }
+               }
+               
+               for (const card of selectedCards) {
+                   const lines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+                   let subject = lines[0]; // Guess first line is subject
+                   let percent = '';
+                   for (const line of lines) {
+                       if (line.includes('%')) {
+                           percent = line;
+                           break;
+                       }
+                   }
+                   if (subject && percent) {
+                       results.push({ subject, percent, attended: '', total: '' });
+                   }
+               }
+            }
+            return results;
+        });
+
+        return attendanceData;
+    } catch (err) {
+        console.error(`[Attendance] Error fetching for ${config.name}:`, err.message);
+        throw err;
+    } finally {
+        await page.close().catch(() => {});
+    }
+}
+
+function formatAttendance(data, userName) {
+    if (!data || data.length === 0) {
+        return `⚠️ Could not find attendance records for ${userName}.`;
+    }
+    
+    let msg = `📊 *Attendance for ${userName}*\n\n`;
+    
+    data.forEach(item => {
+        // Escape special markdown characters for telegram
+        let sub = item.subject.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+        // keep it concise
+        if (sub.length > 50) sub = sub.substring(0, 47) + '...';
+        
+        let detail = '';
+        if (item.percent) detail += `*${item.percent.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1')}* `;
+        if (item.attended && item.total) {
+            detail += `(${item.attended}/${item.total})`.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+        }
+        msg += `• ${sub}: ${detail}\n`;
+    });
+    
+    return msg;
+}
+
 // ─── Timetable Scheduler ─────────────────────────────────────────────────────
 
 /**
@@ -1172,8 +1319,9 @@ async function main() {
                         `\`!book <keyword> # 06:00 PM\` — Start scanning at 6 PM IST\n` +
                         `\`!scan <keyword>\` — Scan every 30s until found\n` +
                         `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
-                        `*Timetable Commands:*\n` +
-                        `\`!timetable\` or \`!tt\` — Get today's schedule\n\n` +
+                        `*Timetable & Attendance Commands:*\n` +
+                        `\`!timetable\` or \`!tt\` — Get today's schedule\n` +
+                        `\`!attendance\` or \`!att\` — Get your attendance\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active tasks\n` +
@@ -1319,6 +1467,23 @@ async function main() {
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch timetable: ${err.message}`, fromChatId);
+                    }
+                    continue;
+                }
+
+                if (text === '!attendance' || text === '!att') {
+                    const session = USER_SESSIONS.get(fromChatId);
+                    if (!session) {
+                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
+                        continue;
+                    }
+                    await sendTelegram(`⏳ Fetching your attendance, please wait...`, fromChatId);
+                    try {
+                        const data = await fetchAttendance(session.context, session.config);
+                        const msg = formatAttendance(data, session.config.name);
+                        await sendTelegram(msg, fromChatId);
+                    } catch (err) {
+                        await sendTelegram(`❌ Failed to fetch attendance: ${err.message}`, fromChatId);
                     }
                     continue;
                 }

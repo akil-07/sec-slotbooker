@@ -92,6 +92,7 @@ export default {
                 '*Available Commands:*\n' +
                 '`!book <keyword> [@ time]` — Start booking a slot\n' +
                 '`!status` — Check if bot is alive\n' +
+                '`!attendance` / `!att` — Get your attendance\n' +
                 '`!help` — Show this help\n\n' +
                 '_Example: !book CAT internal @ 10:00 AM_'
             );
@@ -108,6 +109,7 @@ export default {
                 '`!book <keyword>` — Book a slot immediately\n' +
                 '`!book <keyword> @ 10:00 AM` — Book a specific slot time\n' +
                 '`!book <keyword> # 06:00 PM` — Timer Mode: Wait until 6:00 PM IST to start scanning\n' +
+                '`!attendance` — Fetch attendance\n' +
                 '`!status` — Check bot status\n\n' +
                 '*Note:* One booking job runs at a time.'
             );
