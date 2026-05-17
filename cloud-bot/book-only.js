@@ -952,29 +952,50 @@ async function fetchAttendance(context, config) {
 
             // ── Strategy 2: Cards ──────────────────────────────────────
             if (results.length === 0) {
-               const cards = Array.from(document.querySelectorAll('div, li, section, article')).filter(el => {
-                   return (el.innerText || '').includes('%');
-               }).sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+               const allElements = Array.from(document.querySelectorAll('div, section, article, li'));
+               // Find all elements that contain typical card keywords
+               const cardCandidates = allElements.filter(el => {
+                   const txt = el.innerText || '';
+                   return txt.includes('Overall Attendance') && (txt.includes('Slot:') || txt.includes('Academic Term:'));
+               });
                
+               // De-duplicate (keep only the smallest containers that still have all the info)
+               cardCandidates.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
                const selectedCards = [];
-               for (const el of cards) {
-                   if (!selectedCards.some(prev => el.contains(prev)) && el.innerText.length < 300) {
+               for (const el of cardCandidates) {
+                   if (!selectedCards.some(prev => el.contains(prev)) && el.innerText.length < 1500) {
                        selectedCards.push(el);
                    }
                }
                
                for (const card of selectedCards) {
                    const lines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-                   let subject = lines[0]; // Guess first line is subject
+                   let subject = lines[0]; // The first line is usually the subject
                    let percent = '';
-                   for (const line of lines) {
-                       if (line.includes('%')) {
+                   let attended = '';
+                   let total = '';
+                   
+                   for (let i = 0; i < lines.length; i++) {
+                       const line = lines[i];
+                       if (line.includes('Overall Attendance') && i + 1 < lines.length) {
+                           let nextLine = lines[i+1];
+                           if (nextLine.includes('%') || nextLine.includes('N/A')) {
+                               percent = nextLine;
+                           }
+                       } else if (line.includes('%') && !percent) {
                            percent = line;
-                           break;
+                       }
+                       
+                       if (line.startsWith('Present')) {
+                           const match = line.match(/([\d.]+)\s*\/\s*([\d.]+)/);
+                           if (match) {
+                               attended = parseFloat(match[1]).toString();
+                               total = parseFloat(match[2]).toString();
+                           }
                        }
                    }
                    if (subject && percent) {
-                       results.push({ subject, percent, attended: '', total: '' });
+                       results.push({ subject, percent, attended, total });
                    }
                }
             }
