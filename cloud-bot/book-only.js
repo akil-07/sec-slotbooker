@@ -986,16 +986,19 @@ async function fetchAttendance(context, config) {
                            percent = line;
                        }
                        
-                       if (line.startsWith('Present')) {
-                           const match = line.match(/([\d.]+)\s*\/\s*([\d.]+)/);
-                           if (match) {
-                               attended = parseFloat(match[1]).toString();
-                               total = parseFloat(match[2]).toString();
-                           }
+                       // Match the "Present" stats (e.g. "18.00 / 24.00")
+                       // It could be on the same line as "Present" or the line immediately after
+                       const match = line.match(/([\d.]+)\s*\/\s*([\d.]+)/);
+                       if (match && !attended) {
+                           attended = parseFloat(match[1]).toString();
+                           total = parseFloat(match[2]).toString();
                        }
                    }
                    if (subject && percent) {
-                       results.push({ subject, percent, attended, total });
+                       // Prevent duplicates (sometimes the DOM has hidden copies of cards)
+                       if (!results.some(r => r.subject === subject)) {
+                           results.push({ subject, percent, attended, total });
+                       }
                    }
                }
             }
