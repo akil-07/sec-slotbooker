@@ -1022,20 +1022,30 @@ function formatAttendance(data, userName) {
     let msg = `📊 *Attendance for ${userName}*\n\n`;
     
     data.forEach(item => {
-        // Escape special markdown characters for telegram
-        let sub = item.subject.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
-        // keep it concise
-        if (sub.length > 50) sub = sub.substring(0, 47) + '...';
+        // Only escape basic Markdown characters (*, _, `, [) since we use 'Markdown' parse_mode, not V2.
+        let sub = item.subject.replace(/([_*`\[])/g, '\\$1');
+        if (sub.length > 55) sub = sub.substring(0, 52) + '...';
         
-        let detail = '';
-        if (item.percent) detail += `*${item.percent.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1')}* `;
-        if (item.attended && item.total) {
-            detail += `(${item.attended}/${item.total})`.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+        let percentNum = parseFloat(item.percent);
+        let icon = '⚪';
+        if (!isNaN(percentNum)) {
+            if (percentNum >= 85) icon = '🟢';
+            else if (percentNum >= 75) icon = '🟡';
+            else icon = '🔴';
         }
-        msg += `• ${sub}: ${detail}\n`;
+        
+        let percentText = item.percent ? item.percent.replace(/([_*`\[])/g, '\\$1') : 'N/A';
+        let stats = '';
+        
+        // Only show (Attended/Total) if Total is not 0.
+        if (item.attended && item.total && item.total !== '0') {
+            stats = ` (${item.attended}/${item.total})`;
+        }
+        
+        msg += `${icon} *${sub}*\n   └ ${percentText}${stats}\n\n`;
     });
     
-    return msg;
+    return msg.trim();
 }
 
 // ─── Timetable Scheduler ─────────────────────────────────────────────────────
