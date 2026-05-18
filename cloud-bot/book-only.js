@@ -1021,6 +1021,9 @@ function formatAttendance(data, userName) {
     
     let msg = `📊 *Attendance for ${userName}*\n\n`;
     
+    let totalAttended = 0;
+    let totalConducted = 0;
+    
     data.forEach(item => {
         // Only escape basic Markdown characters (*, _, `, [) since we use 'Markdown' parse_mode, not V2.
         let sub = item.subject.replace(/([_*`\[])/g, '\\$1');
@@ -1040,10 +1043,17 @@ function formatAttendance(data, userName) {
         // Only show (Attended/Total) if Total is not 0.
         if (item.attended && item.total && item.total !== '0') {
             stats = ` (${item.attended}/${item.total})`;
+            totalAttended += parseFloat(item.attended);
+            totalConducted += parseFloat(item.total);
         }
         
         msg += `${icon} *${sub}*\n   └ ${percentText}${stats}\n\n`;
     });
+    
+    if (totalConducted > 0) {
+        let overallPercent = ((totalAttended / totalConducted) * 100).toFixed(2);
+        msg += `\n🎯 *Overall Attendance: ${overallPercent}%* _(${totalAttended}/${totalConducted})_`;
+    }
     
     return msg.trim();
 }
@@ -1110,7 +1120,7 @@ async function fetchBunkStatsForIndex(context, config, targetIndex) {
                 const remainingHours = upcomingSessions * hoursPerSession;
                 const totalSemesterHours = conductedHours + remainingHours;
                 
-                const targetAttendedHours = Math.ceil(totalSemesterHours * 0.75);
+                const targetAttendedHours = Math.ceil(totalSemesterHours * 0.80);
                 const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
                 const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
                 
@@ -1122,7 +1132,7 @@ async function fetchBunkStatsForIndex(context, config, targetIndex) {
                     upcomingSessions,
                     totalSemesterHours,
                     maxBunkSessions,
-                    targetPercent: 75
+                    targetPercent: 80
                 };
             }
         }
@@ -1145,7 +1155,7 @@ function formatBunkStats(data, userName) {
         return `⚠️ Could not calculate bunk stats for ${userName}. (Missing schedule info)`;
     }
     
-    let msg = `🛌 *Bunk Calculator (75% Limit) for ${userName}*\n\n`;
+    let msg = `🛌 *Bunk Calculator (80% Limit) for ${userName}*\n\n`;
     
     data.forEach(item => {
         let sub = item.subject.replace(/([_*`\[])/g, '\\$1');
@@ -1157,7 +1167,7 @@ function formatBunkStats(data, userName) {
         } else if (item.maxBunkSessions === 0) {
             status = `🟡 *Do NOT bunk anymore!* You are exactly on the line.`;
         } else {
-            status = `🔴 *Shortage!* You need to attend ${Math.abs(item.maxBunkSessions)} extra classes to reach 75%.`;
+            status = `🔴 *Shortage!* You need to attend ${Math.abs(item.maxBunkSessions)} extra classes to reach 80%.`;
         }
         
         msg += `🔹 *${sub}*\n`;
@@ -1676,15 +1686,41 @@ async function main() {
                         await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
                         continue;
                     }
-                    const idxStr = text.split(' ')[1];
-                    const idx = parseInt(idxStr) - 1;
-                    if (isNaN(idx) || idx < 0) {
-                        await sendTelegram(`❌ Invalid subject number.`, fromChatId);
+                    
+                    const keyword = text.substring(6).trim().toLowerCase();
+                    if (!keyword) {
+                        await sendTelegram(`❌ Please provide a keyword. Example: \`!bunk calculus\``, fromChatId);
                         continue;
                     }
-                    await sendTelegram(`🧮 Calculating bunk stats for subject #${idx + 1}... Please wait...`, fromChatId);
+
+                    await sendTelegram(`🔍 Searching for subject matching "${keyword}"...`, fromChatId);
+                    
                     try {
-                        const data = await fetchBunkStatsForIndex(session.context, session.config, idx);
+                        const allSubjects = await fetchAttendance(session.context, session.config);
+                        
+                        let matchedIndex = -1;
+                        // First try to check if the keyword is just an exact number (like old behavior)
+                        if (/^\d+$/.test(keyword)) {
+                            const idx = parseInt(keyword) - 1;
+                            if (idx >= 0 && idx < allSubjects.length) {
+                                matchedIndex = idx;
+                            }
+                        }
+                        
+                        // Otherwise search by keyword match
+                        if (matchedIndex === -1) {
+                            matchedIndex = allSubjects.findIndex(s => s.subject.toLowerCase().includes(keyword));
+                        }
+                        
+                        if (matchedIndex === -1) {
+                            await sendTelegram(`❌ Could not find any subject matching "${keyword}". Try using a word from the subject title.`, fromChatId);
+                            continue;
+                        }
+                        
+                        const matchedSubject = allSubjects[matchedIndex].subject;
+                        await sendTelegram(`🧮 Calculating bunk stats for *${matchedSubject}*... Please wait...`, fromChatId);
+                        
+                        const data = await fetchBunkStatsForIndex(session.context, session.config, matchedIndex);
                         const msg = formatBunkStats(data, session.config.name);
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
