@@ -1203,7 +1203,11 @@ function formatBunkStats(data, userName) {
         msg += `🔹 *${sub}*\n`;
         msg += `   ├ Current: *${item.percent.toFixed(2)}%*\n`;
         if (item.projectedFinalPercent !== undefined) {
-            msg += `   ├ If attend all remaining: *${item.projectedFinalPercent.toFixed(2)}%*\n`;
+            if (item.upcomingSessions > 0) {
+                msg += `   ├ If attend all remaining: *${item.projectedFinalPercent.toFixed(2)}%*\n`;
+            } else {
+                msg += `   ├ No upcoming classes left.\n`;
+            }
         }
         msg += `   └ ${status}\n\n`;
     });
