@@ -1146,7 +1146,7 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
                 const remainingHours = upcomingSessions * hoursPerSession;
                 const totalSemesterHours = conductedHours + remainingHours;
                 
-                const targetAttendedHours = Math.ceil(totalSemesterHours * 0.80);
+                const targetAttendedHours = totalSemesterHours * 0.80;
                 const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
                 const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
                 
