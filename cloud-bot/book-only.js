@@ -1108,41 +1108,34 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
             throw new Error(`Could not find the details button for ${targetSubject}.`);
         }
 
-        await page.waitForTimeout(2000); // Wait for modal/page to load
+        await page.waitForTimeout(3000); // Wait for modal/page to load
         
         // Wait for page to fully render the cards
-        await page.waitForSelector('text="Total Sessions"', { timeout: 3000 }).catch(() => {});
+        await page.waitForSelector('text="Total Sessions"', { timeout: 8000 }).catch(() => {});
         const pageText = await page.innerText('body');
         
         let presentHours = null, conductedHours = null;
         let totalSessions = null, upcomingSessions = 0;
         let percent = 0;
         
-        const lines = pageText.split('\n').map(l => l.trim()).filter(Boolean);
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (line.includes('Overall Attendance') && i + 1 < lines.length) {
-                const next = lines[i+1];
-                if (next.includes('%')) percent = parseFloat(next);
-            }
-            if (line.startsWith('Present')) {
-                const m = line.match(/([\d.]+)\s*\/\s*([\d.]+)/);
-                if (m) {
-                    presentHours = parseFloat(m[1]);
-                    conductedHours = parseFloat(m[2]);
-                }
-            }
-            if (line === 'Total Sessions' && i + 1 < lines.length) {
-                totalSessions = parseInt(lines[i+1]);
-            }
-            if (line.includes('Total sessions scheduled:')) {
-                const m = line.match(/scheduled:\s*(\d+)/i);
-                if (m) totalSessions = parseInt(m[1]);
-            }
-            if (line.includes('Upcoming:')) {
-                const m = line.match(/Upcoming:\s*(\d+)/i);
-                if (m) upcomingSessions = parseInt(m[1]);
-            }
+        const attMatch = pageText.match(/Overall Attendance[\s\S]{0,50}?([\d.]+)%/i);
+        if (attMatch) percent = parseFloat(attMatch[1]);
+        
+        const presentMatch = pageText.match(/Present[\s\S]{0,30}?([\d.]+)\s*\/\s*([\d.]+)/i);
+        if (presentMatch) {
+            presentHours = parseFloat(presentMatch[1]);
+            conductedHours = parseFloat(presentMatch[2]);
+        }
+        
+        const totalMatch = pageText.match(/Total Sessions[\s\S]{0,20}?(?<!\d)(\d+)(?!\d)/i) || 
+                           pageText.match(/Total sessions scheduled:?\s*(\d+)/i);
+        if (totalMatch) {
+            totalSessions = parseInt(totalMatch[1]);
+        }
+        
+        const upMatch = pageText.match(/Upcoming:\s*(\d+)/i);
+        if (upMatch) {
+            upcomingSessions = parseInt(upMatch[1]);
         }
         
         let result = null;
