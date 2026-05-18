@@ -1150,6 +1150,8 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
                 const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
                 const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
                 
+                const projectedFinalPercent = ((presentHours + remainingHours) / totalSemesterHours) * 100;
+
                 result = {
                     subject: targetSubject,
                     percent,
@@ -1158,6 +1160,7 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
                     upcomingSessions,
                     totalSemesterHours,
                     maxBunkSessions,
+                    projectedFinalPercent,
                     targetPercent: 80
                 };
             }
@@ -1199,6 +1202,9 @@ function formatBunkStats(data, userName) {
         
         msg += `🔹 *${sub}*\n`;
         msg += `   ├ Current: *${item.percent.toFixed(2)}%*\n`;
+        if (item.projectedFinalPercent !== undefined) {
+            msg += `   ├ If attend all remaining: *${item.projectedFinalPercent.toFixed(2)}%*\n`;
+        }
         msg += `   └ ${status}\n\n`;
     });
     
