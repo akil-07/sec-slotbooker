@@ -1060,10 +1060,10 @@ function formatAttendance(data, userName) {
 
 // ─── Bunk Calculator ──────────────────────────────────────────────────────────
 
-async function fetchBunkStatsForIndex(context, config, targetIndex) {
+async function fetchBunkStatsForSubject(context, config, targetSubject) {
     const page = await context.newPage();
     try {
-        console.log(`[Bunk] Fetching bunk stats for index ${targetIndex}...`);
+        console.log(`[Bunk] Fetching bunk stats for: ${targetSubject}...`);
         await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
             waitUntil: 'domcontentloaded',
             timeout: 60000
@@ -1078,15 +1078,36 @@ async function fetchBunkStatsForIndex(context, config, targetIndex) {
         }
         await page.waitForTimeout(3000);
 
-        const loc = page.locator('text="View Slot Details"');
-        const count = await loc.count();
-        
-        if (targetIndex >= count) {
-            throw new Error(`Subject number ${targetIndex + 1} not found. There are only ${count} subjects.`);
+        // Find the button inside the card that contains the targetSubject
+        const clickSuccess = await page.evaluate((subj) => {
+            const buttons = Array.from(document.querySelectorAll('a, button, [role="button"]'))
+                                 .filter(b => (b.innerText || '').includes('View Slot Details'));
+            
+            for (const btn of buttons) {
+                // find closest card container
+                let card = btn.closest('div[class*="card"], div[class*="MuiPaper"], div[class*="box"], section, article, li');
+                if (!card && btn.parentElement && btn.parentElement.parentElement) {
+                    card = btn.parentElement.parentElement.parentElement; // fallback 3 levels up
+                }
+                
+                if (card && (card.innerText || '').includes(subj)) {
+                    btn.click();
+                    return true;
+                }
+            }
+            
+            // Extreme fallback: just click the first button if only 1 exists, otherwise fail
+            if (buttons.length === 1) {
+                buttons[0].click();
+                return true;
+            }
+            return false;
+        }, targetSubject);
+
+        if (!clickSuccess) {
+            throw new Error(`Could not find the details button for ${targetSubject}.`);
         }
 
-        // Click the specific subject
-        await page.locator('text="View Slot Details"').nth(targetIndex).click();
         await page.waitForTimeout(2000); // Wait for modal/page to load
         
         // Wait for page to fully render the cards
@@ -1126,15 +1147,6 @@ async function fetchBunkStatsForIndex(context, config, targetIndex) {
         
         let result = null;
         if (presentHours !== null && conductedHours !== null && totalSessions !== null) {
-            let subject = await page.evaluate(() => {
-                const el = Array.from(document.querySelectorAll('*')).find(e => {
-                    const t = (e.innerText || '').trim();
-                    // Look for standard subject codes like 19CS408 or ECA
-                    return /^(\d{2}[A-Z]{2,4}\d{3,4}|[A-Z]+[A-Z\-]*)\s*-\s+/.test(t) && t.split('\n').length === 1 && t.length < 150;
-                });
-                return el ? (el.innerText || '').trim() : 'Selected Subject';
-            });
-            
             const conductedSessions = totalSessions - upcomingSessions;
             if (conductedSessions > 0) {
                 const hoursPerSession = conductedHours / conductedSessions;
@@ -1146,7 +1158,7 @@ async function fetchBunkStatsForIndex(context, config, targetIndex) {
                 const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
                 
                 result = {
-                    subject,
+                    subject: targetSubject,
                     percent,
                     presentHours,
                     conductedHours,
@@ -1742,7 +1754,7 @@ async function main() {
                         const matchedSubject = allSubjects[matchedIndex].subject;
                         await sendTelegram(`🧮 Calculating bunk stats for *${matchedSubject}*... Please wait...`, fromChatId);
                         
-                        const data = await fetchBunkStatsForIndex(session.context, session.config, matchedIndex);
+                        const data = await fetchBunkStatsForSubject(session.context, session.config, matchedSubject);
                         const msg = formatBunkStats(data, session.config.name);
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
