@@ -1089,16 +1089,43 @@ async function fetchBunkStatsForIndex(context, config, targetIndex) {
         await page.locator('text="View Slot Details"').nth(targetIndex).click();
         await page.waitForTimeout(2000); // Wait for modal/page to load
         
+        // Wait for page to fully render the cards
+        await page.waitForSelector('text="Total Sessions"', { timeout: 3000 }).catch(() => {});
         const pageText = await page.innerText('body');
         
-        const attRegex = /Overall Attendance\s+([\d.]+)%?\s+Present\s+([\d.]+)\s*\/\s*([\d.]+)/i;
-        const sesRegex = /Total Sessions\s+(\d+)\s+Upcoming:\s*(\d+)/i;
+        let presentHours = null, conductedHours = null;
+        let totalSessions = null, upcomingSessions = 0;
+        let percent = 0;
         
-        const attMatch = pageText.match(attRegex);
-        const sesMatch = pageText.match(sesRegex);
+        const lines = pageText.split('\n').map(l => l.trim()).filter(Boolean);
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line.includes('Overall Attendance') && i + 1 < lines.length) {
+                const next = lines[i+1];
+                if (next.includes('%')) percent = parseFloat(next);
+            }
+            if (line.startsWith('Present')) {
+                const m = line.match(/([\d.]+)\s*\/\s*([\d.]+)/);
+                if (m) {
+                    presentHours = parseFloat(m[1]);
+                    conductedHours = parseFloat(m[2]);
+                }
+            }
+            if (line === 'Total Sessions' && i + 1 < lines.length) {
+                totalSessions = parseInt(lines[i+1]);
+            }
+            if (line.includes('Total sessions scheduled:')) {
+                const m = line.match(/scheduled:\s*(\d+)/i);
+                if (m) totalSessions = parseInt(m[1]);
+            }
+            if (line.includes('Upcoming:')) {
+                const m = line.match(/Upcoming:\s*(\d+)/i);
+                if (m) upcomingSessions = parseInt(m[1]);
+            }
+        }
         
         let result = null;
-        if (attMatch && sesMatch) {
+        if (presentHours !== null && conductedHours !== null && totalSessions !== null) {
             let subject = await page.evaluate(() => {
                 const el = Array.from(document.querySelectorAll('*')).find(e => {
                     const t = (e.innerText || '').trim();
@@ -1107,12 +1134,6 @@ async function fetchBunkStatsForIndex(context, config, targetIndex) {
                 });
                 return el ? (el.innerText || '').trim() : 'Selected Subject';
             });
-            
-            const percent = parseFloat(attMatch[1]);
-            const presentHours = parseFloat(attMatch[2]);
-            const conductedHours = parseFloat(attMatch[3]);
-            const totalSessions = parseInt(sesMatch[1]);
-            const upcomingSessions = parseInt(sesMatch[2]);
             
             const conductedSessions = totalSessions - upcomingSessions;
             if (conductedSessions > 0) {
@@ -1138,7 +1159,8 @@ async function fetchBunkStatsForIndex(context, config, targetIndex) {
         }
         
         if (!result) {
-            throw new Error('Could not find enough session data on this subject to calculate bunking.');
+            console.error(`[Bunk] Failed to parse. Dump: present=${presentHours}, conducted=${conductedHours}, total=${totalSessions}, upcoming=${upcomingSessions}`);
+            throw new Error('Could not find enough session data on this subject to calculate bunking. (Has the class ended?)');
         }
 
         return [result]; // wrap in array for formatter
