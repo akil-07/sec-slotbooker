@@ -473,7 +473,8 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
 
     const currentUrl = page.url();
     if (currentUrl.includes('/login')) {
-        await doLogin(page);
+        const config = page._userConfig;
+        await doLogin(page, config.user, config.pass);
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
             waitUntil: 'domcontentloaded',
             timeout: 60000
@@ -1572,13 +1573,13 @@ async function main() {
                     const arg = text.substring(5).trim().toLowerCase();
                     
                     if (activeTasks.size === 0) {
-                        await sendTelegram(`🟢 No active bookings to stop.`);
+                        await sendTelegram(`🟢 No active bookings to stop.`, fromChatId);
                         continue;
                     }
 
                     if (arg === 'all') {
                         activeTasks.forEach(task => task.stopRequested = true);
-                        await sendTelegram(`🛑 *Stopping all tasks...*`);
+                        await sendTelegram(`🛑 *Stopping all tasks...*`, fromChatId);
                     } else if (arg) {
                         let found = false;
                         activeTasks.forEach((task, id) => {
@@ -1587,14 +1588,14 @@ async function main() {
                                 found = true;
                             }
                         });
-                        if (found) await sendTelegram(`🛑 Stop requested for tasks matching: *${arg}*`);
-                        else await sendTelegram(`⚠️ No active task found for: *${arg}*`);
+                        if (found) await sendTelegram(`🛑 Stop requested for tasks matching: *${arg}*`, fromChatId);
+                        else await sendTelegram(`⚠️ No active task found for: *${arg}*`, fromChatId);
                     } else {
                         // Stop the most recent one
                         const lastId = Array.from(activeTasks.keys()).pop();
                         const task = activeTasks.get(lastId);
                         task.stopRequested = true;
-                        await sendTelegram(`🛑 Stopping most recent task: *${task.keyword}*`);
+                        await sendTelegram(`🛑 Stopping most recent task: *${task.keyword}*`, fromChatId);
                     }
                     continue;
                 }
