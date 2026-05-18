@@ -1520,7 +1520,7 @@ async function main() {
                         `*Timetable & Attendance Commands:*\n` +
                         `\`!timetable\` or \`!tt\` — Get today's schedule\n` +
                         `\`!attendance\` or \`!att\` — Get your attendance\n` +
-                        `\`!bunk\` — Calculate how many classes you can bunk (75% limit)\n\n` +
+                        `\`!bunk\` — Calculate how many classes you can bunk (80% limit)\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active tasks\n` +
@@ -1680,7 +1680,7 @@ async function main() {
                     try {
                         const data = await fetchAttendance(session.context, session.config);
                         let msg = formatAttendance(data, session.config.name);
-                        msg += `\n\n_💡 Tip: Type_ \`!bunk\` _to calculate how many classes you can skip while maintaining 75%!_`;
+                        msg += `\n\n_💡 Tip: Type_ \`!bunk\` _to calculate how many classes you can skip while maintaining 80%!_`;
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch attendance: ${err.message}`, fromChatId);
@@ -1702,11 +1702,11 @@ async function main() {
                             continue;
                         }
                         
-                        let msg = `🧮 *Select a Subject to Calculate Bunk Stats*\n\n`;
+                        let msg = `🧮 *Select a Subject to Calculate Bunk Stats (80% Limit)*\n\n`;
                         data.forEach((item, i) => {
-                             msg += `*${i+1}.* ${item.subject.replace(/([_*`\[])/g, '\\$1')}\n`;
+                             msg += `🔹 ${item.subject.replace(/([_*`\[])/g, '\\$1')}\n`;
                         });
-                        msg += `\n_Reply with_ \`!bunk <number>\` _(e.g., !bunk 1) to calculate for a specific subject!_`;
+                        msg += `\n_Reply with_ \`!bunk <subject>\` _(e.g., !bunk calculus) to calculate!_`;
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
                         await sendTelegram(`❌ Error: ${err.message}`, fromChatId);
