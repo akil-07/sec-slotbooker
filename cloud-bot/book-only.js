@@ -1855,14 +1855,12 @@ async function main() {
                         taskPage._userConfig = userConfig;
                         task.page = taskPage;
 
-                        await sendTelegram(`🚀 *Booking has started!* (Using ${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
-                        
                         if (isScan) {
                             let scanCount = 1;
                             while (!task.stopRequested) {
                                 task.phase = `Scanning (Check #${scanCount})`;
                                 if (scanCount === 1) {
-                                    await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*\nChecking every 30 seconds... Use \`!stop\` to cancel.`, fromChatId);
+                                    await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 30 seconds... Use \`!stop\` to cancel.`, fromChatId);
                                 }
 
                                 try {
@@ -1898,7 +1896,7 @@ async function main() {
                             await runUnbookingOnPage(taskPage, keyword, targetTime, fromChatId);
                         } else {
                             task.phase = 'Booking on portal';
-                            await sendTelegram(`⏳ Processing Booking for *${keyword}*...`, fromChatId);
+                            await sendTelegram(`🚀 *Booking started!* (${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
                             await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
                         }
                     } catch (err) {
