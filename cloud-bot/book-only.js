@@ -1603,12 +1603,12 @@ async function main() {
                 // 👑 ADMIN COMMANDS
                 if (fromChatId === ADMIN_CHAT_ID) {
                     if (text.startsWith('!adduser')) {
-                        const parts = text.split(' ').filter(Boolean);
-                        if (parts.length < 5) {
+                        const originalParts = msg.text.trim().split(/\s+/);
+                        if (originalParts.length < 5) {
                             await sendTelegram(`Format: \`!adduser <chatId> <user> <pass> <name>\``, ADMIN_CHAT_ID);
                             continue;
                         }
-                        const nId = parts[1], nU = parts[2], nP = parts[3], nName = parts.slice(4).join(' ');
+                        const nId = originalParts[1], nU = originalParts[2], nP = originalParts[3], nName = originalParts.slice(4).join(' ');
                         const newConfig = { user: nU, pass: nP, name: nName };
                         
                         await sendTelegram(`⏳ Adding ${nName}...`, ADMIN_CHAT_ID);
