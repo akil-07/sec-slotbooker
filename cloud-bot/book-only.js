@@ -8,74 +8,14 @@ const CHAT_ID = process.env.CHAT_ID;
 const SAVEETHA_USER = process.env.SAVEETHA_USER;
 const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
 const ACCOUNTS_JSON = process.env.ACCOUNTS_JSON;
-const GIST_TOKEN = process.env.GIST_TOKEN;
-const GIST_ID_ENV = process.env.GIST_ID;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || process.env.CHAT_ID || '6374825608';
-
 // User Registry
 let ACCOUNTS = {};
 let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, isBusy }
 let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
 
 // ─── Gist Persistence Logic ──────────────────────────────────────────────────
-
-async function loadGist() {
-    const token = process.env.GIST_TOKEN || GIST_TOKEN;
-    const gistId = process.env.GIST_ID || GIST_ID_ENV;
-    
-    if (!token || !gistId || !apiRequest) {
-        if (!apiRequest) console.log('[Gist] API Request context not ready.');
-        else console.log('[Gist] GIST_TOKEN or GIST_ID not set. Runtime users will not persist.');
-        return {};
-    }
-    try {
-        const res = await apiRequest.get(`https://api.github.com/gists/${gistId}`, {
-            headers: { 
-                'Authorization': `token ${token}`,
-                'User-Agent': 'SaveethaBot/1.0',
-                'Accept': 'application/vnd.github.v3+json'
-            }
-        });
-        if (!res.ok()) {
-            console.error('[Gist] Load failed with status:', res.status());
-            return {};
-        }
-        const data = await res.json();
-        if (data.files && data.files['users.json']) {
-            return JSON.parse(data.files['users.json'].content);
-        }
-    } catch (e) {
-        console.error('[Gist] Load error:', e.message);
-    }
-    return {};
-}
-
-async function updateGist(users) {
-    const token = process.env.GIST_TOKEN || GIST_TOKEN;
-    const gistId = process.env.GIST_ID || GIST_ID_ENV;
-    
-    if (!token || !gistId || !apiRequest) return;
-    try {
-        const res = await apiRequest.patch(`https://api.github.com/gists/${gistId}`, {
-            headers: { 
-                'Authorization': `token ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'SaveethaBot/1.0',
-                'Accept': 'application/vnd.github.v3+json'
-            },
-            data: {
-                files: { 'users.json': { content: JSON.stringify(users, null, 2) } }
-            }
-        });
-        if (!res.ok()) {
-            console.error('[Gist] Update failed with status:', res.status());
-        } else {
-            console.log('[Gist] Updated successfully.');
-        }
-    } catch (e) {
-        console.error('[Gist] Update error:', e.message);
-    }
-}
+// Removed Gist persistence per user request. Using only ACCOUNTS_JSON.
 
 // ─── Account Initialization ──────────────────────────────────────────────────
 
@@ -90,9 +30,6 @@ async function initAccounts() {
         }
     } catch (e) { console.error('[Bot] ACCOUNTS_JSON parse error'); }
 
-    // 2. Load dynamic users from Gist
-    const gistUsers = await loadGist();
-    Object.assign(ACCOUNTS, gistUsers);
     console.log('[Bot] Total authorized users:', Object.keys(ACCOUNTS).length);
 }
 
@@ -1502,7 +1439,7 @@ async function main() {
                 const fromChatId = String(msg.chat.id);
                 const userConfig = getUserConfig(fromChatId);
                 
-                if (!userConfig) {
+                if (!userConfig && fromChatId !== ADMIN_CHAT_ID) {
                     console.log(`[Bot] Ignoring message from unauthorized chat: ${fromChatId}`);
                     // Optional: await sendTelegram(`⚠️ Your Chat ID (${fromChatId}) is not authorized for this bot.`);
                     continue;
@@ -1533,8 +1470,6 @@ async function main() {
 
                     if (fromChatId === ADMIN_CHAT_ID) {
                         helpMsg += `\n*👑 Admin Commands:*\n` +
-                                   `\`!adduser <id> <user> <pass> <name>\` — Add user\n` +
-                                   `\`!removeuser <id>\` — Remove user\n` +
                                    `\`!listusers\` — Show all users\n`;
                     }
                     
@@ -1602,50 +1537,6 @@ async function main() {
 
                 // 👑 ADMIN COMMANDS
                 if (fromChatId === ADMIN_CHAT_ID) {
-                    if (text.startsWith('!adduser')) {
-                        const originalParts = msg.text.trim().split(/\s+/);
-                        if (originalParts.length < 5) {
-                            await sendTelegram(`Format: \`!adduser <chatId> <user> <pass> <name>\``, ADMIN_CHAT_ID);
-                            continue;
-                        }
-                        const nId = originalParts[1], nU = originalParts[2], nP = originalParts[3], nName = originalParts.slice(4).join(' ');
-                        const newConfig = { user: nU, pass: nP, name: nName };
-                        
-                        await sendTelegram(`⏳ Adding ${nName}...`, ADMIN_CHAT_ID);
-                        const success = await spawnUserSession(browser, nId, newConfig);
-                        if (success) {
-                            const dynamicUsers = await loadGist();
-                            dynamicUsers[nId] = newConfig;
-                            await updateGist(dynamicUsers);
-                            ACCOUNTS[nId] = newConfig;
-                            await sendTelegram(`✅ Added ${nName} successfully!`, ADMIN_CHAT_ID);
-                            await sendTelegram(`🎉 Welcome ${nName}! Your account is now connected. Try \`!help\` to begin.`, nId);
-                        } else {
-                            await sendTelegram(`❌ Failed to login ${nName}. Check credentials.`, ADMIN_CHAT_ID);
-                        }
-                        continue;
-                    }
-
-                    if (text.startsWith('!removeuser')) {
-                        const parts = text.split(' ');
-                        const rId = parts[1];
-                        if (!rId) return;
-                        
-                        const session = USER_SESSIONS.get(rId);
-                        if (session) {
-                            await session.persistentPage.close().catch(() => {});
-                            await session.context.close().catch(() => {});
-                            USER_SESSIONS.delete(rId);
-                        }
-                        
-                        const dynamicUsers = await loadGist();
-                        delete dynamicUsers[rId];
-                        await updateGist(dynamicUsers);
-                        delete ACCOUNTS[rId];
-                        
-                        await sendTelegram(`🛑 Removed user ${rId}.`, ADMIN_CHAT_ID);
-                        continue;
-                    }
 
                     if (text === '!listusers') {
                         let list = `👥 *Authorized Users*\n\n`;
