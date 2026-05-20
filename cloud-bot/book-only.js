@@ -20,15 +20,21 @@ let apiRequest = null; // Playwright request context for bypassing Node fetch bl
 // ─── Account Initialization ──────────────────────────────────────────────────
 
 async function initAccounts() {
-    // 1. Load hardcoded secret users
+    // 1. Always load the primary user first
+    if (CHAT_ID && SAVEETHA_USER && SAVEETHA_PASS) {
+        ACCOUNTS[CHAT_ID] = { user: SAVEETHA_USER, pass: SAVEETHA_PASS, name: 'Primary User' };
+    }
+
+    // 2. Load additional dynamic users from JSON
     try {
         if (ACCOUNTS_JSON) {
-            ACCOUNTS = JSON.parse(ACCOUNTS_JSON);
-            console.log('[Bot] Loaded hardcoded accounts:', Object.keys(ACCOUNTS).join(', '));
-        } else {
-            ACCOUNTS[CHAT_ID] = { user: SAVEETHA_USER, pass: SAVEETHA_PASS, name: 'Primary User' };
+            const additionalAccounts = JSON.parse(ACCOUNTS_JSON);
+            Object.assign(ACCOUNTS, additionalAccounts);
+            console.log('[Bot] Loaded additional JSON accounts:', Object.keys(additionalAccounts).join(', '));
         }
-    } catch (e) { console.error('[Bot] ACCOUNTS_JSON parse error'); }
+    } catch (e) { 
+        console.error('[Bot] ACCOUNTS_JSON parse error:', e.message); 
+    }
 
     console.log('[Bot] Total authorized users:', Object.keys(ACCOUNTS).length);
 }
