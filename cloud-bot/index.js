@@ -115,7 +115,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
 
     try {
         console.log('[Playwright] Navigating to login...');
-        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'networkidle', timeout: 60000 });
         
         // --- LOGIN ---
         console.log('[Playwright] Entering credentials...');
@@ -149,7 +149,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
         
         // Go to events booking
         console.log('[Playwright] Navigating to Event Booking page...');
-        await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'networkidle', timeout: 60000 });
         
         console.log(`[Playwright] Scanning for slots...`);
         
