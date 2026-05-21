@@ -508,7 +508,9 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
 
 async function doLogin(page, user, pass) {
     console.log(`[Bot] Logging in as ${user}...`);
-    await page.goto('https://learner.saveetha.in/login', { waitUntil: 'networkidle', timeout: 60000 });
+    if (!page.url().includes('/login') && !page.url().includes('/authorize')) {
+        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'networkidle', timeout: 60000 });
+    }
 
     // Try multiple selectors for the username field
     const userSelectors = [
@@ -533,10 +535,10 @@ async function doLogin(page, user, pass) {
     if (!userInput) throw new Error('Could not find username input on login page.');
 
     // Fill using React-compatible method
-    await userInput.fill(user);
+    await userInput.fill(String(user));
 
     const passInput = page.locator('input[type="password"]').first();
-    await passInput.fill(pass);
+    await passInput.fill(String(pass));
 
     // Click login button
     const loginSelectors = [

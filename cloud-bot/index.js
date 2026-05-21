@@ -114,42 +114,39 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
     const page = await context.newPage();
 
     try {
-        console.log('[Playwright] Navigating to login...');
-        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'networkidle', timeout: 60000 });
-        
-        // --- LOGIN ---
-        console.log('[Playwright] Entering credentials...');
-        await page.waitForSelector('input[type="text"], input[name="uid"], #username', { timeout: 15000 });
-        
-        const userInputs = await page.$$('input[type="text"], input[name="uid"], #username');
-        if (userInputs.length > 0) {
-            await userInputs[0].fill(SAVEETHA_USER);
-        }
-        
-        const passInputs = await page.$$('input[type="password"]');
-        if (passInputs.length > 0) {
-            await passInputs[0].fill(SAVEETHA_PASS);
-        }
-        
-        // Find and click login button
-        const loginBtns = await page.$$('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
-        if (loginBtns.length > 0) {
-            await loginBtns[0].click();
-        } else {
-            await page.keyboard.press('Enter');
-        }
-        
-        console.log('[Playwright] Logged in, waiting for redirect...');
-        await page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => null);
-        
-        try {
-            await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
-        } catch (e) {}
-        await page.waitForTimeout(2000);
-        
-        // Go to events booking
         console.log('[Playwright] Navigating to Event Booking page...');
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'networkidle', timeout: 60000 });
+        
+        if (page.url().includes('/login') || page.url().includes('/authorize')) {
+            console.log('[Playwright] Entering credentials...');
+            await page.waitForSelector('input[type="text"], input[name="uid"], #username', { timeout: 15000 });
+            
+            const userInputs = await page.$$('input[type="text"], input[name="uid"], #username');
+            if (userInputs.length > 0) {
+                await userInputs[0].fill(String(SAVEETHA_USER));
+            }
+            
+            const passInputs = await page.$$('input[type="password"]');
+            if (passInputs.length > 0) {
+                await passInputs[0].fill(String(SAVEETHA_PASS));
+            }
+            
+            // Find and click login button
+            const loginBtns = await page.$$('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
+            if (loginBtns.length > 0) {
+                await loginBtns[0].click();
+            } else {
+                await page.keyboard.press('Enter');
+            }
+            
+            console.log('[Playwright] Logged in, waiting for redirect...');
+            await page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => null);
+            
+            try {
+                await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
+            } catch (e) {}
+            await page.waitForTimeout(2000);
+        }
         
         console.log(`[Playwright] Scanning for slots...`);
         
