@@ -142,6 +142,11 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
         console.log('[Playwright] Logged in, waiting for redirect...');
         await page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => null);
         
+        try {
+            await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
+        } catch (e) {}
+        await page.waitForTimeout(2000);
+        
         // Go to events booking
         console.log('[Playwright] Navigating to Event Booking page...');
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'domcontentloaded', timeout: 60000 });

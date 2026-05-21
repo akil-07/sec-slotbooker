@@ -533,14 +533,10 @@ async function doLogin(page, user, pass) {
     if (!userInput) throw new Error('Could not find username input on login page.');
 
     // Fill using React-compatible method
-    await userInput.click({ force: true });
-    await userInput.fill('');
-    await userInput.type(user, { delay: 50 });
+    await userInput.fill(user);
 
     const passInput = page.locator('input[type="password"]').first();
-    await passInput.click({ force: true });
-    await passInput.fill('');
-    await passInput.type(pass, { delay: 50 });
+    await passInput.fill(pass);
 
     // Click login button
     const loginSelectors = [
@@ -565,6 +561,15 @@ async function doLogin(page, user, pass) {
     if (!clicked) await page.keyboard.press('Enter');
 
     await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+    
+    // Wait for SSO redirects to complete
+    try {
+        await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
+    } catch (e) {
+        // ignore timeout, we'll just log the URL anyway
+    }
+    await page.waitForTimeout(2000);
+
     console.log('[Bot] Logged in. Current URL:', page.url());
 }
 
