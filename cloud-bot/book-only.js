@@ -1915,7 +1915,7 @@ async function main() {
                     task.phase = `Scanning (Check #${scanCount})`;
                     saveTasks();
                     if (scanCount === 1) {
-                        await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 30 seconds... Use \`!stop\` to cancel.`, fromChatId);
+                        await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 10 seconds... Use \`!stop\` to cancel.`, fromChatId);
                     }
 
                     try {
@@ -1929,7 +1929,7 @@ async function main() {
                             // On first fail, we send a notification so the user knows it's not there yet
                             await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
                         } else {
-                            console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 30s...`);
+                            console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 10s...`);
                         }
                     } catch (scanErr) {
                         console.error(`[Bot] Scan #${scanCount} error for "${keyword}":`, scanErr.message);
@@ -1939,8 +1939,8 @@ async function main() {
                     }
 
                     scanCount++;
-                    // Wait 30 seconds before next scan (check stopRequested every 2s)
-                    for (let i = 0; i < 15; i++) {
+                    // Wait 10 seconds before next scan (check stopRequested every 2s)
+                    for (let i = 0; i < 5; i++) {
                         if (task.stopRequested) break;
                         await new Promise(r => setTimeout(r, 2000));
                     }
