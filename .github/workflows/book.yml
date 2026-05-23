@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: '0 */5 * * *'   # Auto-restart every 5 hours (before GitHub's 6h limit kills it)
 
+concurrency:
+  group: "telegram-bot"
+  cancel-in-progress: true
+
 jobs:
   bot:
     name: Run Persistent Telegram Bot
