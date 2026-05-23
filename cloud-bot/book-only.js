@@ -1489,9 +1489,10 @@ async function main() {
     // Pre-login each user and keep a "Hot Tab" ready on the booking page
     await initAccounts();
     
-    for (const [chatId, config] of Object.entries(ACCOUNTS)) {
-        await spawnUserSession(browser, chatId, config);
-    }
+    const spawnPromises = Object.entries(ACCOUNTS).map(([chatId, config]) => 
+        spawnUserSession(browser, chatId, config)
+    );
+    await Promise.all(spawnPromises);
 
     // Optional: Keep-alive loop to prevent sessions from timing out
     setInterval(async () => {
