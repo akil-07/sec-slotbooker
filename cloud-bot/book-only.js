@@ -14,6 +14,53 @@ let ACCOUNTS = {};
 let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, isBusy }
 let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
 
+// ─── Persistent Task State ───────────────────────────────────────────────────
+const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
+
+function loadPersistedTasks() {
+    try {
+        if (fs.existsSync(TASKS_FILE)) {
+            const raw = fs.readFileSync(TASKS_FILE, 'utf-8');
+            const tasks = JSON.parse(raw);
+            console.log(`[Persist] Loaded ${tasks.length} persisted task(s) from disk.`);
+            return tasks;
+        }
+    } catch (e) {
+        console.error('[Persist] Failed to load tasks:', e.message);
+    }
+    return [];
+}
+
+function savePersistedTasks(tasksMap) {
+    try {
+        const arr = [];
+        tasksMap.forEach((task, id) => {
+            // Only persist scan tasks and timed book tasks (they are resumable)
+            if (task.persistType) {
+                arr.push({
+                    id,
+                    type: task.persistType,
+                    keyword: task.keyword,
+                    targetTime: task.targetTime || '',
+                    targetVenue: task.targetVenue || '',
+                    startTime: task.startTime || '',
+                    chatId: task.chatId,
+                    createdAt: task.createdAt || new Date().toISOString()
+                });
+            }
+        });
+        fs.writeFileSync(TASKS_FILE, JSON.stringify(arr, null, 2), 'utf-8');
+    } catch (e) {
+        console.error('[Persist] Failed to save tasks:', e.message);
+    }
+}
+
+function clearPersistedTasks() {
+    try {
+        if (fs.existsSync(TASKS_FILE)) fs.unlinkSync(TASKS_FILE);
+    } catch (_) {}
+}
+
 // ─── Gist Persistence Logic ──────────────────────────────────────────────────
 // Removed Gist persistence per user request. Using only ACCOUNTS_JSON.
 
@@ -127,7 +174,9 @@ function getDelayMsUntil(timeStr) {
 
 async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, silent = false, chatId = CHAT_ID) {
     console.log(`[Bot] Navigating to Event Booking page...`);
-    await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
+    // Cache-busting query param ensures a fresh page load every scan
+    const cacheBuster = `_cb=${Date.now()}`;
+    await page.goto(`https://learner.saveetha.in/academicevents/event-booking/?${cacheBuster}`, {
         waitUntil: 'networkidle',
         timeout: 60000
     });
@@ -150,6 +199,14 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
         const { kw, time, venue } = params;
         const results = [];
         const allAvailable = [];
+        
+        // Clean up any stale tags from previous runs
+        document.querySelectorAll('[data-saveetha-btn],[data-saveetha-input],[data-saveetha-cancel]').forEach(el => {
+            el.removeAttribute('data-saveetha-btn');
+            el.removeAttribute('data-saveetha-input');
+            el.removeAttribute('data-saveetha-cancel');
+        });
+        
         const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
         const btns = Array.from(allClickable).filter(el => {
             if (el.offsetParent === null) return false;
@@ -227,17 +284,45 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
                 matchVenue = fullTextNorm.includes(venueNorm);
             }
 
-            // ⛔ Check "Opening Soon" or "Already Booked" status
-            const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
+            // ⛔ Check "Already Booked" status
             const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');
 
             if (matchKeyword && matchTime && matchVenue) {
-                if (isOpeningSoon) {
-                    results.push({ index: i, fullText: fullTextNorm, isWaitlist, isOpeningSoon: true });
-                } else if (isAlreadyBooked) {
+                if (isAlreadyBooked) {
                     results.push({ index: i, fullText: fullTextNorm, isWaitlist, isAlreadyBooked: true });
                 } else {
-                    results.push({ index: i, fullText: fullTextNorm, isWaitlist });
+                    // Tag the button AND find purpose input immediately while DOM is stable
+                    const tagId = 'target-' + Date.now() + '-' + i;
+                    btn.setAttribute('data-saveetha-btn', tagId);
+                    
+                    let purposeTagged = false;
+                    if (card) {
+                        const inputs = card.querySelectorAll('input[type="text"], textarea, input:not([type])');
+                        for (const inp of inputs) {
+                            if (inp.offsetParent === null) continue;
+                            const p = (inp.placeholder || '').toLowerCase();
+                            const n = (inp.getAttribute('name') || '').toLowerCase();
+                            const a = (inp.getAttribute('aria-label') || '').toLowerCase();
+                            if (p.includes('purpose') || p.includes('reason') || p.includes('attend') ||
+                                n.includes('purpose') || a.includes('purpose')) {
+                                inp.setAttribute('data-saveetha-input', 'purpose');
+                                purposeTagged = true;
+                                break;
+                            }
+                        }
+                        if (!purposeTagged) {
+                            const inputs2 = card.querySelectorAll('input[type="text"], textarea, input:not([type])');
+                            for (const inp of inputs2) {
+                                if (inp.offsetParent !== null) {
+                                    inp.setAttribute('data-saveetha-input', 'purpose');
+                                    purposeTagged = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    results.push({ index: i, fullText: fullTextNorm, isWaitlist, tagId, purposeTagged });
                 }
             }
         }
@@ -248,18 +333,15 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
     const availableSlots = evaluation.availableSlots;
 
     // Filter out non-bookable results for the actual booking logic, but keep them for reporting
-    const bookableSlots = slotsFound.filter(s => !s.isOpeningSoon && !s.isAlreadyBooked);
+    const bookableSlots = slotsFound.filter(s => !s.isAlreadyBooked);
 
     if (bookableSlots.length === 0) {
         console.log('[Bot] No bookable slot found.');
         if (!silent) {
             let reasonMsg = '';
-            const openingSoon = slotsFound.find(s => s.isOpeningSoon);
             const alreadyBooked = slotsFound.find(s => s.isAlreadyBooked);
 
-            if (openingSoon) {
-                reasonMsg = `\n\n🕒 *Status:* Found the slot, but it says "Opening Soon".`;
-            } else if (alreadyBooked) {
+            if (alreadyBooked) {
                 reasonMsg = `\n\n✅ *Status:* You are already booked/registered for this slot.`;
             } else {
                 const displayedSlots = availableSlots.slice(0, 15);
@@ -1431,12 +1513,62 @@ async function main() {
     await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${USER_SESSIONS.size} accounts have a tab open and ready on the booking page.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
 
     // Track active bookings
-    let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page }
+    let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page, isScan, isUnbook, fromChatId, userConfig }
     let taskIdCounter = 0;
+    const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
+
+    function saveTasks() {
+        const tasksArr = [];
+        activeTasks.forEach((task, id) => {
+            tasksArr.push({
+                id,
+                keyword: task.keyword,
+                targetTime: task.targetTime,
+                targetVenue: task.targetVenue,
+                startTime: task.startTime,
+                phase: task.phase,
+                isScan: task.isScan,
+                isUnbook: task.isUnbook,
+                fromChatId: task.fromChatId
+            });
+        });
+        fs.writeFileSync(TASKS_FILE, JSON.stringify({ counter: taskIdCounter, tasks: tasksArr }, null, 2));
+    }
+
+    function removeTask(taskId) {
+        activeTasks.delete(taskId);
+        saveTasks();
+    }
 
     // Poll Telegram for messages
     let offset = 0;
     console.log('[Bot] Polling Telegram for commands...');
+
+    // Load tasks from file if any
+    if (fs.existsSync(TASKS_FILE)) {
+        try {
+            const data = JSON.parse(fs.readFileSync(TASKS_FILE, 'utf-8'));
+            taskIdCounter = data.counter || 0;
+            const loaded = data.tasks || [];
+            for (const t of loaded) {
+                if (t.stopRequested || t.phase === 'Cancelling slot') continue; // Skip finished/unbook ones
+                const userConf = getUserConfig(t.fromChatId);
+                if (!userConf) continue;
+                const taskObj = {
+                    ...t,
+                    phase: 'Resuming from restart...',
+                    stopRequested: false,
+                    page: null,
+                    userConfig: userConf
+                };
+                activeTasks.set(t.id, taskObj);
+                startTaskLoop(t.id, taskObj);
+            }
+            if (loaded.length > 0) {
+                console.log(`[Bot] Resumed ${activeTasks.size} tasks from disk.`);
+            }
+        } catch(e) { console.error('[Bot] Error loading tasks:', e.message); }
+    }
 
     while (true) {
         try {
@@ -1528,6 +1660,7 @@ async function main() {
                     if (arg === 'all') {
                         activeTasks.forEach(task => task.stopRequested = true);
                         await sendTelegram(`🛑 *Stopping all tasks...*`, fromChatId);
+                        saveTasks();
                     } else if (arg) {
                         let found = false;
                         activeTasks.forEach((task, id) => {
@@ -1536,7 +1669,10 @@ async function main() {
                                 found = true;
                             }
                         });
-                        if (found) await sendTelegram(`🛑 Stop requested for tasks matching: *${arg}*`, fromChatId);
+                        if (found) {
+                            await sendTelegram(`🛑 Stop requested for tasks matching: *${arg}*`, fromChatId);
+                            saveTasks();
+                        }
                         else await sendTelegram(`⚠️ No active task found for: *${arg}*`, fromChatId);
                     } else {
                         // Stop the most recent one
@@ -1544,6 +1680,7 @@ async function main() {
                         const task = activeTasks.get(lastId);
                         task.stopRequested = true;
                         await sendTelegram(`🛑 Stopping most recent task: *${task.keyword}*`, fromChatId);
+                        saveTasks();
                     }
                     continue;
                 }
@@ -1708,117 +1845,15 @@ async function main() {
                     keyword, targetTime, targetVenue, startTime, 
                     phase: 'Initializing', 
                     stopRequested: false,
-                    page: null 
+                    page: null,
+                    isScan, isUnbook, fromChatId, userConfig
                 };
                 activeTasks.set(taskId, task);
+                saveTasks();
 
                 console.log(`[Bot] New Task [${taskId}]: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${targetVenue ? ` $ ${targetVenue}` : ''}${startTime ? ` # ${startTime}` : ''}`);
 
-                // Run booking in background (don't block the poll loop)
-                (async () => {
-                    let taskPage = null;
-                    try {
-                        if (startTime) {
-                            const delayMs = getDelayMsUntil(startTime);
-                            if (delayMs > 0) {
-                                const delayMins = Math.round(delayMs / 60000);
-                                await sendTelegram(`⏱️ *Timer Active [${keyword}]*\nWaiting ${delayMins} min(s) until ${startTime}.\n_You can still start other bookings!_`, fromChatId);
-                                task.phase = `Waiting until ${startTime}`;
-                                const endTime = Date.now() + delayMs;
-                                while (Date.now() < endTime) {
-                                    if (task.stopRequested) break;
-                                    await new Promise(resolve => setTimeout(resolve, 2000));
-                                }
-                            }
-                        }
-
-                        if (task.stopRequested) {
-                            await sendTelegram(`🛑 Task *${keyword}* was cancelled.`, fromChatId);
-                            return;
-                        }
-
-                        // Get user's pre-authenticated session
-                        const session = USER_SESSIONS.get(fromChatId);
-                        if (!session) {
-                            await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
-                            return;
-                        }
-
-                        // Use the "Hot Tab" if it's not busy, otherwise open a temporary one
-                        let isUsingPersistent = false;
-                        if (!session.isBusy) {
-                            taskPage = session.persistentPage;
-                            session.isBusy = true;
-                            isUsingPersistent = true;
-                            console.log(`[Bot] Using Hot Tab for ${userConfig.name}`);
-                        } else {
-                            taskPage = await session.context.newPage();
-                            console.log(`[Bot] Hot Tab busy, opened temp tab for ${userConfig.name}`);
-                        }
-
-                        taskPage._userConfig = userConfig;
-                        task.page = taskPage;
-
-                        if (isScan) {
-                            let scanCount = 1;
-                            while (!task.stopRequested) {
-                                task.phase = `Scanning (Check #${scanCount})`;
-                                if (scanCount === 1) {
-                                    await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 30 seconds... Use \`!stop\` to cancel.`, fromChatId);
-                                }
-
-                                try {
-                                    const success = await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, true, fromChatId);
-                                    if (success) {
-                                        console.log(`[Bot] Scan #${scanCount}: Slot found and booked for "${keyword}"`);
-                                        break;
-                                    }
-                                    if (scanCount === 1) {
-                                        console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", reporting to user...`);
-                                        // On first fail, we send a notification so the user knows it's not there yet
-                                        await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
-                                    } else {
-                                        console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 30s...`);
-                                    }
-                                } catch (scanErr) {
-                                    console.error(`[Bot] Scan #${scanCount} error for "${keyword}":`, scanErr.message);
-                                    if (scanCount === 1) {
-                                        await sendTelegram(`❌ Error during initial scan: ${scanErr.message}`, fromChatId);
-                                    }
-                                }
-
-                                scanCount++;
-                                // Wait 30 seconds before next scan (check stopRequested every 2s)
-                                for (let i = 0; i < 15; i++) {
-                                    if (task.stopRequested) break;
-                                    await new Promise(r => setTimeout(r, 2000));
-                                }
-                            }
-                        } else if (isUnbook) {
-                            task.phase = 'Cancelling slot';
-                            await sendTelegram(`⏳ Processing Cancellation for *${keyword}*...`, fromChatId);
-                            await runUnbookingOnPage(taskPage, keyword, targetTime, fromChatId);
-                        } else {
-                            task.phase = 'Booking on portal';
-                            await sendTelegram(`🚀 *Booking started!* (${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
-                            await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
-                        }
-                    } catch (err) {
-                        console.error(`[Bot] Task ${taskId} Error:`, err.message);
-                        await sendTelegram(`❌ Error [${keyword}]: ${err.message}`, fromChatId);
-                    } finally {
-                        const session = USER_SESSIONS.get(fromChatId);
-                        if (taskPage) {
-                            if (session && taskPage === session.persistentPage) {
-                                session.isBusy = false;
-                                await taskPage.goto('https://learner.saveetha.in/academicevents/event-booking/').catch(() => {});
-                            } else {
-                                await taskPage.close().catch(() => {});
-                            }
-                        }
-                        activeTasks.delete(taskId);
-                    }
-                })();
+                startTaskLoop(taskId, task);
             }
         } catch (pollErr) {
             console.error('[Bot] Poll error:', pollErr.message);
@@ -1826,6 +1861,116 @@ async function main() {
 
         // Small pause between polls (getUpdates uses long-polling of 30s already)
         await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    async function startTaskLoop(taskId, task) {
+        const { keyword, targetTime, targetVenue, startTime, isScan, isUnbook, fromChatId, userConfig } = task;
+        let taskPage = null;
+        try {
+            if (startTime) {
+                const delayMs = getDelayMsUntil(startTime);
+                if (delayMs > 0) {
+                    const delayMins = Math.round(delayMs / 60000);
+                    await sendTelegram(`⏱️ *Timer Active [${keyword}]*\nWaiting ${delayMins} min(s) until ${startTime}.\n_You can still start other bookings!_`, fromChatId);
+                    task.phase = `Waiting until ${startTime}`;
+                    saveTasks();
+                    const endTime = Date.now() + delayMs;
+                    while (Date.now() < endTime) {
+                        if (task.stopRequested) break;
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                }
+            }
+
+            if (task.stopRequested) {
+                await sendTelegram(`🛑 Task *${keyword}* was cancelled.`, fromChatId);
+                return;
+            }
+
+            // Get user's pre-authenticated session
+            const session = USER_SESSIONS.get(fromChatId);
+            if (!session) {
+                await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
+                return;
+            }
+
+            // Use the "Hot Tab" if it's not busy, otherwise open a temporary one
+            let isUsingPersistent = false;
+            if (!session.isBusy) {
+                taskPage = session.persistentPage;
+                session.isBusy = true;
+                isUsingPersistent = true;
+                console.log(`[Bot] Using Hot Tab for ${userConfig.name}`);
+            } else {
+                taskPage = await session.context.newPage();
+                console.log(`[Bot] Hot Tab busy, opened temp tab for ${userConfig.name}`);
+            }
+
+            taskPage._userConfig = userConfig;
+            task.page = taskPage;
+
+            if (isScan) {
+                let scanCount = 1;
+                while (!task.stopRequested) {
+                    task.phase = `Scanning (Check #${scanCount})`;
+                    saveTasks();
+                    if (scanCount === 1) {
+                        await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 30 seconds... Use \`!stop\` to cancel.`, fromChatId);
+                    }
+
+                    try {
+                        const success = await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, true, fromChatId);
+                        if (success) {
+                            console.log(`[Bot] Scan #${scanCount}: Slot found and booked for "${keyword}"`);
+                            break;
+                        }
+                        if (scanCount === 1) {
+                            console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", reporting to user...`);
+                            // On first fail, we send a notification so the user knows it's not there yet
+                            await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
+                        } else {
+                            console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 30s...`);
+                        }
+                    } catch (scanErr) {
+                        console.error(`[Bot] Scan #${scanCount} error for "${keyword}":`, scanErr.message);
+                        if (scanCount === 1) {
+                            await sendTelegram(`❌ Error during initial scan: ${scanErr.message}`, fromChatId);
+                        }
+                    }
+
+                    scanCount++;
+                    // Wait 30 seconds before next scan (check stopRequested every 2s)
+                    for (let i = 0; i < 15; i++) {
+                        if (task.stopRequested) break;
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
+                }
+            } else if (isUnbook) {
+                task.phase = 'Cancelling slot';
+                saveTasks();
+                await sendTelegram(`⏳ Processing Cancellation for *${keyword}*...`, fromChatId);
+                await runUnbookingOnPage(taskPage, keyword, targetTime, fromChatId);
+            } else {
+                task.phase = 'Booking on portal';
+                saveTasks();
+                await sendTelegram(`🚀 *Booking started!* (${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
+                await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
+            }
+        } catch (err) {
+            console.error(`[Bot] Task ${taskId} Error:`, err.message);
+            await sendTelegram(`❌ Error [${keyword}]: ${err.message}`, fromChatId);
+        } finally {
+            const session = USER_SESSIONS.get(fromChatId);
+            if (taskPage) {
+                if (session && taskPage === session.persistentPage) {
+                    session.isBusy = false;
+                    await taskPage.goto('https://learner.saveetha.in/academicevents/event-booking/').catch(() => {});
+                } else {
+                    await taskPage.close().catch(() => {});
+                }
+            }
+            removeTask(taskId);
+        }
     }
 }
 
