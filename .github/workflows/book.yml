@@ -9,6 +9,10 @@ concurrency:
   group: "telegram-bot"
   cancel-in-progress: true
 
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   bot:
     name: Run Persistent Telegram Bot
@@ -46,6 +50,7 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
           TZ: Asia/Kolkata
+          GH_TOKEN: ${{ github.token }}
         run: |
           cd cloud-bot
           node book-only.js &
@@ -55,3 +60,6 @@ jobs:
           sleep 19800
           echo "Time limit reached — stopping bot gracefully."
           kill $BOT_PID 2>/dev/null || true
+          
+          echo "Triggering the next workflow run to keep the bot alive seamlessly..."
+          gh workflow run "book.yml" || echo "Failed to trigger next workflow."
