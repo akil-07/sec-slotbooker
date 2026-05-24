@@ -164,7 +164,17 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
             
             function normalize(str) {
                 if (!str) return '';
-                return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+                return str.toLowerCase()
+                    .replace(/[^a-z0-9\s]/g, '')
+                    .replace(/\s+/g, ' ')
+                    .replace(/(\d)(am|pm)/g, '$1 $2')
+                    .trim();
+            }
+
+            function extractStartTime(normalizedText) {
+                const match = normalizedText.match(/\b(\d{1,2})\s*(am|pm)\b/);
+                if (!match) return '';
+                return match[1] + ' ' + match[2];
             }
 
             const kwNorm = normalize(kw);
@@ -190,6 +200,32 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                 
                 const fullTextRaw = card ? card.innerText : btn.innerText;
                 const fullTextNorm = normalize(fullTextRaw);
+                const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
+                const isWaitlist = btnText.includes('waitlist');
+
+                let summary = fullTextRaw.replace(/\n+/g, ' | ').trim();
+                if (summary.length > 80) summary = summary.substring(0, 80) + '...';
+                allAvailable.push(summary);
+
+                // Get the title/heading text separately for smarter matching
+                const titleEl = card ? card.querySelector('h1,h2,h3,h4,h5,strong,b,[class*="title"],[class*="heading"]') : null;
+                const titleTextNorm = normalize(titleEl ? titleEl.innerText : '');
+
+                // Use whole-word regex so "world" doesn't match "real-world" or "worldwide"
+                const kwWords = kwNorm.split(' ').filter(Boolean);
+                function wholeWordMatch(text, words) {
+                    return words.every(w => new RegExp('\\b' + w + '\\b').test(text));
+                }
+
+                // Prioritize title match; fall back to full card text
+                let matchKeyword = !kwNorm || wholeWordMatch(titleTextNorm, kwWords) || wholeWordMatch(fullTextNorm, kwWords);
+
+                let matchTime = true;
+                if (timeNorm) {
+                    const startTime = extractStartTime(fullTextNorm);
+                    matchTime = startTime === timeNorm;
+                }
+
                 // ⛔ Check "Opening Soon" or "Already Booked" status
                 const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
                 const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');

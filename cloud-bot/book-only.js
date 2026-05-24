@@ -284,11 +284,14 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
                 matchVenue = fullTextNorm.includes(venueNorm);
             }
 
-            // ⛔ Check "Already Booked" status
+            // ⛔ Check "Already Booked" or "Opening Soon" status
             const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');
+            const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
 
             if (matchKeyword && matchTime && matchVenue) {
-                if (isAlreadyBooked) {
+                if (isOpeningSoon) {
+                    results.push({ index: i, fullText: fullTextNorm, isWaitlist, isOpeningSoon: true });
+                } else if (isAlreadyBooked) {
                     results.push({ index: i, fullText: fullTextNorm, isWaitlist, isAlreadyBooked: true });
                 } else {
                     // Tag the button AND find purpose input immediately while DOM is stable
@@ -333,15 +336,18 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
     const availableSlots = evaluation.availableSlots;
 
     // Filter out non-bookable results for the actual booking logic, but keep them for reporting
-    const bookableSlots = slotsFound.filter(s => !s.isAlreadyBooked);
+    const bookableSlots = slotsFound.filter(s => !s.isAlreadyBooked && !s.isOpeningSoon);
 
     if (bookableSlots.length === 0) {
         console.log('[Bot] No bookable slot found.');
         if (!silent) {
             let reasonMsg = '';
+            const openingSoon = slotsFound.find(s => s.isOpeningSoon);
             const alreadyBooked = slotsFound.find(s => s.isAlreadyBooked);
 
-            if (alreadyBooked) {
+            if (openingSoon) {
+                reasonMsg = `\n\n🕒 *Status:* Found the slot, but it says "Opening Soon".`;
+            } else if (alreadyBooked) {
                 reasonMsg = `\n\n✅ *Status:* You are already booked/registered for this slot.`;
             } else {
                 const displayedSlots = availableSlots.slice(0, 15);
