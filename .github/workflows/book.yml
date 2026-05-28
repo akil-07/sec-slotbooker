@@ -53,13 +53,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd cloud-bot
-          node book-only.js &
-          BOT_PID=$!
-          echo "Bot running with PID $BOT_PID"
-          # Run for 5.5 hours (19800 seconds), then gracefully stop
-          sleep 19800
-          echo "Time limit reached — stopping bot gracefully."
-          kill $BOT_PID 2>/dev/null || true
+          # Run for 5.5 hours (19800 seconds) in the foreground so logs show up
+          timeout 19800 node book-only.js || true
+          
+          echo "Time limit reached or process stopped."
           
           echo "Triggering the next workflow run to keep the bot alive seamlessly..."
           gh workflow run "book.yml" || echo "Failed to trigger next workflow."
