@@ -321,19 +321,19 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                 if (tagged.success) {
                     const bookBtn = page.locator('[data-saveetha-btn="target"]');
                     await bookBtn.scrollIntoViewIfNeeded();
-                    await page.waitForTimeout(500);
+                    await page.waitForTimeout(200);
 
                     if (tagged.purposeFound) {
                         const purposeInput = page.locator('[data-saveetha-input="purpose"]');
                         console.log('[Playwright] Focusing purpose input...');
                         await purposeInput.scrollIntoViewIfNeeded();
                         await purposeInput.click({ force: true });
-                        await page.waitForTimeout(400);
+                        await page.waitForTimeout(100);
                         await page.keyboard.press('Control+A');
                         await page.keyboard.press('Delete');
+                        await page.waitForTimeout(100);
+                        await purposeInput.pressSequentially('To attend as part of academic curriculum', { delay: 10 });
                         await page.waitForTimeout(200);
-                        await purposeInput.pressSequentially('To attend as part of academic curriculum', { delay: 50 });
-                        await page.waitForTimeout(600);
                         const inputVal = await purposeInput.inputValue().catch(() => '?');
                         console.log(`[Playwright] Purpose field value after typing: "${inputVal}"`);
                     } else {
@@ -342,11 +342,11 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
 
                     console.log('[Playwright] Clicking Book Now...');
                     await bookBtn.scrollIntoViewIfNeeded();
-                    await page.waitForTimeout(300);
+                    await page.waitForTimeout(100);
                     await bookBtn.click({ force: true });
                     console.log('[Playwright] Book Now clicked!');
 
-                    await page.waitForTimeout(2000);
+                    await page.waitForTimeout(500);
 
                     // Handle SweetAlert2 / modals
                     try {
@@ -354,7 +354,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                         if (await swal2Confirm.count() > 0) {
                             console.log('[Playwright] SweetAlert2 confirm found — clicking...');
                             await swal2Confirm.first().click();
-                            await page.waitForTimeout(1500);
+                            await page.waitForTimeout(500);
                         } else {
                             const modalBtns = page.locator('.modal button, [role="dialog"] button, .swal-button');
                             const count = await modalBtns.count();
@@ -363,7 +363,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                                 if (t === 'ok' || t === 'confirm' || t === 'yes' || t === 'book') {
                                     console.log(`[Playwright] Modal button "${t}" — clicking...`);
                                     await modalBtns.nth(i).click();
-                                    await page.waitForTimeout(1500);
+                                    await page.waitForTimeout(500);
                                     break;
                                 }
                             }
@@ -372,7 +372,31 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                         console.log('[Playwright] Modal check (may have navigated):', modalErr.message);
                     }
 
-                    await page.waitForTimeout(1500);
+                    await page.waitForTimeout(500);
+
+                    // Verify booking by checking for a success/info banner message
+                    const bannerFound = await page.evaluate(() => {
+                        const alerts = document.querySelectorAll('.alert, .toast, .message, .notification, [class*="alert"], [class*="success"], [class*="msg"]');
+                        let text = '';
+                        alerts.forEach(el => {
+                            if (el.offsetParent !== null && el.innerText.trim().length > 0) {
+                                text += el.innerText.trim() + ' ';
+                            }
+                        });
+                        const lower = text.toLowerCase();
+                        if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlisted') || lower.includes('success')) {
+                            return { found: true, text: text.trim() };
+                        }
+                        return { found: false, text: text.trim() };
+                    });
+
+                    if (!bannerFound.found) {
+                        console.log(`[Playwright] Expected confirmation banner not found. Text was: "${bannerFound.text}". Misunderstood click.`);
+                        message.reply(`⚠️ Attempted to book *"${targetKeyword}"*, but could not verify success (no banner found). The bot may have misunderstood the button.`);
+                        return false;
+                    }
+                    console.log(`[Playwright] Confirmed via banner: ${bannerFound.text}`);
+
                     const currentUrl = page.url();
                     console.log(`[Playwright] Final URL: ${currentUrl}`);
                     console.log('[Playwright] Sending screenshot 4 (final result)...');

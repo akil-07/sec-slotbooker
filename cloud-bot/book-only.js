@@ -433,27 +433,27 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
 
     const bookBtn = page.locator('[data-saveetha-btn="target"]');
     await bookBtn.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(200);
 
     if (tagged.purposeFound) {
         const purposeInput = page.locator('[data-saveetha-input="purpose"]');
         console.log('[Bot] Filling purpose input...');
         await purposeInput.scrollIntoViewIfNeeded();
         await purposeInput.click({ force: true });
-        await page.waitForTimeout(400);
+        await page.waitForTimeout(100);
         await page.keyboard.press('Control+A');
         await page.keyboard.press('Delete');
+        await page.waitForTimeout(100);
+        await purposeInput.pressSequentially('To attend as part of academic curriculum', { delay: 10 });
         await page.waitForTimeout(200);
-        await purposeInput.pressSequentially('To attend as part of academic curriculum', { delay: 50 });
-        await page.waitForTimeout(600);
     }
 
     console.log('[Bot] Clicking Book Now...');
     await bookBtn.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(100);
     await bookBtn.click({ force: true });
     console.log('[Bot] Book Now clicked!');
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(500);
 
     // Handle confirmation modals
     try {
@@ -461,7 +461,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
         if (await swal2Confirm.count() > 0) {
             console.log('[Bot] SweetAlert2 confirm found — clicking...');
             await swal2Confirm.first().click();
-            await page.waitForTimeout(1500);
+            await page.waitForTimeout(500);
         } else {
             const modalBtns = page.locator('.modal button, [role="dialog"] button, .swal-button');
             const count = await modalBtns.count();
@@ -470,7 +470,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
                 if (t === 'ok' || t === 'confirm' || t === 'yes' || t === 'book') {
                     console.log(`[Bot] Modal button "${t}" — clicking...`);
                     await modalBtns.nth(i).click();
-                    await page.waitForTimeout(1500);
+                    await page.waitForTimeout(500);
                     break;
                 }
             }
@@ -479,7 +479,34 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
         console.log('[Bot] Modal check:', modalErr.message);
     }
 
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(500);
+    
+    // Verify booking by checking for a success/info banner message
+    const bannerFound = await page.evaluate(() => {
+        const alerts = document.querySelectorAll('.alert, .toast, .message, .notification, [class*="alert"], [class*="success"], [class*="msg"]');
+        let text = '';
+        alerts.forEach(el => {
+            if (el.offsetParent !== null && el.innerText.trim().length > 0) {
+                text += el.innerText.trim() + ' ';
+            }
+        });
+        const lower = text.toLowerCase();
+        if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlisted') || lower.includes('success')) {
+            return { found: true, text: text.trim() };
+        }
+        return { found: false, text: text.trim() };
+    });
+
+    if (!bannerFound.found) {
+        console.log(`[Bot] Expected confirmation banner not found. Text was: "${bannerFound.text}". Misunderstood click, returning false.`);
+        if (!silent) {
+            // Only send telegram message if it's not a silent scan
+            await sendTelegram(`⚠️ Attempted to book *"${targetKeyword}"*, but could not verify success (no banner found). Misunderstood button. Searching again...`, chatId);
+        }
+        return false;
+    }
+    console.log(`[Bot] Confirmed via banner: ${bannerFound.text}`);
+
     const finalUrl = page.url();
     console.log(`[Bot] Final URL: ${finalUrl}`);
 
@@ -1922,7 +1949,7 @@ async function main() {
                     task.phase = `Scanning (Check #${scanCount})`;
                     saveTasks();
                     if (scanCount === 1) {
-                        await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 10 seconds... Use \`!stop\` to cancel.`, fromChatId);
+                        await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 5 seconds... Use \`!stop\` to cancel.`, fromChatId);
                     }
 
                     try {
@@ -1936,7 +1963,7 @@ async function main() {
                             // On first fail, we send a notification so the user knows it's not there yet
                             await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
                         } else {
-                            console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 10s...`);
+                            console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 5s...`);
                         }
                     } catch (scanErr) {
                         console.error(`[Bot] Scan #${scanCount} error for "${keyword}":`, scanErr.message);
@@ -1946,10 +1973,10 @@ async function main() {
                     }
 
                     scanCount++;
-                    // Wait 10 seconds before next scan (check stopRequested every 2s)
+                    // Wait 5 seconds before next scan (check stopRequested every 1s)
                     for (let i = 0; i < 5; i++) {
                         if (task.stopRequested) break;
-                        await new Promise(r => setTimeout(r, 2000));
+                        await new Promise(r => setTimeout(r, 1000));
                     }
                 }
             } else if (isUnbook) {
