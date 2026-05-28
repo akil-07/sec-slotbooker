@@ -172,7 +172,7 @@ function getDelayMsUntil(timeStr) {
 
 // ─── Booking Logic ────────────────────────────────────────────────────────────
 
-async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, silent = false, chatId = CHAT_ID) {
+async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, targetDate, silent = false, chatId = CHAT_ID) {
     console.log(`[Bot] Navigating to Event Booking page...`);
     // Cache-busting query param ensures a fresh page load every scan
     const cacheBuster = `_cb=${Date.now()}`;
@@ -196,7 +196,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
     console.log(`[Bot] Scanning for slots matching: "${targetKeyword}"${targetTime ? ` at "${targetTime}"` : ''}${targetVenue ? ` in "${targetVenue}"` : ''}...`);
 
     const evaluation = await page.evaluate((params) => {
-        const { kw, time, venue } = params;
+        const { kw, time, venue, date } = params;
         const results = [];
         const allAvailable = [];
         
@@ -234,6 +234,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
         const kwNorm = normalize(kw);
         const timeNorm = normalize(time);
         const venueNorm = normalize(venue);
+        const dateNorm = normalize(date);
 
         for (let i = 0; i < btns.length; i++) {
             const btn = btns[i];
@@ -284,11 +285,16 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
                 matchVenue = fullTextNorm.includes(venueNorm);
             }
 
+            let matchDate = true;
+            if (dateNorm) {
+                matchDate = fullTextNorm.includes(dateNorm) || titleTextNorm.includes(dateNorm);
+            }
+
             // ⛔ Check "Already Booked" or "Opening Soon" status
             const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');
             const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
 
-            if (matchKeyword && matchTime && matchVenue) {
+            if (matchKeyword && matchTime && matchVenue && matchDate) {
                 if (isOpeningSoon) {
                     results.push({ index: i, fullText: fullTextNorm, isWaitlist, isOpeningSoon: true });
                 } else if (isAlreadyBooked) {
@@ -330,7 +336,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, si
             }
         }
         return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
-    }, { kw: targetKeyword, time: targetTime, venue: targetVenue });
+    }, { kw: targetKeyword, time: targetTime, venue: targetVenue, date: targetDate });
 
     const slotsFound = evaluation.slotsFound;
     const availableSlots = evaluation.availableSlots;
@@ -1634,6 +1640,7 @@ async function main() {
                         `\`!book <keyword>\` — Book immediately\n` +
                         `\`!book <keyword> @ 10:00 AM\` — Target specific time\n` +
                         `\`!book <keyword> $ 5511\` — Target specific room/venue\n` +
+                        `\`!book <keyword> ~ 05/22/2026\` — Target specific date\n` +
                         `\`!book <keyword> # 06:00 PM\` — Start scanning at 6 PM IST\n` +
                         `\`!scan <keyword>\` — Scan every 30s until found\n` +
                         `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
@@ -1851,12 +1858,18 @@ async function main() {
                 let keyword = text.substring(isUnbook ? 7 : (isScan ? 5 : 5)).trim();
                 let targetTime = '';
                 let targetVenue = '';
+                let targetDate = '';
                 let startTime = '';
 
                 if (keyword.includes('#')) {
                     const parts = keyword.split('#');
                     keyword = parts[0].trim();
                     startTime = parts[1].trim();
+                }
+                if (keyword.includes('~')) {
+                    const parts = keyword.split('~');
+                    keyword = parts[0].trim();
+                    targetDate = parts[1].trim();
                 }
                 if (keyword.includes('$')) {
                     const parts = keyword.split('$');
@@ -1876,7 +1889,7 @@ async function main() {
 
                 const taskId = ++taskIdCounter;
                 const task = { 
-                    keyword, targetTime, targetVenue, startTime, 
+                    keyword, targetTime, targetVenue, targetDate, startTime, 
                     phase: 'Initializing', 
                     stopRequested: false,
                     page: null,
@@ -1885,7 +1898,7 @@ async function main() {
                 activeTasks.set(taskId, task);
                 saveTasks();
 
-                console.log(`[Bot] New Task [${taskId}]: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${targetVenue ? ` $ ${targetVenue}` : ''}${startTime ? ` # ${startTime}` : ''}`);
+                console.log(`[Bot] New Task [${taskId}]: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${targetDate ? ` ~ ${targetDate}` : ''}${targetVenue ? ` $ ${targetVenue}` : ''}${startTime ? ` # ${startTime}` : ''}`);
 
                 startTaskLoop(taskId, task);
             }
@@ -1898,7 +1911,7 @@ async function main() {
     }
 
     async function startTaskLoop(taskId, task) {
-        const { keyword, targetTime, targetVenue, startTime, isScan, isUnbook, fromChatId, userConfig } = task;
+        const { keyword, targetTime, targetVenue, targetDate, startTime, isScan, isUnbook, fromChatId, userConfig } = task;
         let taskPage = null;
         try {
             if (startTime) {
@@ -1949,11 +1962,11 @@ async function main() {
                     task.phase = `Scanning (Check #${scanCount})`;
                     saveTasks();
                     if (scanCount === 1) {
-                        await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 5 seconds... Use \`!stop\` to cancel.`, fromChatId);
+                        await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 5 seconds... Use \`!stop\` to cancel.`, fromChatId);
                     }
 
                     try {
-                        const success = await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, true, fromChatId);
+                        const success = await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, targetDate, true, fromChatId);
                         if (success) {
                             console.log(`[Bot] Scan #${scanCount}: Slot found and booked for "${keyword}"`);
                             break;
@@ -1961,7 +1974,7 @@ async function main() {
                         if (scanCount === 1) {
                             console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", reporting to user...`);
                             // On first fail, we send a notification so the user knows it's not there yet
-                            await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
+                            await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, targetDate, false, fromChatId);
                         } else {
                             console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 5s...`);
                         }
@@ -1987,8 +2000,8 @@ async function main() {
             } else {
                 task.phase = 'Booking on portal';
                 saveTasks();
-                await sendTelegram(`🚀 *Booking started!* (${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
-                await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, false, fromChatId);
+                await sendTelegram(`🚀 *Booking started!* (${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
+                await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, targetDate, false, fromChatId);
             }
         } catch (err) {
             console.error(`[Bot] Task ${taskId} Error:`, err.message);

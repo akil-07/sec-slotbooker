@@ -48,12 +48,19 @@ client.on('message_create', async (message) => {
     if (text.toLowerCase().startsWith('!book')) {
         let keyword = text.substring(5).trim();
         let targetTime = '';
+        let targetDate = '';
         let startTime = '';
         
         if (keyword.includes('#')) {
             const parts = keyword.split('#');
             keyword = parts[0].trim();
             startTime = parts[1].trim();
+        }
+        
+        if (keyword.includes('~')) {
+            const parts = keyword.split('~');
+            keyword = parts[0].trim();
+            targetDate = parts[1].trim();
         }
 
         if (keyword.includes('@')) {
@@ -62,10 +69,10 @@ client.on('message_create', async (message) => {
             targetTime = parts[1].trim();
         }
         
-        console.log(`[Command Received] Starting Saveetha Auto-Booker for: "${keyword}"${targetTime ? ` at "${targetTime}"` : ''}${startTime ? ` | starts at ${startTime}` : ''}`);
+        console.log(`[Command Received] Starting Saveetha Auto-Booker for: "${keyword}"${targetDate ? ` on "${targetDate}"` : ''}${targetTime ? ` at "${targetTime}"` : ''}${startTime ? ` | starts at ${startTime}` : ''}`);
         
         try {
-            await runBookingBot(keyword, targetTime, startTime, message);
+            await runBookingBot(keyword, targetTime, targetDate, startTime, message);
         } catch (err) {
             console.error('[Error in Booking Bot]', err);
             message.reply(`❌ Error occurred: ${err.message}`);
@@ -73,7 +80,7 @@ client.on('message_create', async (message) => {
     }
 });
 
-async function runBookingBot(targetKeyword, targetTime, startTime, message) {
+async function runBookingBot(targetKeyword, targetTime, targetDate, startTime, message) {
     if (startTime) {
         // Calculate delay
         const now = new Date();
@@ -102,7 +109,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
         }
     }
 
-    message.reply(`⏳ Starting Saveetha Cloud Bot for "${targetKeyword}"${targetTime ? ` at ${targetTime}` : ''}... Please wait.`);
+    message.reply(`⏳ Starting Saveetha Cloud Bot for "${targetKeyword}"${targetDate ? ` on ${targetDate}` : ''}${targetTime ? ` at ${targetTime}` : ''}... Please wait.`);
 
     console.log('[Playwright] Launching browser...');
     // Running headful in the background (headless: true)
@@ -152,7 +159,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
         
         // Re-evaluate the page content inside the browser context
         const evaluation = await page.evaluate((params) => {
-            const { kw, time } = params;
+            const { kw, time, date } = params;
             const results = [];
             const allAvailable = [];
             const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
@@ -179,6 +186,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
 
             const kwNorm = normalize(kw);
             const timeNorm = normalize(time);
+            const dateNorm = normalize(date);
 
             for (let i = 0; i < btns.length; i++) {
                 const btn = btns[i];
@@ -226,11 +234,16 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                     matchTime = startTime === timeNorm;
                 }
 
+                let matchDate = true;
+                if (dateNorm) {
+                    matchDate = fullTextNorm.includes(dateNorm) || titleTextNorm.includes(dateNorm);
+                }
+
                 // ⛔ Check "Opening Soon" or "Already Booked" status
                 const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
                 const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');
 
-                if (matchKeyword && matchTime) {
+                if (matchKeyword && matchTime && matchDate) {
                     if (isOpeningSoon) {
                         results.push({ index: i, fullText: fullTextNorm, isWaitlist, isOpeningSoon: true });
                     } else if (isAlreadyBooked) {
@@ -241,7 +254,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                 }
             }
             return { slotsFound: results, availableSlots: [...new Set(allAvailable)] };
-        }, { kw: targetKeyword, time: targetTime });
+        }, { kw: targetKeyword, time: targetTime, date: targetDate });
 
         const slotsFound = evaluation.slotsFound;
         const availableSlots = evaluation.availableSlots;
@@ -424,7 +437,7 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
                     ? `\n\n*Available Slots:*\n` + displayedSlots.map(s => `- ${s}`).join('\n') + (moreCount > 0 ? `\n_...and ${moreCount} more slots_` : '')
                     : '\n\nNo slots are currently available on the page.';
             }
-            message.reply(`⚠️ No bookable slot found for "${targetKeyword}"${targetTime ? ` at ${targetTime}` : ''}.${reasonMsg}`);
+            message.reply(`⚠️ No bookable slot found for "${targetKeyword}"${targetDate ? ` on ${targetDate}` : ''}${targetTime ? ` at ${targetTime}` : ''}.${reasonMsg}`);
         }
         
     } catch (err) {
