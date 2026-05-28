@@ -149,11 +149,11 @@ async function getTelegramUpdates(offset) {
 function getDelayMsUntil(timeStr) {
     if (!timeStr) return 0;
     const now = new Date();
-    const match = timeStr.match(/(\d{1,2})[\.:] ?(\d{2})\s*(AM|PM|am|pm)?/i);
+    const match = timeStr.match(/(\d{1,2})(?:[\.:]\s*(\d{2}))?\s*(AM|PM|am|pm)?/i);
     if (!match) return 0;
 
     let hours = parseInt(match[1], 10);
-    const mins = parseInt(match[2], 10);
+    const mins = match[2] ? parseInt(match[2], 10) : 0;
     const isPM = match[3] && match[3].toLowerCase() === 'pm';
     const isAM = match[3] && match[3].toLowerCase() === 'am';
 

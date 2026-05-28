@@ -77,10 +77,10 @@ async function runBookingBot(targetKeyword, targetTime, startTime, message) {
     if (startTime) {
         // Calculate delay
         const now = new Date();
-        const match = startTime.match(/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i);
+        const match = startTime.match(/(\d{1,2})(?:[\.:]\s*(\d{2}))?\s*(AM|PM|am|pm)?/i);
         if (match) {
             let hours = parseInt(match[1], 10);
-            const mins = parseInt(match[2], 10);
+            const mins = match[2] ? parseInt(match[2], 10) : 0;
             const isPM = match[3] && match[3].toLowerCase() === 'pm';
             const isAM = match[3] && match[3].toLowerCase() === 'am';
             
