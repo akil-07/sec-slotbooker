@@ -388,20 +388,33 @@ async function runBookingBot(targetKeyword, targetTime, targetDate, startTime, m
                     await page.waitForTimeout(500);
 
                     // Verify booking by checking for a success/info banner message
-                    const bannerFound = await page.evaluate(() => {
-                        const alerts = document.querySelectorAll('.alert, .toast, .message, .notification, [class*="alert"], [class*="success"], [class*="msg"]');
-                        let text = '';
-                        alerts.forEach(el => {
-                            if (el.offsetParent !== null && el.innerText.trim().length > 0) {
-                                text += el.innerText.trim() + ' ';
-                            }
-                        });
-                        const lower = text.toLowerCase();
-                        if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlisted') || lower.includes('success')) {
-                            return { found: true, text: text.trim() };
+                    let bannerFound = { found: false, text: '' };
+                    for (let i = 0; i < 6; i++) {
+                        try {
+                            bannerFound = await page.evaluate(() => {
+                                const alerts = document.querySelectorAll('.alert, .toast, .message, .notification, [class*="alert"], [class*="success"], [class*="msg"]');
+                                let text = '';
+                                alerts.forEach(el => {
+                                    if (el.offsetParent !== null && el.innerText.trim().length > 0) {
+                                        text += el.innerText.trim() + ' ';
+                                    }
+                                });
+                                if (!text.trim()) {
+                                    const bodyText = document.body.innerText || '';
+                                    text = bodyText.substring(0, 1000);
+                                }
+                                const lower = text.toLowerCase();
+                                if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlisted') || lower.includes('success') || lower.includes('confirmed')) {
+                                    return { found: true, text: text.trim().substring(0, 150) };
+                                }
+                                return { found: false, text: text.trim().substring(0, 150) };
+                            });
+                            if (bannerFound.found) break;
+                        } catch (e) {
+                            console.log('[Playwright] Evaluation error during banner check (page navigation?):', e.message);
                         }
-                        return { found: false, text: text.trim() };
-                    });
+                        await page.waitForTimeout(500);
+                    }
 
                     if (!bannerFound.found) {
                         console.log(`[Playwright] Expected confirmation banner not found. Text was: "${bannerFound.text}". Misunderstood click.`);

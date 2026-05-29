@@ -487,21 +487,30 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
 
     await page.waitForTimeout(500);
     
-    // Verify booking by checking for a success/info banner message
-    const bannerFound = await page.evaluate(() => {
-        const alerts = document.querySelectorAll('.alert, .toast, .message, .notification, [class*="alert"], [class*="success"], [class*="msg"]');
-        let text = '';
-        alerts.forEach(el => {
-            if (el.offsetParent !== null && el.innerText.trim().length > 0) {
-                text += el.innerText.trim() + ' ';
-            }
-        });
-        const lower = text.toLowerCase();
-        if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlisted') || lower.includes('success')) {
-            return { found: true, text: text.trim() };
+    // Verify booking by checking for a success/info banner message (poll up to 3s)
+    let bannerFound = { found: false, text: '' };
+    for (let i = 0; i < 6; i++) {
+        try {
+            bannerFound = await page.evaluate(() => {
+                const alerts = document.querySelectorAll('.alert, .toast, .message, .notification, [class*="alert"], [class*="success"], [class*="msg"]');
+                let text = '';
+                alerts.forEach(el => {
+                    if (el.offsetParent !== null && el.innerText.trim().length > 0) {
+                        text += el.innerText.trim() + ' ';
+                    }
+                });
+                const lower = text.toLowerCase();
+                if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlisted') || lower.includes('success')) {
+                    return { found: true, text: text.trim() };
+                }
+                return { found: false, text: text.trim() };
+            });
+            if (bannerFound.found) break;
+        } catch (e) {
+            console.log('[Bot] Evaluation error during banner check (page navigation?):', e.message);
         }
-        return { found: false, text: text.trim() };
-    });
+        await page.waitForTimeout(500);
+    }
 
     if (!bannerFound.found) {
         console.log(`[Bot] Expected confirmation banner not found. Text was: "${bannerFound.text}". Misunderstood click, returning false.`);
