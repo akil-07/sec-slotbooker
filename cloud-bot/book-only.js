@@ -163,9 +163,11 @@ function getDelayMsUntil(timeStr) {
     const target = new Date(now);
     target.setHours(hours, mins, 0, 0);
     let diff = target.getTime() - now.getTime();
-    if (diff < 0) {
+    if (diff < -12 * 60 * 60 * 1000) {
         target.setDate(target.getDate() + 1);
         diff = target.getTime() - now.getTime();
+    } else if (diff < 0) {
+        diff = 0;
     }
     return diff;
 }
@@ -1574,11 +1576,13 @@ async function main() {
                 keyword: task.keyword,
                 targetTime: task.targetTime,
                 targetVenue: task.targetVenue,
+                targetDate: task.targetDate,
                 startTime: task.startTime,
                 phase: task.phase,
                 isScan: task.isScan,
                 isUnbook: task.isUnbook,
-                fromChatId: task.fromChatId
+                fromChatId: task.fromChatId,
+                timerFinished: task.timerFinished
             });
         });
         fs.writeFileSync(TASKS_FILE, JSON.stringify({ counter: taskIdCounter, tasks: tasksArr }, null, 2));
@@ -1923,7 +1927,7 @@ async function main() {
         const { keyword, targetTime, targetVenue, targetDate, startTime, isScan, isUnbook, fromChatId, userConfig } = task;
         let taskPage = null;
         try {
-            if (startTime) {
+            if (startTime && !task.timerFinished) {
                 const delayMs = getDelayMsUntil(startTime);
                 if (delayMs > 0) {
                     const delayMins = Math.round(delayMs / 60000);
@@ -1935,6 +1939,8 @@ async function main() {
                         if (task.stopRequested) break;
                         await new Promise(resolve => setTimeout(resolve, 2000));
                     }
+                    task.timerFinished = true;
+                    saveTasks();
                 }
             }
 

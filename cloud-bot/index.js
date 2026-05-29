@@ -98,9 +98,11 @@ async function runBookingBot(targetKeyword, targetTime, targetDate, startTime, m
             target.setHours(hours, mins, 0, 0);
             
             let diff = target.getTime() - now.getTime();
-            if (diff < 0) {
+            if (diff < -12 * 60 * 60 * 1000) {
                 target.setDate(target.getDate() + 1);
                 diff = target.getTime() - now.getTime();
+            } else if (diff < 0) {
+                diff = 0;
             }
             
             const delayMins = Math.round(diff / 60000);
