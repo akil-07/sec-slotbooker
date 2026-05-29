@@ -14,55 +14,127 @@ let ACCOUNTS = {};
 let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, isBusy }
 let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
 
-// ─── Persistent Task State ───────────────────────────────────────────────────
+// ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
 const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
+const GIST_TOKEN = process.env.GIST_TOKEN;
+const GIST_ID = process.env.GIST_ID;
+const GIST_FILENAME = 'saveetha_bot_tasks.json';
 
-function loadPersistedTasks() {
+// Save tasks to local file AND to GitHub Gist (so they survive runner restarts)
+async function saveTasksToGist(tasksData) {
+    // Always save locally first
+    try {
+        fs.writeFileSync(TASKS_FILE, JSON.stringify(tasksData, null, 2), 'utf-8');
+    } catch (e) {
+        console.error('[Persist] Failed to save tasks locally:', e.message);
+    }
+
+    // Then save to Gist if configured
+    if (!GIST_TOKEN || !GIST_ID) return;
+    try {
+        const https = require('https');
+        const body = JSON.stringify({
+            files: {
+                [GIST_FILENAME]: {
+                    content: JSON.stringify(tasksData, null, 2)
+                }
+            }
+        });
+        await new Promise((resolve, reject) => {
+            const req = https.request({
+                hostname: 'api.github.com',
+                path: `/gists/${GIST_ID}`,
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${GIST_TOKEN}`,
+                    'User-Agent': 'saveetha-bot',
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body)
+                }
+            }, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                        console.log('[Persist] Tasks saved to Gist successfully.');
+                        resolve();
+                    } else {
+                        console.error(`[Persist] Gist save failed (${res.statusCode}):`, data.substring(0, 200));
+                        reject(new Error(`Gist save failed: ${res.statusCode}`));
+                    }
+                });
+            });
+            req.on('error', reject);
+            req.write(body);
+            req.end();
+        });
+    } catch (e) {
+        console.error('[Persist] Failed to save tasks to Gist:', e.message);
+    }
+}
+
+// Load tasks from Gist first (cross-runner), fall back to local file
+async function loadTasksFromGist() {
+    // Try Gist first
+    if (GIST_TOKEN && GIST_ID) {
+        try {
+            const https = require('https');
+            const data = await new Promise((resolve, reject) => {
+                const req = https.request({
+                    hostname: 'api.github.com',
+                    path: `/gists/${GIST_ID}`,
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${GIST_TOKEN}`,
+                        'User-Agent': 'saveetha-bot'
+                    }
+                }, (res) => {
+                    let body = '';
+                    res.on('data', chunk => body += chunk);
+                    res.on('end', () => {
+                        if (res.statusCode >= 200 && res.statusCode < 300) {
+                            resolve(body);
+                        } else {
+                            reject(new Error(`Gist load failed: ${res.statusCode}`));
+                        }
+                    });
+                });
+                req.on('error', reject);
+                req.end();
+            });
+            const gist = JSON.parse(data);
+            if (gist.files && gist.files[GIST_FILENAME] && gist.files[GIST_FILENAME].content) {
+                const tasks = JSON.parse(gist.files[GIST_FILENAME].content);
+                console.log(`[Persist] Loaded tasks from Gist: counter=${tasks.counter}, ${(tasks.tasks || []).length} task(s).`);
+                return tasks;
+            }
+        } catch (e) {
+            console.error('[Persist] Failed to load from Gist:', e.message);
+        }
+    }
+
+    // Fallback to local file
     try {
         if (fs.existsSync(TASKS_FILE)) {
             const raw = fs.readFileSync(TASKS_FILE, 'utf-8');
             const tasks = JSON.parse(raw);
-            console.log(`[Persist] Loaded ${tasks.length} persisted task(s) from disk.`);
+            console.log(`[Persist] Loaded tasks from local file: counter=${tasks.counter}, ${(tasks.tasks || []).length} task(s).`);
             return tasks;
         }
     } catch (e) {
-        console.error('[Persist] Failed to load tasks:', e.message);
+        console.error('[Persist] Failed to load tasks locally:', e.message);
     }
-    return [];
-}
-
-function savePersistedTasks(tasksMap) {
-    try {
-        const arr = [];
-        tasksMap.forEach((task, id) => {
-            // Only persist scan tasks and timed book tasks (they are resumable)
-            if (task.persistType) {
-                arr.push({
-                    id,
-                    type: task.persistType,
-                    keyword: task.keyword,
-                    targetTime: task.targetTime || '',
-                    targetVenue: task.targetVenue || '',
-                    startTime: task.startTime || '',
-                    chatId: task.chatId,
-                    createdAt: task.createdAt || new Date().toISOString()
-                });
-            }
-        });
-        fs.writeFileSync(TASKS_FILE, JSON.stringify(arr, null, 2), 'utf-8');
-    } catch (e) {
-        console.error('[Persist] Failed to save tasks:', e.message);
-    }
+    return null;
 }
 
 function clearPersistedTasks() {
     try {
         if (fs.existsSync(TASKS_FILE)) fs.unlinkSync(TASKS_FILE);
     } catch (_) {}
+    // Also clear Gist
+    saveTasksToGist({ counter: 0, tasks: [] }).catch(() => {});
 }
 
-// ─── Gist Persistence Logic ──────────────────────────────────────────────────
-// Removed Gist persistence per user request. Using only ACCOUNTS_JSON.
 
 // ─── Account Initialization ──────────────────────────────────────────────────
 
@@ -1566,7 +1638,6 @@ async function main() {
     // Track active bookings
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page, isScan, isUnbook, fromChatId, userConfig }
     let taskIdCounter = 0;
-    const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
 
     function saveTasks() {
         const tasksArr = [];
@@ -1585,7 +1656,9 @@ async function main() {
                 timerFinished: task.timerFinished
             });
         });
-        fs.writeFileSync(TASKS_FILE, JSON.stringify({ counter: taskIdCounter, tasks: tasksArr }, null, 2));
+        const tasksData = { counter: taskIdCounter, tasks: tasksArr };
+        // Save locally AND to Gist (async, fire-and-forget for speed)
+        saveTasksToGist(tasksData).catch(e => console.error('[Persist] Gist save error:', e.message));
     }
 
     function removeTask(taskId) {
@@ -1597,12 +1670,13 @@ async function main() {
     let offset = 0;
     console.log('[Bot] Polling Telegram for commands...');
 
-    // Load tasks from file if any
-    if (fs.existsSync(TASKS_FILE)) {
-        try {
-            const data = JSON.parse(fs.readFileSync(TASKS_FILE, 'utf-8'));
+    // Load tasks from Gist (survives GitHub Actions restarts) or local file
+    try {
+        const data = await loadTasksFromGist();
+        if (data) {
             taskIdCounter = data.counter || 0;
             const loaded = data.tasks || [];
+            let resumedCount = 0;
             for (const t of loaded) {
                 if (t.stopRequested || t.phase === 'Cancelling slot') continue; // Skip finished/unbook ones
                 const userConf = getUserConfig(t.fromChatId);
@@ -1616,12 +1690,14 @@ async function main() {
                 };
                 activeTasks.set(t.id, taskObj);
                 startTaskLoop(t.id, taskObj);
+                resumedCount++;
             }
-            if (loaded.length > 0) {
-                console.log(`[Bot] Resumed ${activeTasks.size} tasks from disk.`);
+            if (resumedCount > 0) {
+                console.log(`[Bot] Resumed ${resumedCount} tasks from persistence.`);
+                await sendTelegram(`🔄 *Bot restarted!* Resumed *${resumedCount}* active task(s) automatically.`);
             }
-        } catch(e) { console.error('[Bot] Error loading tasks:', e.message); }
-    }
+        }
+    } catch(e) { console.error('[Bot] Error loading tasks:', e.message); }
 
     while (true) {
         try {
