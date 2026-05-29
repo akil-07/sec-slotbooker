@@ -432,15 +432,20 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
 
     if (bookableSlots.length === 0) {
         console.log('[Bot] No bookable slot found.');
+        const alreadyBooked = slotsFound.find(s => s.isAlreadyBooked);
+
+        if (alreadyBooked) {
+            console.log('[Bot] Slot is already booked.');
+            await sendTelegram(`✅ *Status:* You are already booked/registered for *"${targetKeyword}"*. The scan will now stop.`, chatId);
+            return 'ALREADY_BOOKED';
+        }
+
         if (!silent) {
             let reasonMsg = '';
             const openingSoon = slotsFound.find(s => s.isOpeningSoon);
-            const alreadyBooked = slotsFound.find(s => s.isAlreadyBooked);
 
             if (openingSoon) {
                 reasonMsg = `\n\n🕒 *Status:* Found the slot, but it says "Opening Soon".`;
-            } else if (alreadyBooked) {
-                reasonMsg = `\n\n✅ *Status:* You are already booked/registered for this slot.`;
             } else {
                 const displayedSlots = availableSlots.slice(0, 15);
                 const moreCount = availableSlots.length - displayedSlots.length;
