@@ -21,56 +21,68 @@ const GIST_ID = process.env.GIST_ID;
 const GIST_FILENAME = 'saveetha_bot_tasks.json';
 
 // Save tasks to local file AND to GitHub Gist (so they survive runner restarts)
+let gistSaveTimeout = null;
+let pendingGistData = null;
+
 async function saveTasksToGist(tasksData) {
-    // Always save locally first
+    // Always save locally first (instantly)
     try {
         fs.writeFileSync(TASKS_FILE, JSON.stringify(tasksData, null, 2), 'utf-8');
     } catch (e) {
         console.error('[Persist] Failed to save tasks locally:', e.message);
     }
 
-    // Then save to Gist if configured
+    // Then save to Gist with a 15-second debounce to prevent 409 Conflicts from fast updates
     if (!GIST_TOKEN || !GIST_ID) return;
-    try {
-        const https = require('https');
-        const body = JSON.stringify({
-            files: {
-                [GIST_FILENAME]: {
-                    content: JSON.stringify(tasksData, null, 2)
-                }
-            }
-        });
-        await new Promise((resolve, reject) => {
-            const req = https.request({
-                hostname: 'api.github.com',
-                path: `/gists/${GIST_ID}`,
-                method: 'PATCH',
-                headers: {
-                    'Authorization': `Bearer ${GIST_TOKEN}`,
-                    'User-Agent': 'saveetha-bot',
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(body)
-                }
-            }, (res) => {
-                let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                    if (res.statusCode >= 200 && res.statusCode < 300) {
-                        console.log('[Persist] Tasks saved to Gist successfully.');
-                        resolve();
-                    } else {
-                        console.error(`[Persist] Gist save failed (${res.statusCode}):`, data.substring(0, 200));
-                        reject(new Error(`Gist save failed: ${res.statusCode}`));
+    
+    pendingGistData = tasksData;
+    if (gistSaveTimeout) return; // Already waiting to sync
+
+    gistSaveTimeout = setTimeout(async () => {
+        const dataToSync = pendingGistData;
+        gistSaveTimeout = null;
+        
+        try {
+            const https = require('https');
+            const body = JSON.stringify({
+                files: {
+                    [GIST_FILENAME]: {
+                        content: JSON.stringify(dataToSync, null, 2)
                     }
-                });
+                }
             });
-            req.on('error', reject);
-            req.write(body);
-            req.end();
-        });
-    } catch (e) {
-        console.error('[Persist] Failed to save tasks to Gist:', e.message);
-    }
+            await new Promise((resolve, reject) => {
+                const req = https.request({
+                    hostname: 'api.github.com',
+                    path: `/gists/${GIST_ID}`,
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': `Bearer ${GIST_TOKEN}`,
+                        'User-Agent': 'saveetha-bot',
+                        'Content-Type': 'application/json',
+                        'Content-Length': Buffer.byteLength(body)
+                    }
+                }, (res) => {
+                    let data = '';
+                    res.on('data', chunk => data += chunk);
+                    res.on('end', () => {
+                        if (res.statusCode >= 200 && res.statusCode < 300) {
+                            // console.log('[Persist] Tasks saved to Gist successfully.');
+                            resolve();
+                        } else {
+                            console.error(`[Persist] Gist save failed (${res.statusCode})`);
+                            reject(new Error(`Gist save failed: ${res.statusCode}`));
+                        }
+                    });
+                });
+                req.on('error', reject);
+                req.write(body);
+                req.end();
+            });
+        } catch (e) {
+            console.error('[Persist] Failed to save tasks to Gist:', e.message);
+        }
+    }, 15000); // 15 second debounce
 }
 
 // Load tasks from Gist first (cross-runner), fall back to local file
@@ -130,9 +142,9 @@ async function loadTasksFromGist() {
 function clearPersistedTasks() {
     try {
         if (fs.existsSync(TASKS_FILE)) fs.unlinkSync(TASKS_FILE);
-    } catch (_) {}
+    } catch (_) { }
     // Also clear Gist
-    saveTasksToGist({ counter: 0, tasks: [] }).catch(() => {});
+    saveTasksToGist({ counter: 0, tasks: [] }).catch(() => { });
 }
 
 
@@ -151,8 +163,8 @@ async function initAccounts() {
             Object.assign(ACCOUNTS, additionalAccounts);
             console.log('[Bot] Loaded additional JSON accounts:', Object.keys(additionalAccounts).join(', '));
         }
-    } catch (e) { 
-        console.error('[Bot] ACCOUNTS_JSON parse error:', e.message); 
+    } catch (e) {
+        console.error('[Bot] ACCOUNTS_JSON parse error:', e.message);
     }
 
     console.log('[Bot] Total authorized users:', Object.keys(ACCOUNTS).length);
@@ -273,21 +285,21 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         const { kw, time, venue, date } = params;
         const results = [];
         const allAvailable = [];
-        
+
         // Clean up any stale tags from previous runs
         document.querySelectorAll('[data-saveetha-btn],[data-saveetha-input],[data-saveetha-cancel]').forEach(el => {
             el.removeAttribute('data-saveetha-btn');
             el.removeAttribute('data-saveetha-input');
             el.removeAttribute('data-saveetha-cancel');
         });
-        
+
         const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
         const btns = Array.from(allClickable).filter(el => {
             if (el.offsetParent === null) return false;
             const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
             return text === 'book' || text === 'book now' || text === 'register' ||
-                   text === 'book slot' || text === 'enroll' ||
-                   text.startsWith('book') || text.includes('waitlist');
+                text === 'book slot' || text === 'enroll' ||
+                text.startsWith('book') || text.includes('waitlist');
         });
 
         function normalize(str) {
@@ -377,7 +389,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                     // Tag the button AND find purpose input immediately while DOM is stable
                     const tagId = 'target-' + Date.now() + '-' + i;
                     btn.setAttribute('data-saveetha-btn', tagId);
-                    
+
                     let purposeTagged = false;
                     if (card) {
                         const inputs = card.querySelectorAll('input[type="text"], textarea, input:not([type])');
@@ -404,7 +416,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                             }
                         }
                     }
-                    
+
                     results.push({ index: i, fullText: fullTextNorm, isWaitlist, tagId, purposeTagged });
                 }
             }
@@ -455,8 +467,8 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
             if (el.offsetParent === null) return false;
             const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
             return text === 'book' || text === 'book now' || text === 'register' ||
-                   text === 'book slot' || text === 'enroll' ||
-                   text.startsWith('book') || text.includes('waitlist');
+                text === 'book slot' || text === 'enroll' ||
+                text.startsWith('book') || text.includes('waitlist');
         });
 
         const btn = btns[targetData.index];
@@ -560,7 +572,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
     }
 
     await page.waitForTimeout(500);
-    
+
     // Verify booking by checking for a success/info banner message (poll up to 3s)
     let bannerFound = { found: false, text: '' };
     for (let i = 0; i < 6; i++) {
@@ -607,7 +619,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`,
         chatId
     );
-    try { fs.unlinkSync(tmpPath); } catch (_) {}
+    try { fs.unlinkSync(tmpPath); } catch (_) { }
     return true;
 }
 
@@ -634,7 +646,7 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
         const { kw, time } = params;
         const results = [];
         const allClickable = document.querySelectorAll('a, button, input[type="button"], input[type="submit"]');
-        
+
         const btns = Array.from(allClickable).filter(el => {
             if (el.offsetParent === null) return false;
             const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
@@ -699,12 +711,12 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
                 await confirmBtn.first().click();
                 await page.waitForTimeout(2000);
             }
-        } catch (e) {}
+        } catch (e) { }
 
         const tmpPath = path.join(__dirname, '_cancel_screenshot.png');
         await page.screenshot({ path: tmpPath });
         await sendTelegramPhoto(tmpPath, `🛑 *Slot Cancelled Successfully!*\n\n🎯 Slot: ${targetKeyword}\n\nCancellation complete.`, chatId);
-        try { fs.unlinkSync(tmpPath); } catch (_) {}
+        try { fs.unlinkSync(tmpPath); } catch (_) { }
     }
 }
 
@@ -733,7 +745,7 @@ async function doLogin(page, user, pass) {
             await page.waitForSelector(sel, { timeout: 5000, state: 'visible' });
             userInput = page.locator(sel).first();
             break;
-        } catch (_) {}
+        } catch (_) { }
     }
 
     if (!userInput) throw new Error('Could not find username input on login page.');
@@ -762,12 +774,12 @@ async function doLogin(page, user, pass) {
                 clicked = true;
                 break;
             }
-        } catch (_) {}
+        } catch (_) { }
     }
     if (!clicked) await page.keyboard.press('Enter');
 
     await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 }).catch(() => null);
-    
+
     // Wait for SSO redirects to complete
     try {
         await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
@@ -994,7 +1006,7 @@ async function fetchTimetable(context, config) {
         console.error(`[Timetable] Error fetching for ${config.name}:`, err.message);
         return [];
     } finally {
-        await page.close().catch(() => {});
+        await page.close().catch(() => { });
     }
 }
 
@@ -1051,16 +1063,16 @@ async function fetchAttendance(context, config) {
 
         const attendanceData = await page.evaluate(() => {
             const results = [];
-            
+
             // ── Strategy 1: Table rows ─────────────────────────────────
             const tables = document.querySelectorAll('table');
             for (const table of tables) {
                 const rows = table.querySelectorAll('tr');
                 if (rows.length < 2) continue;
-                
+
                 const headerRow = table.querySelector('tr:first-child');
                 let subjectCol = -1, percentCol = -1, attendedCol = -1, totalCol = -1;
-                
+
                 if (headerRow) {
                     const headers = Array.from(headerRow.querySelectorAll('th, td')).map(c => c.innerText.trim().toLowerCase());
                     headers.forEach((h, i) => {
@@ -1070,22 +1082,22 @@ async function fetchAttendance(context, config) {
                         if (h.includes('total') || h.includes('conducted')) totalCol = i;
                     });
                 }
-                
+
                 if (subjectCol === -1) subjectCol = 0; // fallback to first column
-                
+
                 for (let i = 1; i < rows.length; i++) {
                     const row = rows[i];
                     // Skip if it's just headers
                     if (row.querySelectorAll('th').length === row.querySelectorAll('th, td').length) continue;
-                    
+
                     const cells = Array.from(row.querySelectorAll('td, th')).map(c => c.innerText.trim());
                     if (cells.length < 2) continue;
-                    
+
                     let subject = cells[subjectCol] || '';
                     let percent = percentCol !== -1 ? cells[percentCol] : '';
                     let attended = attendedCol !== -1 ? cells[attendedCol] : '';
                     let total = totalCol !== -1 ? cells[totalCol] : '';
-                    
+
                     if (!percent) {
                         for (const cell of cells) {
                             if (cell.includes('%')) { percent = cell; break; }
@@ -1097,7 +1109,7 @@ async function fetchAttendance(context, config) {
                             if (match) { attended = match[1]; total = match[2]; break; }
                         }
                     }
-                    
+
                     if (subject) {
                         results.push({ subject, percent, attended, total });
                     }
@@ -1107,55 +1119,55 @@ async function fetchAttendance(context, config) {
 
             // ── Strategy 2: Cards ──────────────────────────────────────
             if (results.length === 0) {
-               const allElements = Array.from(document.querySelectorAll('div, section, article, li'));
-               // Find all elements that contain typical card keywords
-               const cardCandidates = allElements.filter(el => {
-                   const txt = el.innerText || '';
-                   return txt.includes('Overall Attendance') && (txt.includes('Slot:') || txt.includes('Academic Term:'));
-               });
-               
-               // De-duplicate (keep only the smallest containers that still have all the info)
-               cardCandidates.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
-               const selectedCards = [];
-               for (const el of cardCandidates) {
-                   if (!selectedCards.some(prev => el.contains(prev)) && el.innerText.length < 1500) {
-                       selectedCards.push(el);
-                   }
-               }
-               
-               for (const card of selectedCards) {
-                   const lines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-                   let subject = lines[0]; // The first line is usually the subject
-                   let percent = '';
-                   let attended = '';
-                   let total = '';
-                   
-                   for (let i = 0; i < lines.length; i++) {
-                       const line = lines[i];
-                       if (line.includes('Overall Attendance') && i + 1 < lines.length) {
-                           let nextLine = lines[i+1];
-                           if (nextLine.includes('%') || nextLine.includes('N/A')) {
-                               percent = nextLine;
-                           }
-                       } else if (line.includes('%') && !percent) {
-                           percent = line;
-                       }
-                       
-                       // Match the "Present" stats (e.g. "18.00 / 24.00")
-                       // It could be on the same line as "Present" or the line immediately after
-                       const match = line.match(/([\d.]+)\s*\/\s*([\d.]+)/);
-                       if (match && !attended) {
-                           attended = parseFloat(match[1]).toString();
-                           total = parseFloat(match[2]).toString();
-                       }
-                   }
-                   if (subject && percent) {
-                       // Prevent duplicates (sometimes the DOM has hidden copies of cards)
-                       if (!results.some(r => r.subject === subject)) {
-                           results.push({ subject, percent, attended, total });
-                       }
-                   }
-               }
+                const allElements = Array.from(document.querySelectorAll('div, section, article, li'));
+                // Find all elements that contain typical card keywords
+                const cardCandidates = allElements.filter(el => {
+                    const txt = el.innerText || '';
+                    return txt.includes('Overall Attendance') && (txt.includes('Slot:') || txt.includes('Academic Term:'));
+                });
+
+                // De-duplicate (keep only the smallest containers that still have all the info)
+                cardCandidates.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+                const selectedCards = [];
+                for (const el of cardCandidates) {
+                    if (!selectedCards.some(prev => el.contains(prev)) && el.innerText.length < 1500) {
+                        selectedCards.push(el);
+                    }
+                }
+
+                for (const card of selectedCards) {
+                    const lines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+                    let subject = lines[0]; // The first line is usually the subject
+                    let percent = '';
+                    let attended = '';
+                    let total = '';
+
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        if (line.includes('Overall Attendance') && i + 1 < lines.length) {
+                            let nextLine = lines[i + 1];
+                            if (nextLine.includes('%') || nextLine.includes('N/A')) {
+                                percent = nextLine;
+                            }
+                        } else if (line.includes('%') && !percent) {
+                            percent = line;
+                        }
+
+                        // Match the "Present" stats (e.g. "18.00 / 24.00")
+                        // It could be on the same line as "Present" or the line immediately after
+                        const match = line.match(/([\d.]+)\s*\/\s*([\d.]+)/);
+                        if (match && !attended) {
+                            attended = parseFloat(match[1]).toString();
+                            total = parseFloat(match[2]).toString();
+                        }
+                    }
+                    if (subject && percent) {
+                        // Prevent duplicates (sometimes the DOM has hidden copies of cards)
+                        if (!results.some(r => r.subject === subject)) {
+                            results.push({ subject, percent, attended, total });
+                        }
+                    }
+                }
             }
             return results;
         });
@@ -1165,7 +1177,7 @@ async function fetchAttendance(context, config) {
         console.error(`[Attendance] Error fetching for ${config.name}:`, err.message);
         throw err;
     } finally {
-        await page.close().catch(() => {});
+        await page.close().catch(() => { });
     }
 }
 
@@ -1173,17 +1185,17 @@ function formatAttendance(data, userName) {
     if (!data || data.length === 0) {
         return `⚠️ Could not find attendance records for ${userName}.`;
     }
-    
+
     let msg = `📊 *Attendance for ${userName}*\n\n`;
-    
+
     let totalAttended = 0;
     let totalConducted = 0;
-    
+
     data.forEach(item => {
         // Only escape basic Markdown characters (*, _, `, [) since we use 'Markdown' parse_mode, not V2.
         let sub = item.subject.replace(/([_*`\[])/g, '\\$1');
         if (sub.length > 55) sub = sub.substring(0, 52) + '...';
-        
+
         let percentNum = parseFloat(item.percent);
         let icon = '⚪';
         if (!isNaN(percentNum)) {
@@ -1191,25 +1203,25 @@ function formatAttendance(data, userName) {
             else if (percentNum >= 75) icon = '🟡';
             else icon = '🔴';
         }
-        
+
         let percentText = item.percent ? item.percent.replace(/([_*`\[])/g, '\\$1') : 'N/A';
         let stats = '';
-        
+
         // Only show (Attended/Total) if Total is not 0.
         if (item.attended && item.total && item.total !== '0') {
             stats = ` (${item.attended}/${item.total})`;
             totalAttended += parseFloat(item.attended);
             totalConducted += parseFloat(item.total);
         }
-        
+
         msg += `${icon} *${sub}*\n   └ ${percentText}${stats}\n\n`;
     });
-    
+
     if (totalConducted > 0) {
         let overallPercent = ((totalAttended / totalConducted) * 100).toFixed(2);
         msg += `\n🎯 *Overall Attendance: ${overallPercent}%* _(${totalAttended}/${totalConducted})_`;
     }
-    
+
     return msg.trim();
 }
 
@@ -1236,21 +1248,21 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         // Find the button inside the card that contains the targetSubject
         const clickSuccess = await page.evaluate((subj) => {
             const buttons = Array.from(document.querySelectorAll('a, button, [role="button"]'))
-                                 .filter(b => (b.innerText || '').includes('View Slot Details'));
-            
+                .filter(b => (b.innerText || '').includes('View Slot Details'));
+
             for (const btn of buttons) {
                 // find closest card container
                 let card = btn.closest('div[class*="card"], div[class*="MuiPaper"], div[class*="box"], section, article, li');
                 if (!card && btn.parentElement && btn.parentElement.parentElement) {
                     card = btn.parentElement.parentElement.parentElement; // fallback 3 levels up
                 }
-                
+
                 if (card && (card.innerText || '').includes(subj)) {
                     btn.click();
                     return true;
                 }
             }
-            
+
             // Extreme fallback: just click the first button if only 1 exists, otherwise fail
             if (buttons.length === 1) {
                 buttons[0].click();
@@ -1264,35 +1276,35 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         }
 
         await page.waitForTimeout(3000); // Wait for modal/page to load
-        
+
         // Wait for page to fully render the cards
-        await page.waitForSelector('text="Total Sessions"', { timeout: 8000 }).catch(() => {});
+        await page.waitForSelector('text="Total Sessions"', { timeout: 8000 }).catch(() => { });
         const pageText = await page.innerText('body');
-        
+
         let presentHours = null, conductedHours = null;
         let totalSessions = null, upcomingSessions = 0;
         let percent = 0;
-        
+
         const attMatch = pageText.match(/Overall Attendance[\s\S]{0,50}?([\d.]+)%/i);
         if (attMatch) percent = parseFloat(attMatch[1]);
-        
+
         const presentMatch = pageText.match(/Present[\s\S]{0,30}?([\d.]+)\s*\/\s*([\d.]+)/i);
         if (presentMatch) {
             presentHours = parseFloat(presentMatch[1]);
             conductedHours = parseFloat(presentMatch[2]);
         }
-        
-        const totalMatch = pageText.match(/Total Sessions[\s\S]{0,20}?(?<!\d)(\d+)(?!\d)/i) || 
-                           pageText.match(/Total sessions scheduled:?\s*(\d+)/i);
+
+        const totalMatch = pageText.match(/Total Sessions[\s\S]{0,20}?(?<!\d)(\d+)(?!\d)/i) ||
+            pageText.match(/Total sessions scheduled:?\s*(\d+)/i);
         if (totalMatch) {
             totalSessions = parseInt(totalMatch[1]);
         }
-        
+
         const upMatch = pageText.match(/Upcoming:\s*(\d+)/i);
         if (upMatch) {
             upcomingSessions = parseInt(upMatch[1]);
         }
-        
+
         let result = null;
         if (presentHours !== null && conductedHours !== null && totalSessions !== null) {
             const conductedSessions = totalSessions - upcomingSessions;
@@ -1300,11 +1312,11 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
                 const hoursPerSession = conductedHours / conductedSessions;
                 const remainingHours = upcomingSessions * hoursPerSession;
                 const totalSemesterHours = conductedHours + remainingHours;
-                
+
                 const targetAttendedHours = totalSemesterHours * 0.80;
                 const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
                 const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
-                
+
                 const projectedFinalPercent = ((presentHours + remainingHours) / totalSemesterHours) * 100;
 
                 result = {
@@ -1320,7 +1332,7 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
                 };
             }
         }
-        
+
         if (!result) {
             console.error(`[Bunk] Failed to parse. Dump: present=${presentHours}, conducted=${conductedHours}, total=${totalSessions}, upcoming=${upcomingSessions}`);
             throw new Error('Could not find enough session data on this subject to calculate bunking. (Has the class ended?)');
@@ -1331,7 +1343,7 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         console.error(`[Bunk] Error for ${config.name}:`, err.message);
         throw err;
     } finally {
-        await page.close().catch(() => {});
+        await page.close().catch(() => { });
     }
 }
 
@@ -1339,13 +1351,13 @@ function formatBunkStats(data, userName) {
     if (!data || data.length === 0) {
         return `⚠️ Could not calculate bunk stats for ${userName}. (Missing schedule info)`;
     }
-    
+
     let msg = `🛌 *Bunk Calculator (80% Limit) for ${userName}*\n\n`;
-    
+
     data.forEach(item => {
         let sub = item.subject.replace(/([_*`\[])/g, '\\$1');
         if (sub.length > 55) sub = sub.substring(0, 52) + '...';
-        
+
         let status = '';
         if (item.maxBunkSessions > 0) {
             status = `🟢 *You can safely bunk ${item.maxBunkSessions} classes!*`;
@@ -1354,7 +1366,7 @@ function formatBunkStats(data, userName) {
         } else {
             status = `🔴 *Shortage!* You need to attend ${Math.abs(item.maxBunkSessions)} extra classes to reach 80%.`;
         }
-        
+
         msg += `🔹 *${sub}*\n`;
         msg += `   ├ Current: *${item.percent.toFixed(2)}%*\n`;
         if (item.projectedFinalPercent !== undefined) {
@@ -1366,7 +1378,7 @@ function formatBunkStats(data, userName) {
         }
         msg += `   └ ${status}\n\n`;
     });
-    
+
     return msg.trim();
 }
 
@@ -1401,7 +1413,7 @@ function startTimetableSchedulers(userSessions) {
     // Schedule the 8 AM daily timetable for every user
     for (const [chatId, session] of userSessions.entries()) {
         scheduleDailyTimetable(chatId, session);
-        
+
         // --- Immediate Check on Startup ---
         // If the bot starts after 8 AM (e.g. after a restart), 
         // we still want to schedule reminders for the rest of today.
@@ -1495,20 +1507,20 @@ async function spawnUserSession(browser, chatId, config) {
         console.log(`[Bot] Spawning session for ${config.name} (${chatId})...`);
         const userContext = await browser.newContext();
         const hotPage = await userContext.newPage();
-        
+
         await doLogin(hotPage, config.user, config.pass);
-        
+
         console.log(`[Bot] Preparing Hot Tab for ${config.name}...`);
-        await hotPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { 
-            waitUntil: 'networkidle', 
-            timeout: 60000 
+        await hotPage.goto('https://learner.saveetha.in/academicevents/event-booking/', {
+            waitUntil: 'networkidle',
+            timeout: 60000
         });
-        
-        const session = { 
-            context: userContext, 
-            config, 
+
+        const session = {
+            context: userContext,
+            config,
             persistentPage: hotPage,
-            isBusy: false 
+            isBusy: false
         };
         USER_SESSIONS.set(chatId, session);
 
@@ -1518,7 +1530,7 @@ async function spawnUserSession(browser, chatId, config) {
             try {
                 const slots = await fetchTimetable(session.context, session.config);
                 scheduleSlotReminders(chatId, session, slots);
-            } catch (e) {}
+            } catch (e) { }
         })();
 
         console.log(`[Bot] Session Ready: ${config.name}`);
@@ -1531,7 +1543,7 @@ async function spawnUserSession(browser, chatId, config) {
 
 // Extract these from the original function so they can be called individually
 function scheduleDailyTimetableForUser(chatId, session) {
-    const delay = msUntilIST(8, 0); 
+    const delay = msUntilIST(8, 0);
     setTimeout(async () => {
         await sendDailyTimetable(chatId, session);
         scheduleDailyTimetableForUser(chatId, session);
@@ -1558,7 +1570,7 @@ async function sendDailyTimetable(chatId, session) {
         const msg = formatTimetable(slots, session.config.name);
         await sendTelegram(msg, chatId);
         scheduleSlotReminders(chatId, session, slots);
-    } catch (err) {}
+    } catch (err) { }
 }
 
 function scheduleSlotReminders(chatId, session, slots) {
@@ -1578,14 +1590,14 @@ function scheduleSlotReminders(chatId, session, slots) {
                 const period = s.hour < 12 ? 'AM' : 'PM';
                 const minStr = String(s.minute).padStart(2, '0');
                 const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : 'N/A (Check Portal)';
-                const msg = 
+                const msg =
                     `⏰ *Class Reminder — 15 Minutes!*\n\n` +
                     `📚 *${s.slot}*\n` +
                     `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
                     `📍 Venue: *${venueDisplay}*\n\n` +
                     `_Get ready! Class starts in 15 minutes. 🚀_`;
                 await sendTelegram(msg, chatId);
-            } catch (err) {}
+            } catch (err) { }
         }, delay);
     }
 }
@@ -1610,8 +1622,8 @@ async function main() {
 
     // Pre-login each user and keep a "Hot Tab" ready on the booking page
     await initAccounts();
-    
-    const spawnPromises = Object.entries(ACCOUNTS).map(([chatId, config]) => 
+
+    const spawnPromises = Object.entries(ACCOUNTS).map(([chatId, config]) =>
         spawnUserSession(browser, chatId, config)
     );
     await Promise.all(spawnPromises);
@@ -1625,7 +1637,7 @@ async function main() {
                     if (!session.persistentPage.url().includes('event-booking')) {
                         await session.persistentPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'networkidle' });
                     }
-                } catch (e) {}
+                } catch (e) { }
             }
         }
     }, 600000); // Every 10 mins
@@ -1697,7 +1709,7 @@ async function main() {
                 await sendTelegram(`🔄 *Bot restarted!* Resumed *${resumedCount}* active task(s) automatically.`);
             }
         }
-    } catch(e) { console.error('[Bot] Error loading tasks:', e.message); }
+    } catch (e) { console.error('[Bot] Error loading tasks:', e.message); }
 
     while (true) {
         try {
@@ -1712,7 +1724,7 @@ async function main() {
                 // Check if user is authorized
                 const fromChatId = String(msg.chat.id);
                 const userConfig = getUserConfig(fromChatId);
-                
+
                 if (!userConfig && fromChatId !== ADMIN_CHAT_ID) {
                     console.log(`[Bot] Ignoring message from unauthorized chat: ${fromChatId}`);
                     // Optional: await sendTelegram(`⚠️ Your Chat ID (${fromChatId}) is not authorized for this bot.`);
@@ -1723,7 +1735,7 @@ async function main() {
 
                 // ── !help ─────────────────────────────────────────────────
                 if (text === '!help' || text === '/start') {
-                    let helpMsg = 
+                    let helpMsg =
                         `📖 *Saveetha Bot Help*\n\n` +
                         `*Booking Commands:*\n` +
                         `\`!book <keyword>\` — Book immediately\n` +
@@ -1745,9 +1757,9 @@ async function main() {
 
                     if (fromChatId === ADMIN_CHAT_ID) {
                         helpMsg += `\n*👑 Admin Commands:*\n` +
-                                   `\`!listusers\` — Show all users\n`;
+                            `\`!listusers\` — Show all users\n`;
                     }
-                    
+
                     helpMsg += `\n_Tip: Use "all" with !stop to clear the queue._`;
                     await sendTelegram(helpMsg, fromChatId);
                     continue;
@@ -1768,9 +1780,9 @@ async function main() {
                         let statusMsg = `⏳ *Active Bookings (${activeTasks.size})*\n\n`;
                         activeTasks.forEach((task, id) => {
                             statusMsg += `🔹 *${task.keyword}*\n` +
-                                         `📍 Phase: ${task.phase}\n` +
-                                         `${task.targetTime ? `🕐 Target: ${task.targetTime}\n` : ''}` +
-                                         `${task.startTime ? `⏱️ Start: ${task.startTime}\n` : ''}\n`;
+                                `📍 Phase: ${task.phase}\n` +
+                                `${task.targetTime ? `🕐 Target: ${task.targetTime}\n` : ''}` +
+                                `${task.startTime ? `⏱️ Start: ${task.startTime}\n` : ''}\n`;
                         });
                         statusMsg += `_To stop one: !stop <keyword>_`;
                         await sendTelegram(statusMsg, fromChatId);
@@ -1781,7 +1793,7 @@ async function main() {
                 // ── !stop ─────────────────────────────────────────────────
                 if (text.toLowerCase().startsWith('!stop')) {
                     const arg = text.substring(5).trim().toLowerCase();
-                    
+
                     if (activeTasks.size === 0) {
                         await sendTelegram(`🟢 No active bookings to stop.`, fromChatId);
                         continue;
@@ -1876,10 +1888,10 @@ async function main() {
                             await sendTelegram(`⚠️ No subjects found.`, fromChatId);
                             continue;
                         }
-                        
+
                         let msg = `🧮 *Select a Subject to Calculate Bunk Stats (80% Limit)*\n\n`;
                         data.forEach((item, i) => {
-                             msg += `🔹 ${item.subject.replace(/([_*`\[])/g, '\\$1')}\n`;
+                            msg += `🔹 ${item.subject.replace(/([_*`\[])/g, '\\$1')}\n`;
                         });
                         msg += `\n_Reply with_ \`!bunk <subject>\` _(e.g., !bunk calculus) to calculate!_`;
                         await sendTelegram(msg, fromChatId);
@@ -1895,7 +1907,7 @@ async function main() {
                         await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
                         continue;
                     }
-                    
+
                     const keyword = text.substring(6).trim().toLowerCase();
                     if (!keyword) {
                         await sendTelegram(`❌ Please provide a keyword. Example: \`!bunk calculus\``, fromChatId);
@@ -1903,10 +1915,10 @@ async function main() {
                     }
 
                     await sendTelegram(`🔍 Searching for subject matching "${keyword}"...`, fromChatId);
-                    
+
                     try {
                         const allSubjects = await fetchAttendance(session.context, session.config);
-                        
+
                         let matchedIndex = -1;
                         // First try to check if the keyword is just an exact number (like old behavior)
                         if (/^\d+$/.test(keyword)) {
@@ -1915,20 +1927,20 @@ async function main() {
                                 matchedIndex = idx;
                             }
                         }
-                        
+
                         // Otherwise search by keyword match
                         if (matchedIndex === -1) {
                             matchedIndex = allSubjects.findIndex(s => s.subject.toLowerCase().includes(keyword));
                         }
-                        
+
                         if (matchedIndex === -1) {
                             await sendTelegram(`❌ Could not find any subject matching "${keyword}". Try using a word from the subject title.`, fromChatId);
                             continue;
                         }
-                        
+
                         const matchedSubject = allSubjects[matchedIndex].subject;
                         await sendTelegram(`🧮 Calculating bunk stats for *${matchedSubject}*... Please wait...`, fromChatId);
-                        
+
                         const data = await fetchBunkStatsForSubject(session.context, session.config, matchedSubject);
                         const msg = formatBunkStats(data, session.config.name);
                         await sendTelegram(msg, fromChatId);
@@ -1977,9 +1989,9 @@ async function main() {
                 }
 
                 const taskId = ++taskIdCounter;
-                const task = { 
-                    keyword, targetTime, targetVenue, targetDate, startTime, 
-                    phase: 'Initializing', 
+                const task = {
+                    keyword, targetTime, targetVenue, targetDate, startTime,
+                    phase: 'Initializing',
                     stopRequested: false,
                     page: null,
                     isScan, isUnbook, fromChatId, userConfig
@@ -2102,9 +2114,9 @@ async function main() {
             if (taskPage) {
                 if (session && taskPage === session.persistentPage) {
                     session.isBusy = false;
-                    await taskPage.goto('https://learner.saveetha.in/academicevents/event-booking/').catch(() => {});
+                    await taskPage.goto('https://learner.saveetha.in/academicevents/event-booking/').catch(() => { });
                 } else {
-                    await taskPage.close().catch(() => {});
+                    await taskPage.close().catch(() => { });
                 }
             }
             removeTask(taskId);
@@ -2114,6 +2126,6 @@ async function main() {
 
 main().catch(async (err) => {
     console.error('[Bot] Fatal error:', err);
-    await sendTelegram(`❌ *Bot crashed:* ${err.message}`).catch(() => {});
+    await sendTelegram(`❌ *Bot crashed:* ${err.message}`).catch(() => { });
     process.exit(1);
 });
