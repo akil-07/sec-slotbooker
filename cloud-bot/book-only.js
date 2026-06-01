@@ -20,28 +20,38 @@ const GIST_TOKEN = process.env.GIST_TOKEN;
 const GIST_ID = process.env.GIST_ID;
 const GIST_FILENAME = 'saveetha_bot_tasks.json';
 
+const BLOCKED_USERS_FILE = path.join(__dirname, 'blocked_users.json');
+let blockedUsers = new Set();
+try {
+    if (fs.existsSync(BLOCKED_USERS_FILE)) {
+        const raw = fs.readFileSync(BLOCKED_USERS_FILE, 'utf-8');
+        const list = JSON.parse(raw);
+        blockedUsers = new Set(list);
+    }
+} catch (e) {
+    console.error('[Persist] Failed to load blocked users:', e.message);
+}
+
+function saveBlockedUsers() {
+    try {
+        fs.writeFileSync(BLOCKED_USERS_FILE, JSON.stringify(Array.from(blockedUsers), null, 2), 'utf-8');
+    } catch (e) {
+        console.error('[Persist] Failed to save blocked users:', e.message);
+    }
+}
+
 // Save tasks to local file AND to GitHub Gist (so they survive runner restarts)
 let gistSaveTimeout = null;
 let pendingGistData = null;
+let isSyncing = false;
 
-async function saveTasksToGist(tasksData) {
-    // Always save locally first (instantly)
-    try {
-        fs.writeFileSync(TASKS_FILE, JSON.stringify(tasksData, null, 2), 'utf-8');
-    } catch (e) {
-        console.error('[Persist] Failed to save tasks locally:', e.message);
-    }
-
-    // Then save to Gist with a 15-second debounce to prevent 409 Conflicts from fast updates
-    if (!GIST_TOKEN || !GIST_ID) return;
+async function syncToGist() {
+    if (!GIST_TOKEN || !GIST_ID || !pendingGistData) return;
+    const dataToSync = pendingGistData;
+    isSyncing = true;
     
-    pendingGistData = tasksData;
-    if (gistSaveTimeout) return; // Already waiting to sync
-
-    gistSaveTimeout = setTimeout(async () => {
-        const dataToSync = pendingGistData;
-        gistSaveTimeout = null;
-        
+    let retries = 3;
+    while (retries > 0) {
         try {
             const https = require('https');
             const body = JSON.stringify({
@@ -60,17 +70,17 @@ async function saveTasksToGist(tasksData) {
                         'Authorization': `Bearer ${GIST_TOKEN}`,
                         'User-Agent': 'saveetha-bot',
                         'Content-Type': 'application/json',
-                        'Content-Length': Buffer.byteLength(body)
+                        'Content-Length': Buffer.byteLength(body),
+                        'Accept': 'application/vnd.github.v3+json',
+                        'X-GitHub-Api-Version': '2022-11-28'
                     }
                 }, (res) => {
                     let data = '';
                     res.on('data', chunk => data += chunk);
                     res.on('end', () => {
                         if (res.statusCode >= 200 && res.statusCode < 300) {
-                            // console.log('[Persist] Tasks saved to Gist successfully.');
                             resolve();
                         } else {
-                            console.error(`[Persist] Gist save failed (${res.statusCode})`);
                             reject(new Error(`Gist save failed: ${res.statusCode}`));
                         }
                     });
@@ -79,10 +89,51 @@ async function saveTasksToGist(tasksData) {
                 req.write(body);
                 req.end();
             });
+            // Success
+            break; 
         } catch (e) {
-            console.error('[Persist] Failed to save tasks to Gist:', e.message);
+            console.error(`[Persist] Gist save failed, retries left: ${retries - 1}. Error:`, e.message);
+            retries--;
+            if (retries > 0) {
+                await new Promise(r => setTimeout(r, 5000)); // wait 5s before retry
+            }
         }
-    }, 15000); // 15 second debounce
+    }
+    isSyncing = false;
+    
+    // If more changes arrived while syncing, trigger again
+    if (pendingGistData !== dataToSync && !gistSaveTimeout) {
+        gistSaveTimeout = setTimeout(() => {
+            gistSaveTimeout = null;
+            syncToGist();
+        }, 5000);
+    }
+}
+
+async function saveTasksToGist(tasksData) {
+    // Always save locally first (instantly)
+    try {
+        fs.writeFileSync(TASKS_FILE, JSON.stringify(tasksData, null, 2), 'utf-8');
+    } catch (e) {
+        console.error('[Persist] Failed to save tasks locally:', e.message);
+    }
+
+    if (!GIST_TOKEN || !GIST_ID) return;
+    
+    // Check if tasks were removed (length is less than before)
+    const isDeletion = pendingGistData && tasksData.tasks && pendingGistData.tasks && tasksData.tasks.length < pendingGistData.tasks.length;
+    
+    pendingGistData = tasksData;
+
+    // If it's a deletion, try to save immediately (or queue it next) to ensure finished tasks are cleared
+    const delay = isDeletion ? 1000 : 10000;
+
+    if (!gistSaveTimeout && !isSyncing) {
+        gistSaveTimeout = setTimeout(() => {
+            gistSaveTimeout = null;
+            syncToGist();
+        }, delay);
+    }
 }
 
 // Load tasks from Gist first (cross-runner), fall back to local file
@@ -98,7 +149,9 @@ async function loadTasksFromGist() {
                     method: 'GET',
                     headers: {
                         'Authorization': `Bearer ${GIST_TOKEN}`,
-                        'User-Agent': 'saveetha-bot'
+                        'User-Agent': 'saveetha-bot',
+                        'Accept': 'application/vnd.github.v3+json',
+                        'X-GitHub-Api-Version': '2022-11-28'
                     }
                 }, (res) => {
                     let body = '';
@@ -1736,6 +1789,11 @@ async function main() {
                     continue;
                 }
 
+                if (blockedUsers.has(fromChatId) && fromChatId !== ADMIN_CHAT_ID) {
+                    console.log(`[Bot] Ignoring message from blocked chat: ${fromChatId}`);
+                    continue;
+                }
+
                 const text = msg.text.trim().toLowerCase();
 
                 // ── !help ─────────────────────────────────────────────────
@@ -1762,7 +1820,11 @@ async function main() {
 
                     if (fromChatId === ADMIN_CHAT_ID) {
                         helpMsg += `\n*👑 Admin Commands:*\n` +
-                            `\`!listusers\` — Show all users\n`;
+                            `\`!listusers\` — Show all users\n` +
+                            `\`!allprogress\` — View all active tasks\n` +
+                            `\`!cleartasks\` — Wipe all stuck tasks instantly\n` +
+                            `\`!block <chatId>\` — Block a user\n` +
+                            `\`!unblock <chatId>\` — Unblock a user\n`;
                     }
 
                     helpMsg += `\n_Tip: Use "all" with !stop to clear the queue._`;
@@ -1777,14 +1839,25 @@ async function main() {
                     continue;
                 }
 
-                // ── !progress ─────────────────────────────────────────────
-                if (text === '!progress') {
-                    if (activeTasks.size === 0) {
+                // ── !progress & !allprogress ──────────────────────────────
+                if (text === '!progress' || (text === '!allprogress' && fromChatId === ADMIN_CHAT_ID)) {
+                    let filteredTasks = Array.from(activeTasks.entries());
+                    if (text === '!progress') {
+                        filteredTasks = filteredTasks.filter(([id, task]) => task.fromChatId === fromChatId);
+                    }
+                    
+                    if (filteredTasks.length === 0) {
                         await sendTelegram(`🟢 *No active bookings.*\nBot is idle and ready.`, fromChatId);
                     } else {
-                        let statusMsg = `⏳ *Active Bookings (${activeTasks.size})*\n\n`;
-                        activeTasks.forEach((task, id) => {
+                        let statusMsg = `⏳ *Active Bookings (${filteredTasks.length})*\n\n`;
+                        filteredTasks.forEach(([id, task]) => {
+                            let ownerInfo = '';
+                            if (text === '!allprogress') {
+                                const ownerName = task.userConfig ? task.userConfig.name : 'Unknown';
+                                ownerInfo = `👤 Owner: ${ownerName} (${task.fromChatId})\n`;
+                            }
                             statusMsg += `🔹 *${task.keyword}*\n` +
+                                ownerInfo +
                                 `📍 Phase: ${task.phase}\n` +
                                 `${task.targetTime ? `🕐 Target: ${task.targetTime}\n` : ''}` +
                                 `${task.startTime ? `⏱️ Start: ${task.startTime}\n` : ''}\n`;
@@ -1799,18 +1872,27 @@ async function main() {
                 if (text.toLowerCase().startsWith('!stop')) {
                     const arg = text.substring(5).trim().toLowerCase();
 
-                    if (activeTasks.size === 0) {
+                    let userTasks = Array.from(activeTasks.entries());
+                    if (fromChatId !== ADMIN_CHAT_ID) {
+                        userTasks = userTasks.filter(([id, task]) => task.fromChatId === fromChatId);
+                    }
+
+                    if (userTasks.length === 0) {
                         await sendTelegram(`🟢 No active bookings to stop.`, fromChatId);
                         continue;
                     }
 
                     if (arg === 'all') {
-                        activeTasks.forEach(task => task.stopRequested = true);
-                        await sendTelegram(`🛑 *Stopping all tasks...*`, fromChatId);
+                        let stoppedCount = 0;
+                        userTasks.forEach(([id, task]) => {
+                            task.stopRequested = true;
+                            stoppedCount++;
+                        });
+                        await sendTelegram(`🛑 *Stopping ${stoppedCount} task(s)...*`, fromChatId);
                         saveTasks();
                     } else if (arg) {
                         let found = false;
-                        activeTasks.forEach((task, id) => {
+                        userTasks.forEach(([id, task]) => {
                             if (task.keyword.toLowerCase().includes(arg)) {
                                 task.stopRequested = true;
                                 found = true;
@@ -1822,8 +1904,8 @@ async function main() {
                         }
                         else await sendTelegram(`⚠️ No active task found for: *${arg}*`, fromChatId);
                     } else {
-                        // Stop the most recent one
-                        const lastId = Array.from(activeTasks.keys()).pop();
+                        // Stop the most recent one for this user
+                        const lastId = userTasks[userTasks.length - 1][0];
                         const task = activeTasks.get(lastId);
                         task.stopRequested = true;
                         await sendTelegram(`🛑 Stopping most recent task: *${task.keyword}*`, fromChatId);
@@ -1835,13 +1917,52 @@ async function main() {
                 // 👑 ADMIN COMMANDS
                 if (fromChatId === ADMIN_CHAT_ID) {
 
+                    if (text === '!cleartasks') {
+                        activeTasks.forEach(task => task.stopRequested = true);
+                        activeTasks.clear();
+                        taskIdCounter = 0;
+                        saveTasks();
+                        clearPersistedTasks();
+                        await sendTelegram(`🗑️ *All tasks have been instantly cleared* from memory, the local file, and the Gist.\nThe task queue is completely empty.`, fromChatId);
+                        continue;
+                    }
+
                     if (text === '!listusers') {
                         let list = `👥 *Authorized Users*\n\n`;
                         for (const [id, config] of Object.entries(ACCOUNTS)) {
                             const status = USER_SESSIONS.has(id) ? '🟢 Online' : '🔴 Offline';
-                            list += `• *${config.name}* (\`${id}\`)\n  └ User: ${config.user} | ${status}\n\n`;
+                            const blockStatus = blockedUsers.has(id) ? ' [BLOCKED]' : '';
+                            list += `• *${config.name}* (\`${id}\`)${blockStatus}\n  └ User: ${config.user} | ${status}\n\n`;
                         }
                         await sendTelegram(list, ADMIN_CHAT_ID);
+                        continue;
+                    }
+
+                    if (text.startsWith('!block ')) {
+                        const targetId = text.substring(7).trim();
+                        if (!targetId || !ACCOUNTS[targetId]) {
+                            await sendTelegram(`⚠️ Invalid user ID or user not found.`, fromChatId);
+                        } else if (targetId === ADMIN_CHAT_ID) {
+                            await sendTelegram(`⚠️ Cannot block the admin.`, fromChatId);
+                        } else {
+                            blockedUsers.add(targetId);
+                            saveBlockedUsers();
+                            await sendTelegram(`🚫 User \`${targetId}\` (*${ACCOUNTS[targetId].name}*) has been blocked.`, fromChatId);
+                        }
+                        continue;
+                    }
+
+                    if (text.startsWith('!unblock ')) {
+                        const targetId = text.substring(9).trim();
+                        if (!targetId) {
+                            await sendTelegram(`⚠️ Please provide a user ID.`, fromChatId);
+                        } else if (blockedUsers.has(targetId)) {
+                            blockedUsers.delete(targetId);
+                            saveBlockedUsers();
+                            await sendTelegram(`✅ User \`${targetId}\` has been unblocked.`, fromChatId);
+                        } else {
+                            await sendTelegram(`⚠️ User \`${targetId}\` is not blocked.`, fromChatId);
+                        }
                         continue;
                     }
                 }

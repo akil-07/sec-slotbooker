@@ -1,5 +1,5 @@
 const https = require('https');
-const token = process.env.GIST_TOKEN || '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';
+const token = process.env.GIST_TOKEN;
 const gistId = '7e24d6ae5e76667b8052c5dade43f959';
 
 const body = JSON.stringify({
