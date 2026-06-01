@@ -1097,7 +1097,7 @@ function formatTimetable(slots, name) {
 /**
  * Scrapes workflow requests from the learner portal.
  */
-async function fetchWorkflowRequests(context, config) {
+async function fetchWorkflowRequests(context, config, keyword = '') {
     const page = await context.newPage();
     try {
         console.log(`[Workflow] Fetching workflow requests for ${config.name}...`);
@@ -1134,8 +1134,12 @@ async function fetchWorkflowRequests(context, config) {
             });
         });
 
+        if (keyword) {
+            requestLinks = requestLinks.filter(r => r.title.toLowerCase().includes(keyword.toLowerCase()));
+        }
+
         if (requestLinks.length === 0) {
-            return `No open workflow requests found for *${config.name}*.`;
+            return `No open workflow requests found for *${config.name}*${keyword ? ` matching "${keyword}"` : ''}.`;
         }
 
         let msg = `📋 *Workflow Requests for ${config.name}*\n\n`;
@@ -1184,7 +1188,7 @@ async function fetchWorkflowRequests(context, config) {
                         msg += `  ↳ ${icon} ${level.role}: ${level.status} (${level.approver})\n`;
                     });
                 } else {
-                    msg += `  ↳ ⏳ Waiting for approval flow data...\n`;
+                    msg += `  ↳ ⏳ Pending (No approval steps assigned yet)\n`;
                 }
             } else {
                 msg += `  ↳ ⚠️ Could not load Approval Flow.\n`;
@@ -2093,15 +2097,16 @@ async function main() {
                     continue;
                 }
 
-                if (text === '!workflow' || text === '!requests') {
+                if (text.startsWith('!workflow') || text.startsWith('!requests')) {
                     const session = USER_SESSIONS.get(fromChatId);
                     if (!session) {
                         await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
                         continue;
                     }
+                    const args = text.split(' ').slice(1).join(' ').trim();
                     await sendTelegram(`⏳ Fetching your workflow requests, please wait...`, fromChatId);
                     try {
-                        const msg = await fetchWorkflowRequests(session.context, session.config);
+                        const msg = await fetchWorkflowRequests(session.context, session.config, args);
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch workflow requests: ${err.message}`, fromChatId);
