@@ -1118,7 +1118,7 @@ async function fetchWorkflowRequests(context, config, keyword = '') {
         await page.waitForTimeout(3000);
 
         // Find all "Open" buttons for requests
-        const requestLinks = await page.evaluate(() => {
+        let requestLinks = await page.evaluate(() => {
             const links = Array.from(document.querySelectorAll('a.btn-outline-primary'));
             return links.filter(l => l.innerText.trim().toLowerCase() === 'open').map(l => {
                 const card = l.closest('.card');
