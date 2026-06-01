@@ -124,7 +124,7 @@ async function runBookingBot(targetKeyword, targetTime, targetDate, startTime, m
 
     try {
         console.log('[Playwright] Navigating to Event Booking page...');
-        await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         if (page.url().includes('/login') || page.url().includes('/authorize')) {
             console.log('[Playwright] Entering credentials...');
@@ -149,12 +149,12 @@ async function runBookingBot(targetKeyword, targetTime, targetDate, startTime, m
             }
             
             console.log('[Playwright] Logged in, waiting for redirect...');
-            await page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => null);
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => null);
             
             try {
                 await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
             } catch (e) {}
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(500);
         }
         
         console.log(`[Playwright] Scanning for slots...`);

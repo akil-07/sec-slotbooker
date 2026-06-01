@@ -316,7 +316,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
     // Cache-busting query param ensures a fresh page load every scan
     const cacheBuster = `_cb=${Date.now()}`;
     await page.goto(`https://learner.saveetha.in/academicevents/event-booking/?${cacheBuster}`, {
-        waitUntil: 'networkidle',
+        waitUntil: 'domcontentloaded',
         timeout: 60000
     });
 
@@ -327,7 +327,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         const config = page._userConfig;
         await doLogin(page, config.user, config.pass);
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 60000
         });
     }
@@ -684,7 +684,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
 async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT_ID) {
     console.log(`[Bot] Navigating to Event Booking page for Unbooking...`);
     await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
-        waitUntil: 'networkidle',
+        waitUntil: 'domcontentloaded',
         timeout: 60000
     });
 
@@ -693,7 +693,7 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
         const config = page._userConfig;
         await doLogin(page, config.user, config.pass);
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 60000
         });
     }
@@ -783,7 +783,7 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
 async function doLogin(page, user, pass) {
     console.log(`[Bot] Logging in as ${user}...`);
     if (!page.url().includes('/login') && !page.url().includes('/authorize')) {
-        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
     }
 
     // Try multiple selectors for the username field
@@ -836,7 +836,7 @@ async function doLogin(page, user, pass) {
     }
     if (!clicked) await page.keyboard.press('Enter');
 
-    await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 }).catch(() => null);
+    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
 
     // Wait for SSO redirects to complete
     try {
@@ -844,7 +844,7 @@ async function doLogin(page, user, pass) {
     } catch (e) {
         // ignore timeout, we'll just log the URL anyway
     }
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(500);
 
     console.log('[Bot] Logged in. Current URL:', page.url());
 }
@@ -860,7 +860,7 @@ async function fetchTimetable(context, config) {
     try {
         console.log(`[Timetable] Fetching schedule for ${config.name}...`);
         await page.goto('https://learner.saveetha.in/academics/people_schedule/', {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 60000
         });
 
@@ -869,7 +869,7 @@ async function fetchTimetable(context, config) {
             console.log(`[Timetable] Session expired for ${config.name} — re-logging in...`);
             await doLogin(page, config.user, config.pass);
             await page.goto('https://learner.saveetha.in/academics/people_schedule/', {
-                waitUntil: 'networkidle',
+                waitUntil: 'domcontentloaded',
                 timeout: 60000
             });
         }
@@ -1102,7 +1102,7 @@ async function fetchAttendance(context, config) {
     try {
         console.log(`[Attendance] Fetching attendance for ${config.name}...`);
         await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 60000
         });
 
@@ -1111,7 +1111,7 @@ async function fetchAttendance(context, config) {
             console.log(`[Attendance] Session expired for ${config.name} — re-logging in...`);
             await doLogin(page, config.user, config.pass);
             await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
-                waitUntil: 'networkidle',
+                waitUntil: 'domcontentloaded',
                 timeout: 60000
             });
         }
@@ -1290,14 +1290,14 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
     try {
         console.log(`[Bunk] Fetching bunk stats for: ${targetSubject}...`);
         await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 60000
         });
 
         if (page.url().includes('/login')) {
             await doLogin(page, config.user, config.pass);
             await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
-                waitUntil: 'networkidle',
+                waitUntil: 'domcontentloaded',
                 timeout: 60000
             });
         }
@@ -1570,7 +1570,7 @@ async function spawnUserSession(browser, chatId, config) {
 
         console.log(`[Bot] Preparing Hot Tab for ${config.name}...`);
         await hotPage.goto('https://learner.saveetha.in/academicevents/event-booking/', {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 60000
         });
 
@@ -1693,7 +1693,7 @@ async function main() {
                 try {
                     // Just refresh or check if still on booking page every 10 mins
                     if (!session.persistentPage.url().includes('event-booking')) {
-                        await session.persistentPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'networkidle' });
+                        await session.persistentPage.goto('https://learner.saveetha.in/academicevents/event-booking/', { waitUntil: 'domcontentloaded' });
                     }
                 } catch (e) { }
             }
