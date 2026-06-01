@@ -1140,9 +1140,8 @@ async function fetchWorkflowRequests(context, config) {
 
         let msg = `📋 *Workflow Requests for ${config.name}*\n\n`;
 
-        // Check the first 3 requests to avoid spam/timeouts
-        const limit = Math.min(requestLinks.length, 3);
-        for (let i = 0; i < limit; i++) {
+        // Check all requests
+        for (let i = 0; i < requestLinks.length; i++) {
             const req = requestLinks[i];
             msg += `🔹 *${req.title}* (${req.status})\n`;
             
@@ -1191,10 +1190,6 @@ async function fetchWorkflowRequests(context, config) {
                 msg += `  ↳ ⚠️ Could not load Approval Flow.\n`;
             }
             msg += `\n`;
-        }
-
-        if (requestLinks.length > 3) {
-            msg += `_...and ${requestLinks.length - 3} more requests._\n`;
         }
 
         return msg.trim();
