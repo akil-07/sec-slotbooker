@@ -1092,6 +1092,120 @@ function formatTimetable(slots, name) {
     return msg;
 }
 
+// ─── Workflow Requests Scraper ───────────────────────────────────────────────
+
+/**
+ * Scrapes workflow requests from the learner portal.
+ */
+async function fetchWorkflowRequests(context, config) {
+    const page = await context.newPage();
+    try {
+        console.log(`[Workflow] Fetching workflow requests for ${config.name}...`);
+        await page.goto('https://learner.saveetha.in/academics/workflow-requests/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+        });
+
+        if (page.url().includes('/login')) {
+            console.log(`[Workflow] Session expired for ${config.name} — re-logging in...`);
+            await doLogin(page, config.user, config.pass);
+            await page.goto('https://learner.saveetha.in/academics/workflow-requests/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+            });
+        }
+
+        await page.waitForTimeout(3000);
+
+        // Find all "Open" buttons for requests
+        const requestLinks = await page.evaluate(() => {
+            const links = Array.from(document.querySelectorAll('a.btn-outline-primary'));
+            return links.filter(l => l.innerText.trim().toLowerCase() === 'open').map(l => {
+                const card = l.closest('.card');
+                let title = 'Unknown Request';
+                let status = 'Unknown Status';
+                if (card) {
+                    const h5 = card.querySelector('h5');
+                    if (h5) title = h5.innerText.trim();
+                    const badge = card.querySelector('.badge');
+                    if (badge) status = badge.innerText.trim();
+                }
+                return { href: l.href, title, status };
+            });
+        });
+
+        if (requestLinks.length === 0) {
+            return `No open workflow requests found for *${config.name}*.`;
+        }
+
+        let msg = `📋 *Workflow Requests for ${config.name}*\n\n`;
+
+        // Check the first 3 requests to avoid spam/timeouts
+        const limit = Math.min(requestLinks.length, 3);
+        for (let i = 0; i < limit; i++) {
+            const req = requestLinks[i];
+            msg += `🔹 *${req.title}* (${req.status})\n`;
+            
+            await page.goto(req.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForTimeout(2000);
+            
+            // Try to click "Approval Flow" tab
+            const clicked = await page.evaluate(() => {
+                const tabs = Array.from(document.querySelectorAll('a, button, [role="tab"], li, span'));
+                for (const tab of tabs) {
+                    if (tab.innerText?.trim().toLowerCase().includes('approval flow') || tab.innerText?.trim().toLowerCase().includes('approval')) {
+                        tab.click();
+                        return true;
+                    }
+                }
+                return false;
+            });
+
+            if (clicked) {
+                await page.waitForTimeout(2000); // wait for JS to load table
+                // Scrape the table
+                const approvalData = await page.evaluate(() => {
+                    const rows = Array.from(document.querySelectorAll('table tbody tr'));
+                    return rows.map(r => {
+                        const cols = r.querySelectorAll('td');
+                        if (cols.length >= 5) {
+                            return {
+                                role: cols[1].innerText.trim(),
+                                approver: cols[2].innerText.trim(),
+                                status: cols[4].innerText.trim()
+                            };
+                        }
+                        return null;
+                    }).filter(Boolean);
+                });
+
+                if (approvalData.length > 0) {
+                    approvalData.forEach(level => {
+                        const icon = level.status.toLowerCase().includes('approved') ? '✅' : (level.status.toLowerCase().includes('rejected') ? '❌' : '⏳');
+                        msg += `  ↳ ${icon} ${level.role}: ${level.status} (${level.approver})\n`;
+                    });
+                } else {
+                    msg += `  ↳ ⏳ Waiting for approval flow data...\n`;
+                }
+            } else {
+                msg += `  ↳ ⚠️ Could not load Approval Flow.\n`;
+            }
+            msg += `\n`;
+        }
+
+        if (requestLinks.length > 3) {
+            msg += `_...and ${requestLinks.length - 3} more requests._\n`;
+        }
+
+        return msg.trim();
+    } catch (e) {
+        console.error('[Workflow] Error:', e);
+        throw new Error('Failed to scrape workflow requests.');
+    } finally {
+        await page.close();
+    }
+}
+
 // ─── Attendance Scraper ───────────────────────────────────────────────────────
 
 /**
@@ -1811,7 +1925,8 @@ async function main() {
                         `*Timetable & Attendance Commands:*\n` +
                         `\`!timetable\` or \`!tt\` — Get today's schedule\n` +
                         `\`!attendance\` or \`!att\` — Get your attendance\n` +
-                        `\`!bunk\` — Calculate how many classes you can bunk (80% limit)\n\n` +
+                        `\`!bunk\` — Calculate how many classes you can bunk (80% limit)\n` +
+                        `\`!workflow\` or \`!requests\` — Check workflow approval status\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active tasks\n` +
@@ -1979,6 +2094,22 @@ async function main() {
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch timetable: ${err.message}`, fromChatId);
+                    }
+                    continue;
+                }
+
+                if (text === '!workflow' || text === '!requests') {
+                    const session = USER_SESSIONS.get(fromChatId);
+                    if (!session) {
+                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
+                        continue;
+                    }
+                    await sendTelegram(`⏳ Fetching your workflow requests, please wait...`, fromChatId);
+                    try {
+                        const msg = await fetchWorkflowRequests(session.context, session.config);
+                        await sendTelegram(msg, fromChatId);
+                    } catch (err) {
+                        await sendTelegram(`❌ Failed to fetch workflow requests: ${err.message}`, fromChatId);
                     }
                     continue;
                 }
