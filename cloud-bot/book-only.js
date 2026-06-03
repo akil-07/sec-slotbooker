@@ -645,7 +645,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                     }
                 });
                 const lower = text.toLowerCase();
-                if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlisted') || lower.includes('success')) {
+                if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlist') || lower.includes('success')) {
                     return { found: true, text: text.trim() };
                 }
                 return { found: false, text: text.trim() };
