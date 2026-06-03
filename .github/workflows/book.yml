@@ -1,9 +1,7 @@
 name: 🤖 Saveetha Telegram Bot (Persistent)
 
 on:
-  workflow_dispatch:   # Manual start from GitHub UI or Telegram
-  schedule:
-    - cron: '0 */5 * * *'   # Auto-restart every 5 hours (before GitHub's 6h limit kills it)
+  workflow_dispatch:   # Manual start from GitHub UI or Telegram only
 
 concurrency:
   group: "telegram-bot"
@@ -17,7 +15,7 @@ jobs:
   bot:
     name: Run Persistent Telegram Bot
     runs-on: ubuntu-latest
-    timeout-minutes: 340   # ~5h 40min — safely under GitHub's 6h limit
+    timeout-minutes: 330   # 5.5 hours max per run
 
     steps:
       - name: 📥 Checkout code
@@ -40,7 +38,7 @@ jobs:
           cd cloud-bot
           npx playwright install chromium --with-deps
 
-      - name: 🤖 Run Persistent Telegram Bot (up to 5.5 hours)
+      - name: 🤖 Run Telegram Bot
         env:
           SAVEETHA_USER: ${{ secrets.SAVEETHA_USER }}
           SAVEETHA_PASS: ${{ secrets.SAVEETHA_PASS }}
@@ -50,13 +48,8 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
           TZ: Asia/Kolkata
-          GH_TOKEN: ${{ github.token }}
         run: |
           cd cloud-bot
-          # Run for 5.5 hours (19800 seconds) in the foreground so logs show up
+          # Run for up to 5.5 hours (19800 seconds)
           timeout 19800 node book-only.js || true
-          
-          echo "Time limit reached or process stopped."
-          
-          echo "Triggering the next workflow run to keep the bot alive seamlessly..."
-          gh workflow run "book.yml" || echo "Failed to trigger next workflow."
+          echo "Bot session ended."

@@ -426,7 +426,8 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
 
             let matchDate = true;
             if (dateNorm) {
-                matchDate = fullTextNorm.includes(dateNorm) || titleTextNorm.includes(dateNorm);
+                const dateWords = dateNorm.split(' ').filter(Boolean);
+                matchDate = dateWords.every(w => fullTextNorm.includes(w) || titleTextNorm.includes(w));
             }
 
             // ⛔ Check "Already Booked" or "Opening Soon" status
@@ -2213,32 +2214,28 @@ async function main() {
                 if (!text.toLowerCase().startsWith('!book') && !isUnbook && !isScan) continue;
 
                 // Parse command
-                let keyword = text.substring(isUnbook ? 7 : (isScan ? 5 : 5)).trim();
+                let rawParams = text.substring(isUnbook ? 7 : (isScan ? 5 : 5)).trim();
+                let keyword = '';
                 let targetTime = '';
                 let targetVenue = '';
                 let targetDate = '';
                 let startTime = '';
+                
+                // Find the first symbol to separate keyword from modifiers
+                const symbols = ['@', '~', '$', '#'];
+                let firstSymbolIndex = rawParams.length;
+                symbols.forEach(sym => {
+                    const idx = rawParams.indexOf(sym);
+                    if (idx !== -1 && idx < firstSymbolIndex) firstSymbolIndex = idx;
+                });
 
-                if (keyword.includes('#')) {
-                    const parts = keyword.split('#');
-                    keyword = parts[0].trim();
-                    startTime = parts[1].trim();
-                }
-                if (keyword.includes('~')) {
-                    const parts = keyword.split('~');
-                    keyword = parts[0].trim();
-                    targetDate = parts[1].trim();
-                }
-                if (keyword.includes('$')) {
-                    const parts = keyword.split('$');
-                    keyword = parts[0].trim();
-                    targetVenue = parts[1].trim();
-                }
-                if (keyword.includes('@')) {
-                    const parts = keyword.split('@');
-                    keyword = parts[0].trim();
-                    targetTime = parts[1].trim();
-                }
+                keyword = rawParams.substring(0, firstSymbolIndex).trim();
+
+                let modifiers = rawParams.substring(firstSymbolIndex);
+                if (modifiers.includes('@')) targetTime = modifiers.split('@')[1].split(/[~$\#]/)[0].trim();
+                if (modifiers.includes('~')) targetDate = modifiers.split('~')[1].split(/[@$\#]/)[0].trim();
+                if (modifiers.includes('$')) targetVenue = modifiers.split('$')[1].split(/[@~\#]/)[0].trim();
+                if (modifiers.includes('#')) startTime = modifiers.split('#')[1].split(/[@~$]/)[0].trim();
 
                 if (!keyword) {
                     await sendTelegram(`⚠️ Please provide a keyword. Example: \`!book CAT\``, fromChatId);
