@@ -789,8 +789,9 @@ async function doLogin(page, user, pass) {
 
     // Try multiple selectors for the username field
     const userSelectors = [
-        'input[name="uid"]',
+        '#id_username',
         'input[name="username"]',
+        'input[name="uid"]',
         '#username',
         'input[type="text"]',
         'input[placeholder*="user" i]',
