@@ -1883,6 +1883,22 @@ async function main() {
         }
     } catch (e) { console.error('[Bot] Error loading tasks:', e.message); }
 
+    async function getOrSpawnSession(chatId, config) {
+        let session = USER_SESSIONS.get(chatId);
+        if (!session) {
+            await sendTelegram(`⏳ Your session was not found (bot may have restarted). Attempting to log you in now, please wait...`, chatId);
+            const success = await spawnUserSession(browser, chatId, config);
+            if (success) {
+                session = USER_SESSIONS.get(chatId);
+                await sendTelegram(`✅ Session successfully initialized! Please send your command again if needed.`, chatId);
+            } else {
+                await sendTelegram(`❌ Failed to initialize session. The Saveetha portal might be down or slow. Please try again later.`, chatId);
+                return null;
+            }
+        }
+        return session;
+    }
+
     while (true) {
         try {
             const updates = await getTelegramUpdates(offset);
@@ -2082,11 +2098,8 @@ async function main() {
                     }
                 }
                 if (text === '!timetable' || text === '!tt') {
-                    const session = USER_SESSIONS.get(fromChatId);
-                    if (!session) {
-                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
-                        continue;
-                    }
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
                     await sendTelegram(`⏳ Fetching your timetable, please wait...`, fromChatId);
                     try {
                         const slots = await fetchTimetable(session.context, session.config);
@@ -2099,11 +2112,8 @@ async function main() {
                 }
 
                 if (text.startsWith('!workflow') || text.startsWith('!requests')) {
-                    const session = USER_SESSIONS.get(fromChatId);
-                    if (!session) {
-                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
-                        continue;
-                    }
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
                     const args = text.split(' ').slice(1).join(' ').trim();
                     await sendTelegram(`⏳ Fetching your workflow requests, please wait...`, fromChatId);
                     try {
@@ -2116,11 +2126,8 @@ async function main() {
                 }
 
                 if (text === '!attendance' || text === '!att') {
-                    const session = USER_SESSIONS.get(fromChatId);
-                    if (!session) {
-                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
-                        continue;
-                    }
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
                     await sendTelegram(`⏳ Fetching your attendance, please wait...`, fromChatId);
                     try {
                         const data = await fetchAttendance(session.context, session.config);
@@ -2134,11 +2141,8 @@ async function main() {
                 }
 
                 if (text === '!bunk') {
-                    const session = USER_SESSIONS.get(fromChatId);
-                    if (!session) {
-                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
-                        continue;
-                    }
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
                     await sendTelegram(`⏳ Fetching your subjects...`, fromChatId);
                     try {
                         const data = await fetchAttendance(session.context, session.config);
@@ -2160,11 +2164,8 @@ async function main() {
                 }
 
                 if (text.startsWith('!bunk ')) {
-                    const session = USER_SESSIONS.get(fromChatId);
-                    if (!session) {
-                        await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
-                        continue;
-                    }
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
 
                     const keyword = text.substring(6).trim().toLowerCase();
                     if (!keyword) {
@@ -2292,10 +2293,15 @@ async function main() {
             }
 
             // Get user's pre-authenticated session
-            const session = USER_SESSIONS.get(fromChatId);
+            let session = USER_SESSIONS.get(fromChatId);
             if (!session) {
-                await sendTelegram(`❌ Session not found. Please restart the bot.`, fromChatId);
-                return;
+                await sendTelegram(`⏳ Your session was not found (bot may have restarted). Attempting to log you in now, please wait...`, fromChatId);
+                const success = await spawnUserSession(browser, fromChatId, userConfig);
+                if (!success) {
+                    await sendTelegram(`❌ Failed to initialize session. The portal might be down. Please try again later.`, fromChatId);
+                    return;
+                }
+                session = USER_SESSIONS.get(fromChatId);
             }
 
             // Use the "Hot Tab" if it's not busy, otherwise open a temporary one
