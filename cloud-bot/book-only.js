@@ -277,6 +277,23 @@ async function getTelegramUpdates(offset) {
         return data.result || [];
     } catch (e) {
         console.error('[Telegram] getUpdates error:', e.message);
+        
+        // Sleep to prevent infinite loop spam if context crashes
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Attempt native fetch fallback if Playwright context died
+        try {
+            if (typeof fetch !== 'undefined') {
+                const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&offset=${offset}`;
+                const fetchRes = await fetch(url);
+                const data = await fetchRes.json();
+                if (!data.ok) return [];
+                return data.result || [];
+            }
+        } catch (fallbackErr) {
+            // Silently ignore fallback fetch errors to avoid more console spam
+        }
+        
         return [];
     }
 }
