@@ -1813,10 +1813,25 @@ async function main() {
     // Pre-login each user and keep a "Hot Tab" ready on the booking page
     await initAccounts();
 
-    const spawnPromises = Object.entries(ACCOUNTS).map(([chatId, config]) =>
+    // First attempt to spawn all sessions
+    const accountEntries = Object.entries(ACCOUNTS);
+    const spawnPromises = accountEntries.map(([chatId, config]) =>
         spawnUserSession(browser, chatId, config)
     );
     await Promise.all(spawnPromises);
+
+    // Retry failed logins up to 2 more times before declaring online
+    const MAX_STARTUP_RETRIES = 2;
+    for (let retry = 1; retry <= MAX_STARTUP_RETRIES; retry++) {
+        const failedAccounts = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId));
+        if (failedAccounts.length === 0) break;
+        console.log(`[Bot] Retry ${retry}/${MAX_STARTUP_RETRIES}: ${failedAccounts.length} account(s) failed to login, retrying in 10s...`);
+        await new Promise(r => setTimeout(r, 10000));
+        const retryPromises = failedAccounts.map(([chatId, config]) =>
+            spawnUserSession(browser, chatId, config)
+        );
+        await Promise.all(retryPromises);
+    }
 
     // Optional: Keep-alive loop to prevent sessions from timing out
     setInterval(async () => {
@@ -1832,10 +1847,39 @@ async function main() {
         }
     }, 600000); // Every 10 mins
 
+    // Background retry: keep trying to spawn any sessions that still failed
+    const stillFailed = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId));
+    if (stillFailed.length > 0) {
+        console.log(`[Bot] ${stillFailed.length} account(s) still offline after retries. Background retry active.`);
+        const bgRetryInterval = setInterval(async () => {
+            const remaining = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId));
+            if (remaining.length === 0) {
+                console.log('[Bot] All accounts now online. Stopping background retry.');
+                clearInterval(bgRetryInterval);
+                return;
+            }
+            console.log(`[Bot] Background retry: ${remaining.length} account(s) still offline, retrying...`);
+            for (const [chatId, config] of remaining) {
+                await spawnUserSession(browser, chatId, config);
+            }
+        }, 60000); // Retry every 60 seconds
+    }
+
     // ── Start Timetable Schedulers for all users ──────────────────────────────
     // (Note: Handled inside spawnUserSession now)
 
-    await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${USER_SESSIONS.size} accounts have a tab open and ready on the booking page.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
+    // Send accurate startup notification
+    const onlineCount = USER_SESSIONS.size;
+    const totalCount = accountEntries.length;
+    if (onlineCount === totalCount) {
+        await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${onlineCount} accounts have a tab open and ready on the booking page.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
+    } else {
+        const failedNames = accountEntries
+            .filter(([chatId]) => !USER_SESSIONS.has(chatId))
+            .map(([chatId, config]) => config.name)
+            .join(', ');
+        await sendTelegram(`⚠️ *Saveetha Bot is Online!* (Hot Tab Mode)\n${onlineCount}/${totalCount} accounts ready. Failed to login: *${failedNames}*\n_Retrying failed accounts in the background..._\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
+    }
 
     // Track active bookings
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page, isScan, isUnbook, fromChatId, userConfig }
