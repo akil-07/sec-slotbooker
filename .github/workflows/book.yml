@@ -1,7 +1,14 @@
 name: 🤖 Saveetha Telegram Bot (Persistent)
 
 on:
-  workflow_dispatch:   # Manual start from GitHub UI or Telegram only
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: 'Keyword to book'
+        required: false
+      chat_id:
+        description: 'Chat ID'
+        required: false
 
 concurrency:
   group: "telegram-bot"
