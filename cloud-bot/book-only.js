@@ -1961,8 +1961,34 @@ async function main() {
         return session;
     }
 
+    async function checkGistForNewTasks() {
+        if (!GIST_TOKEN || !GIST_ID) return;
+        const data = await loadTasksFromGist();
+        if (data && data.counter > taskIdCounter) {
+            taskIdCounter = data.counter;
+            for (let t of data.tasks) {
+                if (!activeTasks.has(t.id)) {
+                    if (t.stopRequested || t.phase === 'Cancelling slot') continue;
+                    const userConf = getUserConfig(t.fromChatId);
+                    if (!userConf) continue;
+                    const taskObj = {
+                        ...t,
+                        phase: 'Picked up from database',
+                        stopRequested: false,
+                        page: null,
+                        userConfig: userConf
+                    };
+                    activeTasks.set(t.id, taskObj);
+                    startTaskLoop(t.id, taskObj);
+                    console.log(`[Bot] Instantly picked up task ${t.id} from Gist.`);
+                }
+            }
+        }
+    }
+
     while (true) {
         try {
+            await checkGistForNewTasks();
             const updates = await getTelegramUpdates(offset);
 
             for (const update of updates) {
