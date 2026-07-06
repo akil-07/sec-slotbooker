@@ -1986,9 +1986,11 @@ async function main() {
         }
     }
 
+    // Poll the Gist database every 3 seconds for instant booking tasks
+    setInterval(checkGistForNewTasks, 3000);
+
     while (true) {
         try {
-            await checkGistForNewTasks();
             const updates = await getTelegramUpdates(offset);
 
             for (const update of updates) {
