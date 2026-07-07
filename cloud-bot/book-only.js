@@ -1945,6 +1945,40 @@ async function main() {
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page, isScan, isUnbook, fromChatId, userConfig }
     let taskIdCounter = 0;
 
+async function syncFileToGist(filename, content) {
+    if (!GIST_TOKEN || !GIST_ID) return;
+    try {
+        const https = require('https');
+        const body = JSON.stringify({
+            files: {
+                [filename]: {
+                    content: content
+                }
+            }
+        });
+        const req = https.request({
+            hostname: 'api.github.com',
+            path: `/gists/${GIST_ID}`,
+            method: 'PATCH',
+            headers: {
+                'Authorization': `Bearer ${GIST_TOKEN}`,
+                'User-Agent': 'saveetha-bot',
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body),
+                'Accept': 'application/vnd.github.v3+json',
+                'X-GitHub-Api-Version': '2022-11-28'
+            }
+        }, (res) => {
+            // fire and forget
+        });
+        req.on('error', (e) => console.error('[Persist] Gist file sync error:', e.message));
+        req.write(body);
+        req.end();
+    } catch (e) {
+        console.error('[Persist] Failed to sync file to gist:', e.message);
+    }
+}
+
     function saveTasks() {
         const tasksArr = [];
         activeTasks.forEach((task, id) => {
@@ -2268,6 +2302,8 @@ async function main() {
                         const slots = await fetchTimetable(session.context, session.config);
                         const msg = formatTimetable(slots, session.config.name);
                         await sendTelegram(msg, fromChatId);
+                        // SYNC to GIST for the Pod to read silently
+                        syncFileToGist('saveetha_timetable.txt', msg);
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch timetable: ${err.message}`, fromChatId);
                     }
@@ -2297,6 +2333,8 @@ async function main() {
                         let msg = formatAttendance(data, session.config.name);
                         msg += `\n\n_💡 Tip: Type_ \`!bunk\` _to calculate how many classes you can skip while maintaining 80%!_`;
                         await sendTelegram(msg, fromChatId);
+                        // SYNC to GIST for the Pod to read silently
+                        syncFileToGist('saveetha_attendance.txt', formatAttendance(data, session.config.name));
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch attendance: ${err.message}`, fromChatId);
                     }
