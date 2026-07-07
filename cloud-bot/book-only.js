@@ -227,6 +227,66 @@ function getUserConfig(chatId) {
     return ACCOUNTS[chatId] || null;
 }
 
+async function fetchGistCommands() {
+    if (!GIST_TOKEN || !GIST_ID) return [];
+    try {
+        const https = require('https');
+        // 1. Fetch commands
+        const data = await new Promise((resolve, reject) => {
+            const req = https.request({
+                hostname: 'api.github.com',
+                path: `/gists/${GIST_ID}`,
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${GIST_TOKEN}`,
+                    'User-Agent': 'saveetha-bot',
+                    'Accept': 'application/vnd.github.v3+json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                }
+            }, (res) => {
+                let body = '';
+                res.on('data', chunk => body += chunk);
+                res.on('end', () => resolve(body));
+            });
+            req.on('error', reject);
+            req.end();
+        });
+        const gist = JSON.parse(data);
+        if (gist.files && gist.files['saveetha_commands.json'] && gist.files['saveetha_commands.json'].content) {
+            const contentObj = JSON.parse(gist.files['saveetha_commands.json'].content);
+            const commands = contentObj.commands || [];
+            
+            if (commands.length > 0) {
+                // 2. Clear commands from Gist
+                await new Promise((resolve, reject) => {
+                    const req = https.request({
+                        hostname: 'api.github.com',
+                        path: `/gists/${GIST_ID}`,
+                        method: 'PATCH',
+                        headers: {
+                            'Authorization': `Bearer ${GIST_TOKEN}`,
+                            'User-Agent': 'saveetha-bot',
+                            'Accept': 'application/vnd.github.v3+json',
+                            'X-GitHub-Api-Version': '2022-11-28'
+                        }
+                    }, resolve);
+                    req.on('error', reject);
+                    req.write(JSON.stringify({
+                        files: {
+                            'saveetha_commands.json': { content: '{"commands":[]}' }
+                        }
+                    }));
+                    req.end();
+                });
+                return commands;
+            }
+        }
+    } catch (e) {
+        console.error('[Gist] Failed to fetch commands:', e.message);
+    }
+    return [];
+}
+
 // ─── Telegram Helpers ────────────────────────────────────────────────────────
 
 async function sendTelegram(text, chatId = CHAT_ID) {
@@ -1992,9 +2052,22 @@ async function main() {
     while (true) {
         try {
             const updates = await getTelegramUpdates(offset);
+            
+            // Also poll Gist for commands from the Pod
+            const gistCommands = await fetchGistCommands();
+            for (const cmd of gistCommands) {
+                console.log(`[Bot] Received Gist Command from Pod: ${cmd.text}`);
+                updates.push({
+                    update_id: 0,
+                    message: {
+                        chat: { id: cmd.chatId },
+                        text: cmd.text
+                    }
+                });
+            }
 
             for (const update of updates) {
-                offset = update.update_id + 1;
+                if (update.update_id) offset = update.update_id + 1;
 
                 const msg = update.message || update.channel_post;
                 if (!msg || !msg.text) continue;
