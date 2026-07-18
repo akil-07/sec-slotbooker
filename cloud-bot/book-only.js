@@ -995,7 +995,28 @@ async function fetchTimetable(context, config) {
             }
 
             for (const card of selectedCards) {
-                const lines = (card.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
+                let lines = (card.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
+                
+                // Recover missing header if we matched an inner element (like a card-body)
+                if (lines.length > 0 && (/^SLOT\s*:/i.test(lines[0]) || /^VENUE\s*:/i.test(lines[0]) || /^Lesson\s*:/i.test(lines[0]))) {
+                    let curr = card;
+                    for (let i = 0; i < 3; i++) {
+                        if (!curr.parentElement) break;
+                        curr = curr.parentElement;
+                        const parentLines = (curr.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
+                        if (parentLines.length > 0 && parentLines[0] !== lines[0]) {
+                            const pLine = parentLines[0];
+                            if (pLine.length > 3 && 
+                                !/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i.test(pLine) &&
+                                !/^\d{1,2}\s*(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(pLine) &&
+                                !/^(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(pLine)) {
+                                lines.unshift(pLine);
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 let venue = '', slotCode = '', timeInfo = null, subject = '';
 
                 for (const line of lines) {
@@ -1003,11 +1024,12 @@ async function fetchTimetable(context, config) {
                         venue = line.replace(/^VENUE\s*:\s*/i, '').trim();
                     } else if (/^SLOT\s*:/i.test(line)) {
                         slotCode = line.replace(/^SLOT\s*:\s*/i, '').trim();
-                    } else if (/(AM|PM)/i.test(line) && !timeInfo) {
+                    } else if (/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i.test(line) && !timeInfo) {
                         timeInfo = parseTime(line);
                     } else if (line.length > 5 &&
-                        !/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{4}$/i.test(line) &&
-                        !/^(MON|TUE|WED|THU|FRI|SAT|SUN)$/i.test(line) &&
+                        !/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i.test(line) &&
+                        !/^\d{1,2}\s*(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(line) &&
+                        !/^(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(line) &&
                         !/VIEW\s*ATTENDANCE/i.test(line)) {
                         if (!subject) subject = line;
                     }
@@ -1823,6 +1845,8 @@ async function sendDailyTimetable(chatId, session) {
     } catch (err) { }
 }
 
+const activeReminders = new Map();
+
 function scheduleSlotReminders(chatId, session, slots) {
     if (!slots || slots.length === 0) return;
     const IST_OFFSET = 5.5 * 60 * 60 * 1000;
@@ -1834,7 +1858,14 @@ function scheduleSlotReminders(chatId, session, slots) {
         const reminderTime = slotIST.getTime() - 15 * 60 * 1000;
         const delay = reminderTime - nowIST.getTime();
         if (delay <= 0) continue;
-        setTimeout(async () => {
+
+        const reminderKey = `${chatId}_${s.slot}_${s.hour}_${s.minute}`;
+        if (activeReminders.has(reminderKey)) {
+            clearTimeout(activeReminders.get(reminderKey));
+        }
+
+        const timeoutId = setTimeout(async () => {
+            activeReminders.delete(reminderKey);
             try {
                 const h = s.hour % 12 || 12;
                 const period = s.hour < 12 ? 'AM' : 'PM';
@@ -1849,6 +1880,8 @@ function scheduleSlotReminders(chatId, session, slots) {
                 await sendTelegram(msg, chatId);
             } catch (err) { }
         }, delay);
+        
+        activeReminders.set(reminderKey, timeoutId);
     }
 }
 
