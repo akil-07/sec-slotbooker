@@ -1561,7 +1561,8 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         if (attMatch) percent = parseFloat(attMatch[1]);
 
         const presentMatch = pageText.match(/Present[\s\S]{0,30}?([\d.]+)\s*\/\s*([\d.]+)/i) ||
-                             pageText.match(/(?:Attended|Present)[\s\S]{0,30}?([\d.]+)\s*(?:\/|out of)\s*([\d.]+)/i);
+                             pageText.match(/(?:Attended|Present)[\s\S]{0,30}?([\d.]+)\s*(?:\/|out of)\s*([\d.]+)/i) ||
+                             pageText.match(/([\d.]+)\s*\/\s*([\d.]+)/);
         if (presentMatch) {
             presentHours = parseFloat(presentMatch[1]);
             conductedHours = parseFloat(presentMatch[2]);
@@ -1620,7 +1621,7 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
 
         if (!result) {
             console.error(`[Bunk] Failed to parse. Dump: present=${presentHours}, conducted=${conductedHours}, total=${totalSessions}, upcoming=${upcomingSessions}`);
-            throw new Error('Could not find enough session data on this subject to calculate bunking. (Has the class ended?)');
+            throw new Error(`Could not find enough session data. (Present: ${presentHours}, Conducted: ${conductedHours}, Total: ${totalSessions})`);
         }
 
         return [result]; // wrap in array for formatter
