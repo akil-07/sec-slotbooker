@@ -1560,36 +1560,49 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         const attMatch = pageText.match(/Overall Attendance[\s\S]{0,50}?([\d.]+)%/i);
         if (attMatch) percent = parseFloat(attMatch[1]);
 
-        const presentMatch = pageText.match(/Present[\s\S]{0,30}?([\d.]+)\s*\/\s*([\d.]+)/i);
+        const presentMatch = pageText.match(/Present[\s\S]{0,30}?([\d.]+)\s*\/\s*([\d.]+)/i) ||
+                             pageText.match(/(?:Attended|Present)[\s\S]{0,30}?([\d.]+)\s*(?:\/|out of)\s*([\d.]+)/i);
         if (presentMatch) {
             presentHours = parseFloat(presentMatch[1]);
             conductedHours = parseFloat(presentMatch[2]);
         }
 
         const totalMatch = pageText.match(/Total Sessions[\s\S]{0,20}?(?<!\d)(\d+)(?!\d)/i) ||
-            pageText.match(/Total sessions scheduled:?\s*(\d+)/i);
+            pageText.match(/Total sessions scheduled:?\s*(\d+)/i) ||
+            pageText.match(/Total:?\s*(\d+)/i);
         if (totalMatch) {
             totalSessions = parseInt(totalMatch[1]);
         }
 
-        const upMatch = pageText.match(/Upcoming:\s*(\d+)/i);
+        const upMatch = pageText.match(/Upcoming:\s*(\d+)/i) ||
+            pageText.match(/Remaining:\s*(\d+)/i);
         if (upMatch) {
             upcomingSessions = parseInt(upMatch[1]);
+        }
+
+        // Fallback: If we have present/conducted hours but no total sessions, assume class has ended.
+        if (presentHours !== null && conductedHours !== null && totalSessions === null) {
+            totalSessions = Math.round(conductedHours); // fallback: assume 1 hour = 1 session
+            upcomingSessions = 0;
         }
 
         let result = null;
         if (presentHours !== null && conductedHours !== null && totalSessions !== null) {
             const conductedSessions = totalSessions - upcomingSessions;
-            if (conductedSessions > 0) {
-                const hoursPerSession = conductedHours / conductedSessions;
+            // Allow calculation if class has ended (conductedSessions === 0 but upcomingSessions === 0)
+            if (conductedSessions > 0 || (conductedSessions === 0 && upcomingSessions === 0)) {
+                // Determine effective hours per session, default to 1 if we can't determine
+                const effectiveConducted = conductedSessions > 0 ? conductedSessions : Math.round(conductedHours);
+                const hoursPerSession = effectiveConducted > 0 ? conductedHours / effectiveConducted : 1;
+                
                 const remainingHours = upcomingSessions * hoursPerSession;
                 const totalSemesterHours = conductedHours + remainingHours;
 
                 const targetAttendedHours = totalSemesterHours * 0.80;
                 const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
-                const maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
+                const maxBunkSessions = hoursPerSession > 0 ? Math.floor(maxBunkHours / hoursPerSession) : 0;
 
-                const projectedFinalPercent = ((presentHours + remainingHours) / totalSemesterHours) * 100;
+                const projectedFinalPercent = totalSemesterHours > 0 ? ((presentHours + remainingHours) / totalSemesterHours) * 100 : percent;
 
                 result = {
                     subject: targetSubject,
