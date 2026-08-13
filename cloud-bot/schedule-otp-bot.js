@@ -55,14 +55,32 @@ function saveUsers(users) {
 
 // Get all users including admin
 function getAllUsers() {
-    const users = loadUsers();
-    // Add admin to the list dynamically (overwrites if admin is in JSON, which is fine)
-    users[ADMIN_CHAT_ID] = {
-        saveethaUser: ADMIN_USER,
-        saveethaPass: ADMIN_PASS,
-        isAdmin: true
-    };
-    return users;
+    const allUsers = loadUsers();
+    
+    // 1. Add admin from env
+    if (ADMIN_CHAT_ID && ADMIN_USER && ADMIN_PASS) {
+        allUsers[ADMIN_CHAT_ID] = { saveethaUser: ADMIN_USER, saveethaPass: ADMIN_PASS, isAdmin: true };
+    }
+
+    // 2. Add users from ACCOUNTS_JSON env variable (how you do it for book-only.js)
+    if (process.env.ACCOUNTS_JSON) {
+        try {
+            const additionalAccounts = JSON.parse(process.env.ACCOUNTS_JSON);
+            for (const [chatId, data] of Object.entries(additionalAccounts)) {
+                // Handle both `user`/`pass` format (from book-only) and `saveethaUser`/`saveethaPass` format
+                if (!allUsers[chatId]) {
+                    allUsers[chatId] = {
+                        saveethaUser: data.saveethaUser || data.user,
+                        saveethaPass: data.saveethaPass || data.pass
+                    };
+                }
+            }
+        } catch (e) {
+            console.error('Error parsing ACCOUNTS_JSON:', e.message);
+        }
+    }
+
+    return allUsers;
 }
 
 // ─── Telegram Bot ─────────────────────────────────────────────────────────────
