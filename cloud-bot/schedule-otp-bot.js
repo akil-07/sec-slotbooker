@@ -780,7 +780,7 @@ async function runDailyInitForUser(userContext) {
                 'This could mean:\n' +
                 '• No classes are scheduled today\n' +
                 '• The schedule page layout could not be parsed\n\n' +
-                'Use /schedule to retry, or /help for commands.'
+                'Use !schedule to retry, or !help for commands.'
             );
             return;
         }
@@ -803,7 +803,7 @@ async function runDailyInitForUser(userContext) {
 
     } catch (err) {
         log(`[Init] Fatal error for ${chatId}: ${err.message}`);
-        await sendTelegram(chatId, `❌ Schedule fetch failed:\n\`${err.message}\`\n\nUse /schedule to retry.`);
+        await sendTelegram(chatId, `❌ Schedule fetch failed:\n\`${err.message}\`\n\nUse !schedule to retry.`);
         if (page)    await page.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
     }
@@ -847,14 +847,14 @@ bot.on('message', async (msg) => {
     const isAdmin = chatId === ADMIN_CHAT_ID;
 
     // ── Commands ───────────────────────────────────────────────────────────
-    if (text.toLowerCase() === '/myid') {
+    if (text.toLowerCase() === '!myid') {
         return bot.sendMessage(chatId, `🆔 Your Telegram Chat ID is: \`${chatId}\`\n\nGive this to the admin to register your account.`, { parse_mode: 'Markdown' });
     }
 
-    if (text.toLowerCase().startsWith('/adduser')) {
+    if (text.toLowerCase().startsWith('!adduser')) {
         if (!isAdmin) return bot.sendMessage(chatId, '⛔ Admin only command.');
         const parts = text.split(' ');
-        if (parts.length < 4) return bot.sendMessage(chatId, 'Usage: `/adduser <chat_id> <saveetha_user> <saveetha_pass>`', { parse_mode: 'Markdown' });
+        if (parts.length < 4) return bot.sendMessage(chatId, 'Usage: `!adduser <chat_id> <saveetha_user> <saveetha_pass>`', { parse_mode: 'Markdown' });
         const targetChatId = parts[1];
         const targetUser = parts[2];
         const targetPass = parts[3];
@@ -869,10 +869,10 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    if (text.toLowerCase().startsWith('/removeuser')) {
+    if (text.toLowerCase().startsWith('!removeuser')) {
         if (!isAdmin) return bot.sendMessage(chatId, '⛔ Admin only command.');
         const parts = text.split(' ');
-        if (parts.length < 2) return bot.sendMessage(chatId, 'Usage: `/removeuser <chat_id>`', { parse_mode: 'Markdown' });
+        if (parts.length < 2) return bot.sendMessage(chatId, 'Usage: `!removeuser <chat_id>`', { parse_mode: 'Markdown' });
         const targetChatId = parts[1];
         
         const users = loadUsers();
@@ -888,7 +888,7 @@ bot.on('message', async (msg) => {
         }
     }
 
-    if (text.toLowerCase() === '/listusers') {
+    if (text.toLowerCase() === '!listusers') {
         if (!isAdmin) return bot.sendMessage(chatId, '⛔ Admin only command.');
         const users = getAllUsers();
         let msgStr = '👥 *Registered Users:*\n\n';
@@ -898,7 +898,7 @@ bot.on('message', async (msg) => {
         return bot.sendMessage(chatId, msgStr, { parse_mode: 'Markdown' });
     }
 
-    if (text.toLowerCase() === '/start' || text.toLowerCase() === '/help') {
+    if (text.toLowerCase() === '!start' || text.toLowerCase() === '!help') {
         return bot.sendMessage(chatId, [
             '🎓 *Saveetha Schedule OTP Bot*',
             '',
@@ -910,39 +910,39 @@ bot.on('message', async (msg) => {
             '• Send you a screenshot of the result',
             '',
             '*User Commands:*',
-            '/myid     — Get your Chat ID to give to the admin',
-            isRegistered ? '/schedule — Re-fetch today\'s schedule now' : '',
-            isRegistered ? '/status   — Show active alert count' : '',
-            '/help     — Show this message',
+            '!myid     — Get your Chat ID to give to the admin',
+            isRegistered ? '!schedule — Re-fetch today\'s schedule now' : '',
+            isRegistered ? '!status   — Show active alert count' : '',
+            '!help     — Show this message',
             '',
             isAdmin ? '*Admin Commands:*' : '',
-            isAdmin ? '/adduser <id> <user> <pass>' : '',
-            isAdmin ? '/removeuser <id>' : '',
-            isAdmin ? '/listusers' : ''
+            isAdmin ? '!adduser <id> <user> <pass>' : '',
+            isAdmin ? '!removeuser <id>' : '',
+            isAdmin ? '!listusers' : ''
         ].filter(Boolean).join('\n'), { parse_mode: 'Markdown' });
     }
 
-    if (text.toLowerCase() === '/schedule') {
+    if (text.toLowerCase() === '!schedule') {
         if (!isRegistered) return bot.sendMessage(chatId, '⛔ You are not registered. Ask the admin to add you.');
         await runDailyInitForUser({ chatId, ...allUsers[chatId] });
         return;
     }
 
-    if (text.toLowerCase() === '/status') {
+    if (text.toLowerCase() === '!status') {
         if (!isRegistered) return bot.sendMessage(chatId, '⛔ You are not registered.');
         const timersCount = activeTimers[chatId] ? activeTimers[chatId].length : 0;
         await sendTelegram(chatId,
             `📊 *Bot Status*\n\n` +
             `Active alerts for you: *${timersCount}*\n` +
             `Pending OTP: *${pendingOtpCallbacks.has(chatId) ? 'Yes' : 'No'}*\n\n` +
-            `Use /schedule to re-fetch today's classes.`
+            `Use !schedule to re-fetch today's classes.`
         );
         return;
     }
 
     // Default catch-all
-    if (text.startsWith('/')) {
-        await bot.sendMessage(chatId, 'Unknown command. Use /help to see what I can do.');
+    if (text.startsWith('!')) {
+        await bot.sendMessage(chatId, 'Unknown command. Use !help to see what I can do.');
     }
 });
 
@@ -963,5 +963,5 @@ bot.on('polling_error', (err) => {
     await runDailyInit();
     scheduleMidnightRefetch();
 
-    log('[Bot] Running. Send /help on Telegram. Press Ctrl+C to stop.');
+    log('[Bot] Running. Send !help on Telegram. Press Ctrl+C to stop.');
 })();
