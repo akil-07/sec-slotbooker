@@ -1,4 +1,4 @@
-name: 🤖 Saveetha Telegram Bot (Persistent)
+name: 🤖 Saveetha Telegram Bot (Persistent V2)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
         required: false
 
 concurrency:
-  group: "telegram-bot"
+  group: "telegram-bot-v2"
   cancel-in-progress: true
 
 permissions:
@@ -65,4 +65,4 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run book.yml
+        run: gh workflow run bot.yml
