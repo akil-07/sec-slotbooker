@@ -1,9 +1,21 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+
+// Fix for Playwright temp dir permission issue
+const localTemp = path.join(__dirname, 'temp');
+if (!fs.existsSync(localTemp)) fs.mkdirSync(localTemp);
+process.env.TEMP = localTemp;
+process.env.TMP = localTemp;
+process.env.TMPDIR = localTemp;
+
 require('dotenv').config();
+const { GoogleGenAI } = require('@google/genai');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const aiClient = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
+
 const CHAT_ID = process.env.CHAT_ID;
 const SAVEETHA_USER = process.env.SAVEETHA_USER;
 const SAVEETHA_PASS = process.env.SAVEETHA_PASS;
@@ -333,7 +345,10 @@ async function getTelegramUpdates(offset) {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&offset=${offset}`;
         const res = await apiRequest.get(url, { timeout: 40000 });
         const data = await res.json();
-        if (!data.ok) return [];
+        if (!data.ok) {
+            console.error('[Telegram] API Error:', data);
+            return [];
+        }
         return data.result || [];
     } catch (e) {
         console.error('[Telegram] getUpdates error:', e.message);
@@ -2168,8 +2183,59 @@ async function syncFileToGist(filename, content) {
                     continue;
                 }
 
-                const text = msg.text.trim().toLowerCase();
+                let text = msg.text.trim().toLowerCase();
 
+                // ── AI Natural Language Parsing ──────────────────────────────
+                if (!text.startsWith('!')) {
+                    if (!aiClient) {
+                        await sendTelegram(`⚠️ Gemini API Key not configured. AI disabled. Use standard ! commands.`, fromChatId);
+                        continue;
+                    }
+                    try {
+                        await sendTelegram(`🤖 Thinking...`, fromChatId);
+                        const prompt = `You are an AI assistant for Saveetha University students. The user sent this message: "${msg.text}"
+Determine the intent and return ONLY valid JSON (no markdown).
+Possible actions:
+1. "book": If user wants to book a slot. Extract "keyword" (required), "time" (optional), "date" (optional), "venue" (optional).
+2. "timetable": If user wants to see today's timetable/schedule.
+3. "attendance": If user wants to check their attendance.
+4. "reply": If it's a general question or greeting. Provide a helpful "message".
+
+Example: {"action": "book", "keyword": "math", "time": "10:00 AM"}
+Example: {"action": "timetable"}
+Example: {"action": "attendance"}
+Example: {"action": "reply", "message": "Hello! How can I help?"}`;
+
+                        const result = await aiClient.models.generateContent({
+                            model: 'gemini-2.0-flash-lite',
+                            contents: prompt,
+                        });
+                        
+                        let aiResponse = result.text.trim();
+                        if (aiResponse.startsWith('\`\`\`json')) {
+                            aiResponse = aiResponse.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '').trim();
+                        }
+                        const aiData = JSON.parse(aiResponse);
+
+                        if (aiData.action === 'reply') {
+                            await sendTelegram(`🤖 ${aiData.message}`, fromChatId);
+                            continue;
+                        } else if (aiData.action === 'timetable') {
+                            text = '!timetable';
+                        } else if (aiData.action === 'attendance') {
+                            text = '!attendance';
+                        } else if (aiData.action === 'book') {
+                            text = `!book ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''}`.trim();
+                        } else {
+                            await sendTelegram(`🤖 I'm not sure how to handle that action.`, fromChatId);
+                            continue;
+                        }
+                    } catch (e) {
+                        console.error('[AI] Error:', e.message);
+                        await sendTelegram(`❌ AI Error: Could not process request. Try using ! commands.`, fromChatId);
+                        continue;
+                    }
+                }
                 // ── !help ─────────────────────────────────────────────────
                 if (text === '!help' || text === '/start') {
                     let helpMsg =
@@ -2198,6 +2264,7 @@ async function syncFileToGist(filename, content) {
                             `\`!listusers\` — Show all users\n` +
                             `\`!allprogress\` — View all active tasks\n` +
                             `\`!cleartasks\` — Wipe all stuck tasks instantly\n` +
+                            `\`!stopuser <chatId>\` — Stop all tasks for a user\n` +
                             `\`!block <chatId>\` — Block a user\n` +
                             `\`!unblock <chatId>\` — Unblock a user\n`;
                     }
@@ -2291,6 +2358,30 @@ async function syncFileToGist(filename, content) {
 
                 // 👑 ADMIN COMMANDS
                 if (fromChatId === ADMIN_CHAT_ID) {
+
+                    if (text.startsWith('!stopuser ')) {
+                        const targetId = text.substring(10).trim();
+                        if (!targetId) {
+                            await sendTelegram(`⚠️ Please provide a user ID. Example: \`!stopuser 123456789\``, fromChatId);
+                            continue;
+                        }
+                        
+                        let stoppedCount = 0;
+                        activeTasks.forEach((task, id) => {
+                            if (task.fromChatId === targetId) {
+                                task.stopRequested = true;
+                                stoppedCount++;
+                            }
+                        });
+                        
+                        if (stoppedCount > 0) {
+                            await sendTelegram(`✅ Stopped ${stoppedCount} task(s) for user \`${targetId}\`.`, fromChatId);
+                            saveTasks();
+                        } else {
+                            await sendTelegram(`⚠️ No active tasks found for user \`${targetId}\`.`, fromChatId);
+                        }
+                        continue;
+                    }
 
                     if (text === '!cleartasks') {
                         activeTasks.forEach(task => task.stopRequested = true);
