@@ -47,16 +47,6 @@ The core functionality automates the tedious process of booking academic slots, 
 
 ---
 
-## 🚀 Setup & Deployment
-
-1. **Fork/Clone the Repository.**
-2. **Set up GitHub Secrets**:
-   Navigate to `Settings > Secrets and variables > Actions` and add the following:
-   - `TELEGRAM_BOT_TOKEN`: Your Telegram Bot API token.
-   - `CHAT_ID`: Your personal Telegram ID (to act as the super-admin).
-   - `SAVEETHA_USER` & `SAVEETHA_PASS`: Your default portal credentials.
-   - `GIST_ID` & `GIST_TOKEN`: A GitHub Gist ID and Personal Access Token used as a cloud database to persist dynamically added users.
-3. **Trigger the Action**: Go to the GitHub Actions tab and manually run the `Run Persistent Telegram Bot` workflow.
 
 ---
 
