@@ -450,14 +450,14 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         function normalize(str) {
             if (!str) return '';
             return str.toLowerCase()
-                .replace(/[^a-z0-9\s]/g, '')
+                .replace(/[^a-z0-9\s:]/g, '')
                 .replace(/\s+/g, ' ')
                 .replace(/(\d)(am|pm)/g, '$1 $2')
                 .trim();
         }
 
         function extractStartTime(normalizedText) {
-            const match = normalizedText.match(/\b(\d{1,2})\s*(am|pm)\b/);
+            const match = normalizedText.match(/\b(\d{1,2}(?::\d{2})?)\s*(am|pm)\b/);
             if (!match) return '';
             return match[1] + ' ' + match[2];
         }
