@@ -191,11 +191,25 @@
     return slots;
   }
 
-  // ─── Apply keyword and time filters (ignoring punctuation/symbols) ────────
+  // ─── Apply keyword and time filters (improved time parsing) ────────
   function normalizeText(str) {
     if (!str) return '';
-    // Remove all non-alphanumeric characters (except spaces) and collapse multiple spaces
-    return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    let standardized = str.toLowerCase();
+    
+    // 1. Insert space before am/pm if missing (e.g., "1:15pm" -> "1:15 pm")
+    standardized = standardized.replace(/(\d)(am|pm)\b/g, '$1 $2');
+    
+    // 2. Standardize time separators: change "1.15" to "1:15"
+    standardized = standardized.replace(/(\d)[.](\d)/g, '$1:$2');
+    
+    // 3. Remove all non-alphanumeric EXCEPT spaces and colons (to preserve times)
+    standardized = standardized.replace(/[^a-z0-9\s:]/g, '');
+    
+    // 4. Remove leading zeros from hours (e.g., "01:15" -> "1:15") to allow flexible matching
+    standardized = standardized.replace(/\b0(\d:\d{2})\b/g, '$1');
+    
+    // 5. Collapse multiple spaces
+    return standardized.replace(/\s+/g, ' ').trim();
   }
 
   function matchesFilter(slot, keyword, timeKeyword) {
