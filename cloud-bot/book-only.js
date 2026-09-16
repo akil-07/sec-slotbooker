@@ -232,7 +232,85 @@ async function initAccounts() {
         console.error('[Bot] ACCOUNTS_JSON parse error:', e.message);
     }
 
+    try {
+        if (GIST_TOKEN && GIST_ID) {
+            const https = require('https');
+            const data = await new Promise((resolve, reject) => {
+                const req = https.request({
+                    hostname: 'api.github.com',
+                    path: `/gists/${GIST_ID}`,
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${GIST_TOKEN}`,
+                        'User-Agent': 'saveetha-bot',
+                        'Accept': 'application/vnd.github.v3+json',
+                        'X-GitHub-Api-Version': '2022-11-28'
+                    }
+                }, (res) => {
+                    let body = '';
+                    res.on('data', chunk => body += chunk);
+                    res.on('end', () => resolve(body));
+                });
+                req.on('error', reject);
+                req.end();
+            });
+            const gist = JSON.parse(data);
+            if (gist.files && gist.files['saveetha_accounts.json'] && gist.files['saveetha_accounts.json'].content) {
+                const gistAccounts = JSON.parse(gist.files['saveetha_accounts.json'].content);
+                Object.assign(ACCOUNTS, gistAccounts);
+                console.log('[Bot] Loaded Gist accounts:', Object.keys(gistAccounts).length);
+            }
+        }
+    } catch (e) {
+        console.error('[Bot] Gist accounts parse error:', e.message);
+    }
+
     console.log('[Bot] Total authorized users:', Object.keys(ACCOUNTS).length);
+}
+
+async function syncAccountsToGist() {
+    if (!GIST_TOKEN || !GIST_ID) return;
+    try {
+        const https = require('https');
+        const dataToSync = Object.assign({}, ACCOUNTS);
+        if (CHAT_ID) delete dataToSync[CHAT_ID];
+        
+        const body = JSON.stringify({
+            files: {
+                'saveetha_accounts.json': {
+                    content: JSON.stringify(dataToSync, null, 2)
+                }
+            }
+        });
+        await new Promise((resolve, reject) => {
+            const req = https.request({
+                hostname: 'api.github.com',
+                path: `/gists/${GIST_ID}`,
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${GIST_TOKEN}`,
+                    'User-Agent': 'saveetha-bot',
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                    'Accept': 'application/vnd.github.v3+json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                }
+            }, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+                    else reject(new Error(`Gist save failed: ${res.statusCode}`));
+                });
+            });
+            req.on('error', reject);
+            req.write(body);
+            req.end();
+        });
+        console.log('[Persist] Synced accounts to Gist.');
+    } catch (e) {
+        console.error('[Persist] Failed to sync accounts to Gist:', e.message);
+    }
 }
 
 function getUserConfig(chatId) {
@@ -2429,6 +2507,44 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         } else {
                             await sendTelegram(`⚠️ User \`${targetId}\` is not blocked.`, fromChatId);
                         }
+                        continue;
+                    }
+
+                    if (text.startsWith('!adduser ')) {
+                        const parts = text.split(' ');
+                        if (parts.length < 4) {
+                            await sendTelegram('Usage: `!adduser <chat_id> <saveetha_user> <saveetha_pass>`', fromChatId);
+                        } else {
+                            const targetChatId = parts[1];
+                            const targetUser = parts[2];
+                            const targetPass = parts[3];
+                            ACCOUNTS[targetChatId] = { user: targetUser, pass: targetPass, name: `User ${targetUser}` };
+                            await syncAccountsToGist();
+                            await sendTelegram(`✅ Added user ${targetUser} with Chat ID ${targetChatId} and saved to Gist.`, fromChatId);
+                        }
+                        continue;
+                    }
+
+                    if (text.startsWith('!removeuser ')) {
+                        const targetChatId = text.substring(12).trim();
+                        if (!targetChatId) {
+                            await sendTelegram('Usage: `!removeuser <chat_id>`', fromChatId);
+                        } else if (ACCOUNTS[targetChatId]) {
+                            delete ACCOUNTS[targetChatId];
+                            await syncAccountsToGist();
+                            await sendTelegram(`✅ Removed user with Chat ID ${targetChatId} and synced to Gist.`, fromChatId);
+                        } else {
+                            await sendTelegram(`⚠️ Chat ID ${targetChatId} not found.`, fromChatId);
+                        }
+                        continue;
+                    }
+
+                    if (text === '!listusers') {
+                        let msgStr = '👥 *Registered Users:*\n\n';
+                        for (const [uid, udata] of Object.entries(ACCOUNTS)) {
+                            msgStr += `• ID: \`${uid}\` | User: ${udata.user}\n`;
+                        }
+                        await sendTelegram(msgStr, fromChatId);
                         continue;
                     }
                 }
