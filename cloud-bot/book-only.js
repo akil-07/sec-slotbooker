@@ -863,9 +863,10 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
     
     const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
     if (superAdminNotificationsEnabled && superAdminChatId && String(chatId) !== String(superAdminChatId)) {
+        const userName = (ACCOUNTS[chatId] && ACCOUNTS[chatId].name) ? ACCOUNTS[chatId].name : chatId;
         await sendTelegramPhoto(
             tmpPath,
-            `🔔 *User Successfully Booked!*\nUser: ${chatId}\n${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}`,
+            `🔔 *User Successfully Booked!*\nUser: ${userName}\n${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}`,
             superAdminChatId
         );
     }
@@ -2818,7 +2819,8 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
 
                 const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
                 if (superAdminNotificationsEnabled && superAdminChatId && String(fromChatId) !== String(superAdminChatId)) {
-                    sendTelegram(`🔔 *Scan Started*\nUser: ${fromChatId}\nTask: ${isScan ? '!scan' : '!book'} ${keyword}${targetTime ? ` @ ${targetTime}` : ''}`, superAdminChatId);
+                    const userName = (ACCOUNTS[fromChatId] && ACCOUNTS[fromChatId].name) ? ACCOUNTS[fromChatId].name : fromChatId;
+                    sendTelegram(`🔔 *Scan Started*\nUser: ${userName}\nTask: ${isScan ? '!scan' : '!book'} ${keyword}${targetTime ? ` @ ${targetTime}` : ''}`, superAdminChatId);
                 }
 
                 startTaskLoop(taskId, task);
