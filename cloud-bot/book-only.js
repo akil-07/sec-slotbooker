@@ -2375,7 +2375,8 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             `\`!unblock <chatId>\` — Unblock a user\n` +
                             `\`!broadcast <msg>\` — Message everyone\n`;
                     }
-                    if (fromChatId === '8581009274') {
+                    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
+                    if (fromChatId === ADMIN_CHAT_ID || fromChatId === '8581009274' || fromChatId === superAdminChatId) {
                         helpMsg += `\n*🛠️ Super Admin Commands:*\n` +
                             `\`!stopbot\` — Permanently stop GitHub Actions bot\n` +
                             `\`!restartbot\` — Restart GitHub Actions bot\n`;
@@ -2388,8 +2389,9 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
 
                 // ── !stopbot & !restartbot ───────────────────────────────
                 if (text === '!stopbot') {
-                    if (fromChatId !== '8581009274') {
-                        await sendTelegram(`⛔ Only super admin 8581009274 can use this command.`, fromChatId);
+                    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
+                    if (fromChatId !== '8581009274' && fromChatId !== ADMIN_CHAT_ID && fromChatId !== superAdminChatId) {
+                        await sendTelegram(`⛔ Only super admin can use this command.`, fromChatId);
                         continue;
                     }
                     await sendTelegram(`🛑 *Stopping GitHub Actions bot permanently...*\nIt will not restart until manually triggered from GitHub.`, fromChatId);
@@ -2399,8 +2401,9 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 }
 
                 if (text === '!restartbot') {
-                    if (fromChatId !== '8581009274') {
-                        await sendTelegram(`⛔ Only super admin 8581009274 can use this command.`, fromChatId);
+                    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
+                    if (fromChatId !== '8581009274' && fromChatId !== ADMIN_CHAT_ID && fromChatId !== superAdminChatId) {
+                        await sendTelegram(`⛔ Only super admin can use this command.`, fromChatId);
                         continue;
                     }
                     await sendTelegram(`🔄 *Restarting GitHub Actions bot...*\nPlease wait a few minutes for the new runner to initialize.`, fromChatId);
@@ -2417,7 +2420,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 }
 
                 // ── !progress & !allprogress ──────────────────────────────
-                if (text === '!progress' || (text === '!allprogress' && fromChatId === ADMIN_CHAT_ID)) {
+                if (text === '!progress' || (text === '!allprogress' && (fromChatId === ADMIN_CHAT_ID || fromChatId === Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635')))) {
                     let filteredTasks = Array.from(activeTasks.entries());
                     if (text === '!progress') {
                         filteredTasks = filteredTasks.filter(([id, task]) => task.fromChatId === fromChatId);
@@ -2490,7 +2493,8 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 }
 
                 // 👑 ADMIN COMMANDS
-                if (fromChatId === ADMIN_CHAT_ID) {
+                const superAdminChatIdForAdmin = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
+                if (fromChatId === ADMIN_CHAT_ID || fromChatId === '8581009274' || fromChatId === superAdminChatIdForAdmin) {
 
                     if (text.startsWith('!stopuser ')) {
                         const args = text.substring(10).trim().split(' ');
