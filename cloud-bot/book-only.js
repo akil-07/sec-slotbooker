@@ -2369,6 +2369,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     }
                     await sendTelegram(`🛑 *Stopping GitHub Actions bot permanently...*\nIt will not restart until manually triggered from GitHub.`, fromChatId);
                     fs.writeFileSync('STOP_BOT', 'stop');
+                    try { await getTelegramUpdates(update.update_id + 1); } catch(e) {}
                     process.exit(0);
                 }
 
@@ -2379,6 +2380,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     }
                     await sendTelegram(`🔄 *Restarting GitHub Actions bot...*\nPlease wait a few minutes for the new runner to initialize.`, fromChatId);
                     try { fs.unlinkSync('STOP_BOT'); } catch (e) {}
+                    try { await getTelegramUpdates(update.update_id + 1); } catch(e) {}
                     process.exit(0);
                 }
 
