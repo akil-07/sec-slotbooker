@@ -2580,14 +2580,33 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     if (text.startsWith('!adduser ')) {
                         const parts = text.split(' ');
                         if (parts.length < 4) {
-                            await sendTelegram('Usage: `!adduser <chat_id> <saveetha_user> <saveetha_pass>`', fromChatId);
+                            await sendTelegram('Usage: `!adduser <chat_id> <saveetha_user> <saveetha_pass> [name]`', fromChatId);
                         } else {
                             const targetChatId = parts[1];
                             const targetUser = parts[2];
                             const targetPass = parts[3];
-                            ACCOUNTS[targetChatId] = { user: targetUser, pass: targetPass, name: `User ${targetUser}` };
+                            const targetName = parts.length > 4 ? parts.slice(4).join(' ') : `User ${targetUser}`;
+                            ACCOUNTS[targetChatId] = { user: targetUser, pass: targetPass, name: targetName };
                             await syncAccountsToGist();
-                            await sendTelegram(`✅ Added user ${targetUser} with Chat ID ${targetChatId} and saved to Gist.`, fromChatId);
+                            await sendTelegram(`✅ Added user ${targetUser} (Name: ${targetName}) with Chat ID ${targetChatId} and saved to Gist.`, fromChatId);
+                        }
+                        continue;
+                    }
+
+                    if (text.startsWith('!setname ')) {
+                        const parts = text.split(' ');
+                        if (parts.length < 3) {
+                            await sendTelegram('Usage: `!setname <chat_id> <new_name>`', fromChatId);
+                        } else {
+                            const targetChatId = parts[1];
+                            const targetName = parts.slice(2).join(' ');
+                            if (ACCOUNTS[targetChatId]) {
+                                ACCOUNTS[targetChatId].name = targetName;
+                                await syncAccountsToGist();
+                                await sendTelegram(`✅ Updated name for Chat ID ${targetChatId} to: ${targetName}`, fromChatId);
+                            } else {
+                                await sendTelegram(`⚠️ User with Chat ID ${targetChatId} not found.`, fromChatId);
+                            }
                         }
                         continue;
                     }
