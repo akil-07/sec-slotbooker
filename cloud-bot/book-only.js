@@ -978,7 +978,10 @@ async function doLogin(page, user, pass) {
         } catch (_) { }
     }
 
-    if (!userInput) throw new Error('Could not find username input on login page.');
+    if (!userInput) {
+        const title = await page.title().catch(() => 'unknown');
+        throw new Error(`Could not find username input on login page. URL: ${page.url()}, Title: ${title}`);
+    }
 
     // Fill using React-compatible method
     await userInput.fill(String(user));
@@ -2013,24 +2016,46 @@ async function main() {
     // Pre-login each user and keep a "Hot Tab" ready on the booking page
     await initAccounts();
 
-    // First attempt to spawn all sessions sequentially to avoid rate-limiting/timeouts
+    // Set up accounts non-blocking (in the background)
     const accountEntries = Object.entries(ACCOUNTS);
-    for (const [chatId, config] of accountEntries) {
+    accountEntries.forEach(([chatId, config]) => {
         if (!config.name) config.name = `User ${config.user}`;
-        await spawnUserSession(browser, chatId, config);
-    }
+    });
 
-    // Retry failed logins up to 2 more times before declaring online
-    const MAX_STARTUP_RETRIES = 2;
-    for (let retry = 1; retry <= MAX_STARTUP_RETRIES; retry++) {
-        const failedAccounts = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId));
-        if (failedAccounts.length === 0) break;
-        console.log(`[Bot] Retry ${retry}/${MAX_STARTUP_RETRIES}: ${failedAccounts.length} account(s) failed to login, retrying in 10s...`);
-        await new Promise(r => setTimeout(r, 10000));
-        for (const [chatId, config] of failedAccounts) {
+    (async () => {
+        console.log('[Bot] Starting concurrent logins in the background with stagger...');
+        await Promise.all(accountEntries.map(async ([chatId, config], index) => {
+            // Stagger by 2.5 seconds each to avoid hammering the SSO server and getting rate-limited
+            await new Promise(r => setTimeout(r, index * 2500));
             await spawnUserSession(browser, chatId, config);
+        }));
+
+        // Retry failed logins up to 2 more times before declaring online
+        const MAX_STARTUP_RETRIES = 2;
+        for (let retry = 1; retry <= MAX_STARTUP_RETRIES; retry++) {
+            const failedAccounts = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId));
+            if (failedAccounts.length === 0) break;
+            console.log(`[Bot] Retry ${retry}/${MAX_STARTUP_RETRIES}: ${failedAccounts.length} account(s) failed to login, retrying in 10s...`);
+            await new Promise(r => setTimeout(r, 10000));
+            await Promise.all(failedAccounts.map(async ([chatId, config], index) => {
+                await new Promise(r => setTimeout(r, index * 2500));
+                await spawnUserSession(browser, chatId, config);
+            }));
         }
-    }
+
+        // Send accurate startup notification
+        const onlineCount = USER_SESSIONS.size;
+        const totalCount = accountEntries.length;
+        if (onlineCount === totalCount) {
+            await sendTelegram(`✅ *Saveetha Bot Initialized!* (Hot Tab Mode)\nAll ${onlineCount} accounts logged in.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
+        } else {
+            const failedNames = accountEntries
+                .filter(([chatId]) => !USER_SESSIONS.has(chatId))
+                .map(([chatId, config]) => config.name)
+                .join(', ');
+            await sendTelegram(`⚠️ *Saveetha Bot Initialized!* (Hot Tab Mode)\n${onlineCount}/${totalCount} accounts ready. Failed to login: *${failedNames}*\n_Retrying failed accounts in the background..._\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
+        }
+    })();
 
     // Optional: Keep-alive loop to prevent sessions from timing out
     setInterval(async () => {
@@ -2059,19 +2084,6 @@ async function main() {
 
     // ── Start Timetable Schedulers for all users ──────────────────────────────
     // (Note: Handled inside spawnUserSession now)
-
-    // Send accurate startup notification
-    const onlineCount = USER_SESSIONS.size;
-    const totalCount = accountEntries.length;
-    if (onlineCount === totalCount) {
-        await sendTelegram(`✅ *Saveetha Bot is Online!* (Hot Tab Mode)\nAll ${onlineCount} accounts have a tab open and ready on the booking page.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
-    } else {
-        const failedNames = accountEntries
-            .filter(([chatId]) => !USER_SESSIONS.has(chatId))
-            .map(([chatId, config]) => config.name)
-            .join(', ');
-        await sendTelegram(`⚠️ *Saveetha Bot is Online!* (Hot Tab Mode)\n${onlineCount}/${totalCount} accounts ready. Failed to login: *${failedNames}*\n_Retrying failed accounts in the background..._\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
-    }
 
     // Track active bookings
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page, isScan, isUnbook, fromChatId, userConfig }
