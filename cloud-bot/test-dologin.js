@@ -26,7 +26,11 @@ const { chromium } = require('playwright');
             } catch (_) { }
         }
 
-        if (!userInput) throw new Error('Could not find username input on login page.');
+        if (!userInput) {
+            console.log('Failed URL:', page.url());
+            await page.screenshot({ path: 'login_error.png' });
+            throw new Error('Could not find username input on login page.');
+        }
         console.log('Successfully found user input!');
     } catch (e) {
         console.error('Error:', e.message);

@@ -972,7 +972,7 @@ async function doLogin(page, user, pass) {
     let userInput = null;
     for (const sel of userSelectors) {
         try {
-            await page.waitForSelector(sel, { timeout: 5000, state: 'visible' });
+            await page.waitForSelector(sel, { timeout: 10000, state: 'visible' });
             userInput = page.locator(sel).first();
             break;
         } catch (_) { }
@@ -2013,12 +2013,12 @@ async function main() {
     // Pre-login each user and keep a "Hot Tab" ready on the booking page
     await initAccounts();
 
-    // First attempt to spawn all sessions
+    // First attempt to spawn all sessions sequentially to avoid rate-limiting/timeouts
     const accountEntries = Object.entries(ACCOUNTS);
-    const spawnPromises = accountEntries.map(([chatId, config]) =>
-        spawnUserSession(browser, chatId, config)
-    );
-    await Promise.all(spawnPromises);
+    for (const [chatId, config] of accountEntries) {
+        if (!config.name) config.name = `User ${config.user}`;
+        await spawnUserSession(browser, chatId, config);
+    }
 
     // Retry failed logins up to 2 more times before declaring online
     const MAX_STARTUP_RETRIES = 2;
@@ -2027,10 +2027,9 @@ async function main() {
         if (failedAccounts.length === 0) break;
         console.log(`[Bot] Retry ${retry}/${MAX_STARTUP_RETRIES}: ${failedAccounts.length} account(s) failed to login, retrying in 10s...`);
         await new Promise(r => setTimeout(r, 10000));
-        const retryPromises = failedAccounts.map(([chatId, config]) =>
-            spawnUserSession(browser, chatId, config)
-        );
-        await Promise.all(retryPromises);
+        for (const [chatId, config] of failedAccounts) {
+            await spawnUserSession(browser, chatId, config);
+        }
     }
 
     // Optional: Keep-alive loop to prevent sessions from timing out
