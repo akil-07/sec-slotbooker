@@ -144,8 +144,8 @@ async function saveTasksToGist(tasksData) {
     
     pendingGistData = tasksData;
 
-    // If it's a deletion, try to save immediately (or queue it next) to ensure finished tasks are cleared
-    const delay = isDeletion ? 1000 : 10000;
+    // If it's a deletion, try to save faster to ensure finished tasks are cleared, otherwise wait longer
+    const delay = isDeletion ? 3000 : 20000;
 
     if (!gistSaveTimeout && !isSyncing) {
         gistSaveTimeout = setTimeout(() => {
@@ -2231,8 +2231,8 @@ async function syncFileToGist(filename, content) {
         }
     }
 
-    // Poll the Gist database every 3 seconds for instant booking tasks
-    setInterval(checkGistForNewTasks, 3000);
+    // Poll the Gist database every 10 seconds for instant booking tasks
+    setInterval(checkGistForNewTasks, 10000);
 
     while (true) {
         try {
