@@ -2047,22 +2047,15 @@ async function main() {
     }, 600000); // Every 10 mins
 
     // Background retry: keep trying to spawn any sessions that still failed
-    const stillFailed = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId));
-    if (stillFailed.length > 0) {
-        console.log(`[Bot] ${stillFailed.length} account(s) still offline after retries. Background retry active.`);
-        const bgRetryInterval = setInterval(async () => {
-            const remaining = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId));
-            if (remaining.length === 0) {
-                console.log('[Bot] All accounts now online. Stopping background retry.');
-                clearInterval(bgRetryInterval);
-                return;
-            }
-            console.log(`[Bot] Background retry: ${remaining.length} account(s) still offline, retrying...`);
+    const bgRetryInterval = setInterval(async () => {
+        const remaining = Object.entries(ACCOUNTS).filter(([chatId]) => !USER_SESSIONS.has(chatId) && !blockedUsers.has(chatId));
+        if (remaining.length > 0) {
+            console.log(`[Bot] Background retry: ${remaining.length} account(s) offline, retrying...`);
             for (const [chatId, config] of remaining) {
                 await spawnUserSession(browser, chatId, config);
             }
-        }, 60000); // Retry every 60 seconds
-    }
+        }
+    }, 60000); // Retry every 60 seconds
 
     // ── Start Timetable Schedulers for all users ──────────────────────────────
     // (Note: Handled inside spawnUserSession now)
