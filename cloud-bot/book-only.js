@@ -112,6 +112,10 @@ async function syncToGist() {
             break; 
         } catch (e) {
             console.error(`[Persist] Gist save failed, retries left: ${retries - 1}. Error:`, e.message);
+            if (e.message.includes('403')) {
+                console.error('[Persist] GitHub API 403 Secondary Rate Limit hit. Stopping aggressive retries to let the API cooldown.');
+                break;
+            }
             retries--;
             if (retries > 0) {
                 await new Promise(r => setTimeout(r, 5000)); // wait 5s before retry
@@ -2817,7 +2821,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 let scanCount = 1;
                 while (!task.stopRequested) {
                     task.phase = `Scanning (Check #${scanCount})`;
-                    saveTasks();
+                    // Removed saveTasks() here to avoid GitHub API 403 secondary rate limits.
                     if (scanCount === 1) {
                         await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 5 seconds... Use \`!stop\` to cancel.`, fromChatId);
                     }
