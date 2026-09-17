@@ -86,6 +86,8 @@ function getAllUsers() {
 // ─── Telegram Bot ─────────────────────────────────────────────────────────────
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
+let botActive = true;
+
 // Pending OTP callbacks: Map<chatId, resolve fn>
 const pendingOtpCallbacks = new Map();
 
@@ -772,6 +774,10 @@ function scheduleMidnightRefetch() {
 
 // ─── Daily Init ───────────────────────────────────────────────────────────────
 async function runDailyInitForUser(userContext) {
+    if (!botActive) {
+        log(`[Init] Bot is stopped. Skipping daily schedule fetch for ${userContext.saveethaUser}.`);
+        return;
+    }
     const { chatId, saveethaUser, saveethaPass } = userContext;
     log(`[Init] Running daily schedule fetch for ${saveethaUser} (${chatId})...`);
     await sendTelegram(chatId, '🔄 Fetching today\'s class schedule from Saveetha...');
@@ -828,6 +834,10 @@ async function runDailyInitForUser(userContext) {
 }
 
 async function runDailyInit() {
+    if (!botActive) {
+        log('[Init] Bot is stopped. Skipping global daily schedule fetch.');
+        return;
+    }
     log('[Init] Running global daily schedule fetch for all users...');
     const allUsers = getAllUsers();
     for (const [chatId, userData] of Object.entries(allUsers)) {
@@ -916,6 +926,23 @@ bot.on('message', async (msg) => {
         return bot.sendMessage(chatId, msgStr, { parse_mode: 'Markdown' });
     }
 
+    if (text.toLowerCase() === '!stop') {
+        if (chatId !== '8581009274') return bot.sendMessage(chatId, '⛔ Only admin 8581009274 can use this command.');
+        botActive = false;
+        for (const cid in activeTimers) {
+            while (activeTimers[cid].length > 0) clearTimeout(activeTimers[cid].pop());
+        }
+        return bot.sendMessage(chatId, '🛑 Bot stopped. All timers cleared. Use !restart to resume.');
+    }
+
+    if (text.toLowerCase() === '!restart') {
+        if (chatId !== '8581009274') return bot.sendMessage(chatId, '⛔ Only admin 8581009274 can use this command.');
+        botActive = true;
+        await bot.sendMessage(chatId, '🔄 Bot restarted. Initializing schedule fetch...');
+        await runDailyInit();
+        return;
+    }
+
     if (text.toLowerCase() === '!start' || text.toLowerCase() === '!help') {
         return bot.sendMessage(chatId, [
             '🎓 *Saveetha Schedule OTP Bot*',
@@ -936,11 +963,14 @@ bot.on('message', async (msg) => {
             isAdmin ? '*Admin Commands:*' : '',
             isAdmin ? '!adduser <id> <user> <pass>' : '',
             isAdmin ? '!removeuser <id>' : '',
-            isAdmin ? '!listusers' : ''
+            isAdmin ? '!listusers' : '',
+            chatId === '8581009274' ? '!stop     — Pause the bot\\'s activities' : '',
+            chatId === '8581009274' ? '!restart  — Resume the bot\\'s activities' : ''
         ].filter(Boolean).join('\n'), { parse_mode: 'Markdown' });
     }
 
     if (text.toLowerCase() === '!schedule') {
+        if (!botActive) return bot.sendMessage(chatId, '⛔ Bot is currently stopped. Use !restart to resume.');
         if (!isRegistered) return bot.sendMessage(chatId, '⛔ You are not registered. Ask the admin to add you.');
         await runDailyInitForUser({ chatId, ...allUsers[chatId] });
         return;

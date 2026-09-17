@@ -2338,10 +2338,36 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             `\`!block <chatId>\` — Block a user\n` +
                             `\`!unblock <chatId>\` — Unblock a user\n`;
                     }
+                    if (fromChatId === '8581009274') {
+                        helpMsg += `\n*🛠️ Super Admin Commands:*\n` +
+                            `\`!stopbot\` — Permanently stop GitHub Actions bot\n` +
+                            `\`!restartbot\` — Restart GitHub Actions bot\n`;
+                    }
 
                     helpMsg += `\n_Tip: Use "all" with !stop to clear the queue._`;
                     await sendTelegram(helpMsg, fromChatId);
                     continue;
+                }
+
+                // ── !stopbot & !restartbot ───────────────────────────────
+                if (text === '!stopbot') {
+                    if (fromChatId !== '8581009274') {
+                        await sendTelegram(`⛔ Only super admin 8581009274 can use this command.`, fromChatId);
+                        continue;
+                    }
+                    await sendTelegram(`🛑 *Stopping GitHub Actions bot permanently...*\nIt will not restart until manually triggered from GitHub.`, fromChatId);
+                    fs.writeFileSync('STOP_BOT', 'stop');
+                    process.exit(0);
+                }
+
+                if (text === '!restartbot') {
+                    if (fromChatId !== '8581009274') {
+                        await sendTelegram(`⛔ Only super admin 8581009274 can use this command.`, fromChatId);
+                        continue;
+                    }
+                    await sendTelegram(`🔄 *Restarting GitHub Actions bot...*\nPlease wait a few minutes for the new runner to initialize.`, fromChatId);
+                    try { fs.unlinkSync('STOP_BOT'); } catch (e) {}
+                    process.exit(0);
                 }
 
                 // ── !status ──────────────────────────────────────────────
