@@ -2349,17 +2349,19 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active tasks\n` +
-                        `\`!stop <keyword>\` — Stop a specific task\n` +
-                        `\`!stop all\` — Stop everything\n`;
+                        `\`!stop <keyword>\` — Stop your specific task\n` +
+                        `\`!stop all\` — Stop all your tasks\n`;
 
                     if (fromChatId === ADMIN_CHAT_ID) {
                         helpMsg += `\n*👑 Admin Commands:*\n` +
                             `\`!listusers\` — Show all users\n` +
-                            `\`!allprogress\` — View all active tasks\n` +
+                            `\`!allprogress\` — View all active tasks from all users\n` +
                             `\`!cleartasks\` — Wipe all stuck tasks instantly\n` +
-                            `\`!stopuser <chatId>\` — Stop all tasks for a user\n` +
+                            `\`!stopuser <chatId>\` — Stop all tasks for a specific user\n` +
+                            `\`!stopany <keyword>\` — Stop any user's task by keyword\n` +
                             `\`!block <chatId>\` — Block a user\n` +
-                            `\`!unblock <chatId>\` — Unblock a user\n`;
+                            `\`!unblock <chatId>\` — Unblock a user\n` +
+                            `\`!broadcast <msg>\` — Message everyone\n`;
                     }
                     if (fromChatId === '8581009274') {
                         helpMsg += `\n*🛠️ Super Admin Commands:*\n` +
@@ -2432,13 +2434,11 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 }
 
                 // ── !stop ─────────────────────────────────────────────────
-                if (text.toLowerCase().startsWith('!stop')) {
+                if (text.toLowerCase().startsWith('!stop ') || text.toLowerCase() === '!stop') {
                     const arg = text.substring(5).trim().toLowerCase();
 
-                    let userTasks = Array.from(activeTasks.entries());
-                    if (fromChatId !== ADMIN_CHAT_ID) {
-                        userTasks = userTasks.filter(([id, task]) => task.fromChatId === fromChatId);
-                    }
+                    // !stop only affects the sender's OWN tasks now, to prevent admins from accidentally stopping others.
+                    let userTasks = Array.from(activeTasks.entries()).filter(([id, task]) => task.fromChatId === fromChatId);
 
                     if (userTasks.length === 0) {
                         await sendTelegram(`🟢 No active bookings to stop.`, fromChatId);
