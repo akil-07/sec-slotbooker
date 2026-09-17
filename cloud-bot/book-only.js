@@ -32,6 +32,7 @@ const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || process.env.CHAT_ID || '63748
 let ACCOUNTS = {};
 let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, isBusy }
 let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
+let superAdminNotificationsEnabled = true; // Added for super admin notifications toggle
 
 // ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
 const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
@@ -859,6 +860,16 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`,
         chatId
     );
+    
+    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
+    if (superAdminNotificationsEnabled && superAdminChatId && String(chatId) !== String(superAdminChatId)) {
+        await sendTelegramPhoto(
+            tmpPath,
+            `🔔 *User Successfully Booked!*\nUser: ${chatId}\n${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}`,
+            superAdminChatId
+        );
+    }
+    
     try { fs.unlinkSync(tmpPath); } catch (_) { }
     return true;
 }
@@ -2720,6 +2731,25 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     continue;
                 }
 
+                if (text.toLowerCase().startsWith('!adminnotify')) {
+                    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
+                    if (!superAdminChatId || String(fromChatId) !== String(superAdminChatId)) {
+                        await sendTelegram(`❌ You are not authorized to use this command.`, fromChatId);
+                        continue;
+                    }
+                    const param = text.substring(12).trim().toLowerCase();
+                    if (param === 'on') {
+                        superAdminNotificationsEnabled = true;
+                        await sendTelegram(`✅ Super admin notifications turned ON.`, fromChatId);
+                    } else if (param === 'off') {
+                        superAdminNotificationsEnabled = false;
+                        await sendTelegram(`❌ Super admin notifications turned OFF.`, fromChatId);
+                    } else {
+                        await sendTelegram(`ℹ️ Usage: \`!adminnotify on\` or \`!adminnotify off\`\nCurrent Status: ${superAdminNotificationsEnabled ? 'ON' : 'OFF'}`, fromChatId);
+                    }
+                    continue;
+                }
+
                 // ── !book / !unbook / !scan ──────────────────────────────
                 const isUnbook = text.toLowerCase().startsWith('!unbook');
                 const isScan = text.toLowerCase().startsWith('!scan');
@@ -2766,6 +2796,11 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 saveTasks();
 
                 console.log(`[Bot] New Task [${taskId}]: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${targetDate ? ` ~ ${targetDate}` : ''}${targetVenue ? ` $ ${targetVenue}` : ''}${startTime ? ` # ${startTime}` : ''}`);
+
+                const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
+                if (superAdminNotificationsEnabled && superAdminChatId && String(fromChatId) !== String(superAdminChatId)) {
+                    sendTelegram(`🔔 *Scan Started*\nUser: ${fromChatId}\nTask: ${isScan ? '!scan' : '!book'} ${keyword}${targetTime ? ` @ ${targetTime}` : ''}`, superAdminChatId);
+                }
 
                 startTaskLoop(taskId, task);
             }
