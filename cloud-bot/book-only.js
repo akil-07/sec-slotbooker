@@ -2357,7 +2357,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             `\`!listusers\` — Show all users\n` +
                             `\`!allprogress\` — View all active tasks from all users\n` +
                             `\`!cleartasks\` — Wipe all stuck tasks instantly\n` +
-                            `\`!stopuser <chatId>\` — Stop all tasks for a specific user\n` +
+                            `\`!stopuser <chatId> [keyword]\` — Stop all/specific tasks for a user\n` +
                             `\`!stopany <keyword>\` — Stop any user's task by keyword\n` +
                             `\`!block <chatId>\` — Block a user\n` +
                             `\`!unblock <chatId>\` — Unblock a user\n` +
@@ -2481,25 +2481,38 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 if (fromChatId === ADMIN_CHAT_ID) {
 
                     if (text.startsWith('!stopuser ')) {
-                        const targetId = text.substring(10).trim();
+                        const args = text.substring(10).trim().split(' ');
+                        const targetId = args[0];
+                        const keywordArg = args.slice(1).join(' ').toLowerCase();
+
                         if (!targetId) {
-                            await sendTelegram(`⚠️ Please provide a user ID. Example: \`!stopuser 123456789\``, fromChatId);
+                            await sendTelegram(`⚠️ Please provide a user ID. Example: \`!stopuser 123456789 [keyword]\``, fromChatId);
                             continue;
                         }
                         
                         let stoppedCount = 0;
                         activeTasks.forEach((task, id) => {
                             if (task.fromChatId === targetId) {
-                                task.stopRequested = true;
-                                stoppedCount++;
+                                if (!keywordArg || task.keyword.toLowerCase().includes(keywordArg)) {
+                                    task.stopRequested = true;
+                                    stoppedCount++;
+                                }
                             }
                         });
                         
                         if (stoppedCount > 0) {
-                            await sendTelegram(`✅ Stopped ${stoppedCount} task(s) for user \`${targetId}\`.`, fromChatId);
+                            if (keywordArg) {
+                                await sendTelegram(`✅ Stopped ${stoppedCount} task(s) matching *${keywordArg}* for user \`${targetId}\`.`, fromChatId);
+                            } else {
+                                await sendTelegram(`✅ Stopped ${stoppedCount} task(s) for user \`${targetId}\`.`, fromChatId);
+                            }
                             saveTasks();
                         } else {
-                            await sendTelegram(`⚠️ No active tasks found for user \`${targetId}\`.`, fromChatId);
+                            if (keywordArg) {
+                                await sendTelegram(`⚠️ No active tasks matching *${keywordArg}* found for user \`${targetId}\`.`, fromChatId);
+                            } else {
+                                await sendTelegram(`⚠️ No active tasks found for user \`${targetId}\`.`, fromChatId);
+                            }
                         }
                         continue;
                     }
