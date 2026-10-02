@@ -9,9 +9,9 @@ const targetList = document.getElementById('targetList');
 function renderTags() {
   const text = courseInput.value;
   const keywords = text.split(',').map(k => k.trim()).filter(k => k);
-  
+
   targetList.innerHTML = '';
-  
+
   keywords.forEach((kw, i) => {
     const span = document.createElement('span');
     span.className = 'target-tag';
@@ -33,11 +33,11 @@ async function loadSettings() {
 
 function updateStatus(isActive) {
   if (isActive) {
-    statusMsg.textContent = "Scanning for courses...";
-    statusText.className = "status-bar active";
+    statusMsg.textContent = "Scanning for targets...";
+    statusText.className = "status active";
   } else {
-    statusMsg.textContent = "System Idle";
-    statusText.className = "status-bar";
+    statusMsg.textContent = "Idle - Waiting for targets";
+    statusText.className = "status";
   }
 }
 
@@ -54,18 +54,17 @@ async function saveSettings() {
 
 autoEnrollCheck.addEventListener('change', saveSettings);
 courseInput.addEventListener('input', () => {
-    renderTags();
-    saveSettings();
+  renderTags();
+  saveSettings();
 });
 sectionInput.addEventListener('input', saveSettings);
 if (bulkInput) bulkInput.addEventListener('input', saveSettings);
 
 chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === 'CLICKED') {
-        statusMsg.textContent = "Successfully Enrolled";
-        statusText.className = "status-bar success";
-    }
+  if (msg.type === 'CLICKED') {
+    statusMsg.textContent = "✅ Clicked Enroll! (Scanning...)";
+    statusText.className = "status success";
+  }
 });
 
 loadSettings();
-
