@@ -2655,6 +2655,29 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         await sendTelegram(msgStr, fromChatId);
                         continue;
                     }
+
+                    if (text.startsWith('!broadcast ')) {
+                        const message = text.substring(11).trim();
+                        if (!message) {
+                            await sendTelegram('Usage: `!broadcast <message>`', fromChatId);
+                        } else {
+                            const broadcastMsg = `📢 *Broadcast Message:*\n\n${message}`;
+                            const userIds = Object.keys(ACCOUNTS);
+                            await sendTelegram(`⏳ Broadcasting message to ${userIds.length} users...`, fromChatId);
+                            let successCount = 0;
+                            for (const uid of userIds) {
+                                try {
+                                    await sendTelegram(broadcastMsg, uid);
+                                    successCount++;
+                                    await new Promise(r => setTimeout(r, 100)); // small delay to prevent rate limits
+                                } catch (err) {
+                                    console.error(`[Broadcast] Failed to send to ${uid}:`, err);
+                                }
+                            }
+                            await sendTelegram(`✅ Broadcast complete! Sent to ${successCount}/${userIds.length} users.`, fromChatId);
+                        }
+                        continue;
+                    }
                 }
                 if (text === '!timetable' || text === '!tt') {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
