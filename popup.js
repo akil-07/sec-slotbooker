@@ -109,8 +109,13 @@ function escapeHtml(str) {
 
 // ─── Trigger scan on active booking tab ─────────────────────────────────────
 async function triggerScanOnBookingTab(settings) {
-  const BOOKING_URL = 'https://learner.saveetha.in/academicevents/event-booking/';
-  const tabs = await chrome.tabs.query({ url: BOOKING_URL + '*' });
+  const SAVEETHA_URL = 'https://learner.saveetha.in/academicevents/event-booking/';
+  const MYCAMU_URL = '*://*.mycamu.co.in/*';
+  
+  let tabs = await chrome.tabs.query({ url: SAVEETHA_URL + '*' });
+  if (tabs.length === 0) {
+    tabs = await chrome.tabs.query({ url: MYCAMU_URL });
+  }
 
   if (tabs.length > 0) {
     try {
@@ -157,10 +162,14 @@ scanNowBtn.addEventListener('click', async () => {
   scanNowBtn.disabled = true;
   setStatus('🔄', 'Scanning booking page...', 'scanning');
 
-  const BOOKING_URL = 'https://learner.saveetha.in/academicevents/event-booking/';
+  const SAVEETHA_URL = 'https://learner.saveetha.in/academicevents/event-booking/';
+  const MYCAMU_URL = '*://*.mycamu.co.in/*';
 
   // Try to find an existing booking tab
-  const tabs = await chrome.tabs.query({ url: BOOKING_URL + '*' });
+  let tabs = await chrome.tabs.query({ url: SAVEETHA_URL + '*' });
+  if (tabs.length === 0) {
+    tabs = await chrome.tabs.query({ url: MYCAMU_URL });
+  }
 
   if (tabs.length > 0) {
     const sent = await triggerScanOnBookingTab(settings);
@@ -172,7 +181,7 @@ scanNowBtn.addEventListener('click', async () => {
       setStatus('📡', 'Scan triggered on open tab');
     }
   } else {
-    // Open the booking page
+    // Open the primary booking page (Saveetha by default)
     chrome.runtime.sendMessage({ type: 'OPEN_BOOKING_PAGE' });
     setStatus('🌐', 'Opening booking page...');
   }

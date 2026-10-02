@@ -828,7 +828,9 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                 });
                 const lower = text.toLowerCase();
                 if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlist') || lower.includes('success')) {
-                    return { found: true, text: text.trim() };
+                    const isAlready = lower.includes('already');
+                    const isFull = lower.includes('full');
+                    return { found: true, text: text.trim(), isAlready, isFull };
                 }
                 return { found: false, text: text.trim() };
             });
@@ -847,6 +849,21 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         }
         return false;
     }
+
+    if (bannerFound.isAlready) {
+        console.log(`[Bot] Confirmed via banner (Already Booked): ${bannerFound.text}`);
+        await sendTelegram(`✅ *Status:* You are already booked/waitlisted for *"${targetKeyword}"*. The scan will now stop.`, chatId);
+        return 'ALREADY_BOOKED';
+    }
+
+    if (bannerFound.isFull) {
+        console.log(`[Bot] Confirmed via banner (Waitlist Full): ${bannerFound.text}`);
+        if (!silent) {
+            await sendTelegram(`⚠️ Attempted to book *"${targetKeyword}"*, but waitlist is full: ${bannerFound.text}. Searching again...`, chatId);
+        }
+        return false;
+    }
+
     console.log(`[Bot] Confirmed via banner: ${bannerFound.text}`);
 
     const finalUrl = page.url();

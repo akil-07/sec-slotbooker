@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "MyCamu Auto Enroller",
+  "version": "1.0.0",
+  "description": "Automatically finds a course and clicks the Enroll button on MyCamu.",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "storage",
+    "debugger"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.mycamu.co.in/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

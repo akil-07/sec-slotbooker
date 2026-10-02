@@ -34,6 +34,11 @@
       "matches": ["https://learner.saveetha.in/academicevents/event-booking/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.mycamu.co.in/*"],
+      "js": ["mycamu_content.js"],
+      "run_at": "document_idle"
     }
   ]
 }
