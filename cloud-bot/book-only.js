@@ -1986,6 +1986,45 @@ function msUntilIST(targetHour, targetMin) {
     return diff;
 }
 
+async function fetchAndSendScreenshot(session, fromChatId, url, commandName, caption, selectorToScreenshot = null) {
+    const page = await session.context.newPage();
+    try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        if (page.url().includes('/login')) {
+            await doLogin(page, session.config.user, session.config.pass);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        }
+        
+        await page.waitForTimeout(2500); // give time for dynamic data
+        
+        // Sometimes sweet alerts or banners pop up, dismiss them
+        await page.evaluate(() => {
+            const swal = document.querySelector('.swal2-confirm');
+            if (swal) swal.click();
+        }).catch(()=>{});
+
+        const tmpPath = path.join(__dirname, `_tmp_${commandName}_${Date.now()}.png`);
+        
+        if (selectorToScreenshot) {
+            const element = await page.$(selectorToScreenshot).catch(()=>null);
+            if (element) {
+                await element.screenshot({ path: tmpPath });
+            } else {
+                await page.screenshot({ path: tmpPath, fullPage: true });
+            }
+        } else {
+            await page.screenshot({ path: tmpPath, fullPage: true });
+        }
+        
+        await sendTelegramPhoto(tmpPath, caption, fromChatId);
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+    } catch (err) {
+        await sendTelegram(`❌ Failed to fetch ${commandName}: ${err.message}`, fromChatId);
+    } finally {
+        await page.close().catch(()=>{});
+    }
+}
+
 async function sendDailyTimetable(chatId, session) {
     try {
         const slots = await fetchTimetable(session.context, session.config);
@@ -2375,6 +2414,12 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         `\`!attendance\` or \`!att\` — Get your attendance\n` +
                         `\`!bunk\` — Calculate how many classes you can bunk (80% limit)\n` +
                         `\`!workflow\` or \`!requests\` — Check workflow approval status\n\n` +
+                        `*New Features:*\n` +
+                        `\`!rewards\` — View your gamified reward points\n` +
+                        `\`!leaves\` — Check your Leave, OD, and GatePass balances\n` +
+                        `\`!biometric\` — View your live entry/exit punch logs\n` +
+                        `\`!circulars\` — See the latest college notices\n` +
+                        `\`!courses\` — LMS Links and Pending Feedback\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active tasks\n` +
@@ -2723,6 +2768,46 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch attendance: ${err.message}`, fromChatId);
                     }
+                    continue;
+                }
+
+                if (text === '!rewards') {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    await sendTelegram(`⏳ Fetching your gamified reward points...`, fromChatId);
+                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/rewards/my-reward-points/', 'rewards', '🏆 *Your Reward Points Dashboard*');
+                    continue;
+                }
+
+                if (text === '!leaves') {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    await sendTelegram(`⏳ Fetching your Leave Balance & Gate Pass Ledger...`, fromChatId);
+                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/attendance/leave-balance/', 'leaves', '🏖️ *Your Leave Balances*');
+                    continue;
+                }
+
+                if (text === '!biometric') {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    await sendTelegram(`⏳ Fetching your live biometric punch logs...`, fromChatId);
+                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/attendance/staff-biometric/', 'biometric', '🕒 *Live Biometric Logs*');
+                    continue;
+                }
+
+                if (text === '!circulars') {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    await sendTelegram(`⏳ Fetching the latest college circulars...`, fromChatId);
+                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/academics/circulars/', 'circulars', '📢 *Latest Urgent Circulars*');
+                    continue;
+                }
+
+                if (text === '!courses') {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    await sendTelegram(`⏳ Fetching your Course LMS links & Feedback status...`, fromChatId);
+                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/academics/studentsubjects/', 'courses', '📚 *Your Subjects & Feedback Status*');
                     continue;
                 }
 
