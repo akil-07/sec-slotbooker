@@ -33,10 +33,10 @@ async function loadSettings() {
 
 function updateStatus(isActive) {
   if (isActive) {
-    statusMsg.textContent = "SCANNING FOR TARGETS...";
+    statusMsg.textContent = "Scanning for courses...";
     statusText.className = "status-bar active";
   } else {
-    statusMsg.textContent = "System Idle — Waiting for targets";
+    statusMsg.textContent = "System Idle";
     statusText.className = "status-bar";
   }
 }
@@ -62,7 +62,7 @@ if (bulkInput) bulkInput.addEventListener('input', saveSettings);
 
 chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'CLICKED') {
-        statusMsg.textContent = "✅ TARGET NEUTRALIZED (Scanning...)";
+        statusMsg.textContent = "Successfully Enrolled";
         statusText.className = "status-bar success";
     }
 });
