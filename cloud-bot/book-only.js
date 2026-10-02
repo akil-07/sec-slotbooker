@@ -69,7 +69,7 @@ async function syncToGist() {
     if (!GIST_TOKEN || !GIST_ID || !pendingGistData) return;
     const dataToSync = pendingGistData;
     isSyncing = true;
-    
+
     let retries = 3;
     while (retries > 0) {
         try {
@@ -110,7 +110,7 @@ async function syncToGist() {
                 req.end();
             });
             // Success
-            break; 
+            break;
         } catch (e) {
             console.error(`[Persist] Gist save failed, retries left: ${retries - 1}. Error:`, e.message);
             if (e.message.includes('403')) {
@@ -124,7 +124,7 @@ async function syncToGist() {
         }
     }
     isSyncing = false;
-    
+
     // If more changes arrived while syncing, trigger again
     if (pendingGistData !== dataToSync && !gistSaveTimeout) {
         gistSaveTimeout = setTimeout(() => {
@@ -143,10 +143,10 @@ async function saveTasksToGist(tasksData) {
     }
 
     if (!GIST_TOKEN || !GIST_ID) return;
-    
+
     // Check if tasks were removed (length is less than before)
     const isDeletion = pendingGistData && tasksData.tasks && pendingGistData.tasks && tasksData.tasks.length < pendingGistData.tasks.length;
-    
+
     pendingGistData = tasksData;
 
     // If it's a deletion, try to save faster to ensure finished tasks are cleared, otherwise wait longer
@@ -286,7 +286,7 @@ async function syncAccountsToGist() {
         const https = require('https');
         const dataToSync = Object.assign({}, ACCOUNTS);
         if (CHAT_ID) delete dataToSync[CHAT_ID];
-        
+
         const body = JSON.stringify({
             files: {
                 'saveetha_accounts.json': {
@@ -357,7 +357,7 @@ async function fetchGistCommands() {
         if (gist.files && gist.files['saveetha_commands.json'] && gist.files['saveetha_commands.json'].content) {
             const contentObj = JSON.parse(gist.files['saveetha_commands.json'].content);
             const commands = contentObj.commands || [];
-            
+
             if (commands.length > 0) {
                 // 2. Clear commands from Gist
                 await new Promise((resolve, reject) => {
@@ -442,10 +442,10 @@ async function getTelegramUpdates(offset) {
         return data.result || [];
     } catch (e) {
         console.error('[Telegram] getUpdates error:', e.message);
-        
+
         // Sleep to prevent infinite loop spam if context crashes
         await new Promise(resolve => setTimeout(resolve, 3000));
-        
+
         // Attempt native fetch fallback if Playwright context died
         try {
             if (typeof fetch !== 'undefined') {
@@ -458,7 +458,7 @@ async function getTelegramUpdates(offset) {
         } catch (fallbackErr) {
             // Silently ignore fallback fetch errors to avoid more console spam
         }
-        
+
         return [];
     }
 }
@@ -829,7 +829,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                 const lower = text.toLowerCase();
                 if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlist') || lower.includes('success')) {
                     const isAlready = lower.includes('already');
-                    const isFull = lower.includes('full');
+                    const isFull = /\\bfull\\b/.test(lower);
                     return { found: true, text: text.trim(), isAlready, isFull };
                 }
                 return { found: false, text: text.trim() };
@@ -877,7 +877,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`,
         chatId
     );
-    
+
     const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
     if (superAdminNotificationsEnabled && superAdminChatId && String(chatId) !== String(superAdminChatId)) {
         const userName = (ACCOUNTS[chatId] && ACCOUNTS[chatId].name) ? ACCOUNTS[chatId].name : chatId;
@@ -887,7 +887,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
             superAdminChatId
         );
     }
-    
+
     try { fs.unlinkSync(tmpPath); } catch (_) { }
     return true;
 }
@@ -1132,7 +1132,7 @@ async function fetchTimetable(context, config) {
 
             for (const card of selectedCards) {
                 let lines = (card.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
-                
+
                 // Recover missing header if we matched an inner element (like a card-body)
                 if (lines.length > 0 && (/^SLOT\s*:/i.test(lines[0]) || /^VENUE\s*:/i.test(lines[0]) || /^Lesson\s*:/i.test(lines[0]))) {
                     let curr = card;
@@ -1142,7 +1142,7 @@ async function fetchTimetable(context, config) {
                         const parentLines = (curr.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
                         if (parentLines.length > 0 && parentLines[0] !== lines[0]) {
                             const pLine = parentLines[0];
-                            if (pLine.length > 3 && 
+                            if (pLine.length > 3 &&
                                 !/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i.test(pLine) &&
                                 !/^\d{1,2}\s*(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(pLine) &&
                                 !/^(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(pLine)) {
@@ -1385,10 +1385,10 @@ async function fetchWorkflowRequests(context, config, keyword = '') {
         for (let i = 0; i < requestLinks.length; i++) {
             const req = requestLinks[i];
             msg += `🔹 *${req.title}* (${req.status})\n`;
-            
+
             await page.goto(req.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await page.waitForTimeout(2000);
-            
+
             // Try to click "Approval Flow" tab
             const clicked = await page.evaluate(() => {
                 const tabs = Array.from(document.querySelectorAll('a, button, [role="tab"], li, span'));
@@ -1697,8 +1697,8 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         if (attMatch) percent = parseFloat(attMatch[1]);
 
         const presentMatch = pageText.match(/Present[\s\S]{0,30}?([\d.]+)\s*\/\s*([\d.]+)/i) ||
-                             pageText.match(/(?:Attended|Present)[\s\S]{0,30}?([\d.]+)\s*(?:\/|out of)\s*([\d.]+)/i) ||
-                             pageText.match(/([\d.]+)\s*\/\s*([\d.]+)/);
+            pageText.match(/(?:Attended|Present)[\s\S]{0,30}?([\d.]+)\s*(?:\/|out of)\s*([\d.]+)/i) ||
+            pageText.match(/([\d.]+)\s*\/\s*([\d.]+)/);
         if (presentMatch) {
             presentHours = parseFloat(presentMatch[1]);
             conductedHours = parseFloat(presentMatch[2]);
@@ -1731,7 +1731,7 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
                 // Determine effective hours per session, default to 1 if we can't determine
                 const effectiveConducted = conductedSessions > 0 ? conductedSessions : Math.round(conductedHours);
                 const hoursPerSession = effectiveConducted > 0 ? conductedHours / effectiveConducted : 1;
-                
+
                 const remainingHours = upcomingSessions * hoursPerSession;
                 const totalSemesterHours = conductedHours + remainingHours;
 
@@ -1986,45 +1986,6 @@ function msUntilIST(targetHour, targetMin) {
     return diff;
 }
 
-async function fetchAndSendScreenshot(session, fromChatId, url, commandName, caption, selectorToScreenshot = null) {
-    const page = await session.context.newPage();
-    try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        if (page.url().includes('/login')) {
-            await doLogin(page, session.config.user, session.config.pass);
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        }
-        
-        await page.waitForTimeout(2500); // give time for dynamic data
-        
-        // Sometimes sweet alerts or banners pop up, dismiss them
-        await page.evaluate(() => {
-            const swal = document.querySelector('.swal2-confirm');
-            if (swal) swal.click();
-        }).catch(()=>{});
-
-        const tmpPath = path.join(__dirname, `_tmp_${commandName}_${Date.now()}.png`);
-        
-        if (selectorToScreenshot) {
-            const element = await page.$(selectorToScreenshot).catch(()=>null);
-            if (element) {
-                await element.screenshot({ path: tmpPath });
-            } else {
-                await page.screenshot({ path: tmpPath, fullPage: true });
-            }
-        } else {
-            await page.screenshot({ path: tmpPath, fullPage: true });
-        }
-        
-        await sendTelegramPhoto(tmpPath, caption, fromChatId);
-        try { fs.unlinkSync(tmpPath); } catch (_) {}
-    } catch (err) {
-        await sendTelegram(`❌ Failed to fetch ${commandName}: ${err.message}`, fromChatId);
-    } finally {
-        await page.close().catch(()=>{});
-    }
-}
-
 async function sendDailyTimetable(chatId, session) {
     try {
         const slots = await fetchTimetable(session.context, session.config);
@@ -2069,7 +2030,7 @@ function scheduleSlotReminders(chatId, session, slots) {
                 await sendTelegram(msg, chatId);
             } catch (err) { }
         }, delay);
-        
+
         activeReminders.set(reminderKey, timeoutId);
     }
 }
@@ -2168,39 +2129,39 @@ async function main() {
     let activeTasks = new Map(); // taskId -> { keyword, targetTime, startTime, phase, stopRequested, page, isScan, isUnbook, fromChatId, userConfig }
     let taskIdCounter = 0;
 
-async function syncFileToGist(filename, content) {
-    if (!GIST_TOKEN || !GIST_ID) return;
-    try {
-        const https = require('https');
-        const body = JSON.stringify({
-            files: {
-                [filename]: {
-                    content: content
+    async function syncFileToGist(filename, content) {
+        if (!GIST_TOKEN || !GIST_ID) return;
+        try {
+            const https = require('https');
+            const body = JSON.stringify({
+                files: {
+                    [filename]: {
+                        content: content
+                    }
                 }
-            }
-        });
-        const req = https.request({
-            hostname: 'api.github.com',
-            path: `/gists/${GIST_ID}`,
-            method: 'PATCH',
-            headers: {
-                'Authorization': `Bearer ${GIST_TOKEN}`,
-                'User-Agent': 'saveetha-bot',
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(body),
-                'Accept': 'application/vnd.github.v3+json',
-                'X-GitHub-Api-Version': '2022-11-28'
-            }
-        }, (res) => {
-            // fire and forget
-        });
-        req.on('error', (e) => console.error('[Persist] Gist file sync error:', e.message));
-        req.write(body);
-        req.end();
-    } catch (e) {
-        console.error('[Persist] Failed to sync file to gist:', e.message);
+            });
+            const req = https.request({
+                hostname: 'api.github.com',
+                path: `/gists/${GIST_ID}`,
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${GIST_TOKEN}`,
+                    'User-Agent': 'saveetha-bot',
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                    'Accept': 'application/vnd.github.v3+json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                }
+            }, (res) => {
+                // fire and forget
+            });
+            req.on('error', (e) => console.error('[Persist] Gist file sync error:', e.message));
+            req.write(body);
+            req.end();
+        } catch (e) {
+            console.error('[Persist] Failed to sync file to gist:', e.message);
+        }
     }
-}
 
     function saveTasks() {
         const tasksArr = [];
@@ -2309,7 +2270,7 @@ async function syncFileToGist(filename, content) {
     while (true) {
         try {
             const updates = await getTelegramUpdates(offset);
-            
+
             // Also poll Gist for commands from the Pod
             const gistCommands = await fetchGistCommands();
             for (const cmd of gistCommands) {
@@ -2371,7 +2332,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             model: 'gemini-2.0-flash-lite',
                             contents: prompt,
                         });
-                        
+
                         let aiResponse = result.text.trim();
                         if (aiResponse.startsWith('\`\`\`json')) {
                             aiResponse = aiResponse.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '').trim();
@@ -2414,12 +2375,6 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         `\`!attendance\` or \`!att\` — Get your attendance\n` +
                         `\`!bunk\` — Calculate how many classes you can bunk (80% limit)\n` +
                         `\`!workflow\` or \`!requests\` — Check workflow approval status\n\n` +
-                        `*New Features:*\n` +
-                        `\`!rewards\` — View your gamified reward points\n` +
-                        `\`!leaves\` — Check your Leave, OD, and GatePass balances\n` +
-                        `\`!biometric\` — View your live entry/exit punch logs\n` +
-                        `\`!circulars\` — See the latest college notices\n` +
-                        `\`!courses\` — LMS Links and Pending Feedback\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active tasks\n` +
@@ -2458,7 +2413,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     }
                     await sendTelegram(`🛑 *Stopping GitHub Actions bot permanently...*\nIt will not restart until manually triggered from GitHub.`, fromChatId);
                     fs.writeFileSync('STOP_BOT', 'stop');
-                    try { await getTelegramUpdates(update.update_id + 1); } catch(e) {}
+                    try { await getTelegramUpdates(update.update_id + 1); } catch (e) { }
                     process.exit(0);
                 }
 
@@ -2469,8 +2424,8 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         continue;
                     }
                     await sendTelegram(`🔄 *Restarting GitHub Actions bot...*\nPlease wait a few minutes for the new runner to initialize.`, fromChatId);
-                    try { fs.unlinkSync('STOP_BOT'); } catch (e) {}
-                    try { await getTelegramUpdates(update.update_id + 1); } catch(e) {}
+                    try { fs.unlinkSync('STOP_BOT'); } catch (e) { }
+                    try { await getTelegramUpdates(update.update_id + 1); } catch (e) { }
                     process.exit(0);
                 }
 
@@ -2487,7 +2442,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     if (text === '!progress') {
                         filteredTasks = filteredTasks.filter(([id, task]) => task.fromChatId === fromChatId);
                     }
-                    
+
                     if (filteredTasks.length === 0) {
                         await sendTelegram(`🟢 *No active bookings.*\nBot is idle and ready.`, fromChatId);
                     } else {
@@ -2567,7 +2522,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             await sendTelegram(`⚠️ Please provide a user ID. Example: \`!stopuser 123456789 [keyword]\``, fromChatId);
                             continue;
                         }
-                        
+
                         let stoppedCount = 0;
                         activeTasks.forEach((task, id) => {
                             if (task.fromChatId === targetId) {
@@ -2577,7 +2532,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                                 }
                             }
                         });
-                        
+
                         if (stoppedCount > 0) {
                             if (keywordArg) {
                                 await sendTelegram(`✅ Stopped ${stoppedCount} task(s) matching *${keywordArg}* for user \`${targetId}\`.`, fromChatId);
@@ -2700,29 +2655,6 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         await sendTelegram(msgStr, fromChatId);
                         continue;
                     }
-
-                    if (text.startsWith('!broadcast ')) {
-                        const message = text.substring(11).trim();
-                        if (!message) {
-                            await sendTelegram('Usage: `!broadcast <message>`', fromChatId);
-                        } else {
-                            const broadcastMsg = `📢 *Broadcast Message:*\n\n${message}`;
-                            const userIds = Object.keys(ACCOUNTS);
-                            await sendTelegram(`⏳ Broadcasting message to ${userIds.length} users...`, fromChatId);
-                            let successCount = 0;
-                            for (const uid of userIds) {
-                                try {
-                                    await sendTelegram(broadcastMsg, uid);
-                                    successCount++;
-                                    await new Promise(r => setTimeout(r, 100)); // small delay to prevent rate limits
-                                } catch (err) {
-                                    console.error(`[Broadcast] Failed to send to ${uid}:`, err);
-                                }
-                            }
-                            await sendTelegram(`✅ Broadcast complete! Sent to ${successCount}/${userIds.length} users.`, fromChatId);
-                        }
-                        continue;
-                    }
                 }
                 if (text === '!timetable' || text === '!tt') {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
@@ -2768,46 +2700,6 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch attendance: ${err.message}`, fromChatId);
                     }
-                    continue;
-                }
-
-                if (text === '!rewards') {
-                    const session = await getOrSpawnSession(fromChatId, userConfig);
-                    if (!session) continue;
-                    await sendTelegram(`⏳ Fetching your gamified reward points...`, fromChatId);
-                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/rewards/my-reward-points/', 'rewards', '🏆 *Your Reward Points Dashboard*');
-                    continue;
-                }
-
-                if (text === '!leaves') {
-                    const session = await getOrSpawnSession(fromChatId, userConfig);
-                    if (!session) continue;
-                    await sendTelegram(`⏳ Fetching your Leave Balance & Gate Pass Ledger...`, fromChatId);
-                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/attendance/leave-balance/', 'leaves', '🏖️ *Your Leave Balances*');
-                    continue;
-                }
-
-                if (text === '!biometric') {
-                    const session = await getOrSpawnSession(fromChatId, userConfig);
-                    if (!session) continue;
-                    await sendTelegram(`⏳ Fetching your live biometric punch logs...`, fromChatId);
-                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/attendance/staff-biometric/', 'biometric', '🕒 *Live Biometric Logs*');
-                    continue;
-                }
-
-                if (text === '!circulars') {
-                    const session = await getOrSpawnSession(fromChatId, userConfig);
-                    if (!session) continue;
-                    await sendTelegram(`⏳ Fetching the latest college circulars...`, fromChatId);
-                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/academics/circulars/', 'circulars', '📢 *Latest Urgent Circulars*');
-                    continue;
-                }
-
-                if (text === '!courses') {
-                    const session = await getOrSpawnSession(fromChatId, userConfig);
-                    if (!session) continue;
-                    await sendTelegram(`⏳ Fetching your Course LMS links & Feedback status...`, fromChatId);
-                    await fetchAndSendScreenshot(session, fromChatId, 'https://learner.saveetha.in/academics/studentsubjects/', 'courses', '📚 *Your Subjects & Feedback Status*');
                     continue;
                 }
 
@@ -2911,7 +2803,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 let targetVenue = '';
                 let targetDate = '';
                 let startTime = '';
-                
+
                 // Find the first symbol to separate keyword from modifiers
                 const symbols = ['@', '~', '$', '#'];
                 let firstSymbolIndex = rawParams.length;
@@ -3077,6 +2969,91 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
             }
             removeTask(taskId);
         }
+    }
+}
+
+main().catch(async (err) => {
+    console.error('[Bot] Fatal error:', err);
+    await sendTelegram(`❌ *Bot crashed:* ${err.message}`).catch(() => { });
+    process.exit(1);
+});
+// Use the "Hot Tab" if it's not busy, otherwise open a temporary one
+let isUsingPersistent = false;
+if (!session.isBusy) {
+    taskPage = session.persistentPage;
+    session.isBusy = true;
+    isUsingPersistent = true;
+    console.log(`[Bot] Using Hot Tab for ${userConfig.name}`);
+} else {
+    taskPage = await session.context.newPage();
+    console.log(`[Bot] Hot Tab busy, opened temp tab for ${userConfig.name}`);
+}
+
+taskPage._userConfig = userConfig;
+task.page = taskPage;
+
+if (isScan) {
+    let scanCount = 1;
+    while (!task.stopRequested) {
+        task.phase = `Scanning (Check #${scanCount})`;
+        // Removed saveTasks() here to avoid GitHub API 403 secondary rate limits.
+        if (scanCount === 1) {
+            await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 5 seconds... Use \`!stop\` to cancel.`, fromChatId);
+        }
+
+        try {
+            const success = await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, targetDate, true, fromChatId);
+            if (success) {
+                console.log(`[Bot] Scan #${scanCount}: Slot found and booked for "${keyword}"`);
+                break;
+            }
+            if (scanCount === 1) {
+                console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", reporting to user...`);
+                // On first fail, we send a notification so the user knows it's not there yet
+                await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, targetDate, false, fromChatId);
+            } else {
+                console.log(`[Bot] Scan #${scanCount}: Slot not found for "${keyword}", retrying in 5s...`);
+            }
+        } catch (scanErr) {
+            console.error(`[Bot] Scan #${scanCount} error for "${keyword}":`, scanErr.message);
+            if (scanCount === 1) {
+                await sendTelegram(`❌ Error during initial scan: ${scanErr.message}`, fromChatId);
+            }
+        }
+
+        scanCount++;
+        // Wait 5 seconds before next scan (check stopRequested every 1s)
+        for (let i = 0; i < 5; i++) {
+            if (task.stopRequested) break;
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+} else if (isUnbook) {
+    task.phase = 'Cancelling slot';
+    saveTasks();
+    await sendTelegram(`⏳ Processing Cancellation for *${keyword}*...`, fromChatId);
+    await runUnbookingOnPage(taskPage, keyword, targetTime, fromChatId);
+} else {
+    task.phase = 'Booking on portal';
+    saveTasks();
+    await sendTelegram(`🚀 *Booking started!* (${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
+    await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, targetDate, false, fromChatId);
+}
+        } catch (err) {
+    console.error(`[Bot] Task ${taskId} Error:`, err.message);
+    await sendTelegram(`❌ Error [${keyword}]: ${err.message}`, fromChatId);
+} finally {
+    const session = USER_SESSIONS.get(fromChatId);
+    if (taskPage) {
+        if (session && taskPage === session.persistentPage) {
+            session.isBusy = false;
+            await taskPage.goto('https://learner.saveetha.in/academicevents/event-booking/').catch(() => { });
+        } else {
+            await taskPage.close().catch(() => { });
+        }
+    }
+    removeTask(taskId);
+}
     }
 }
 
