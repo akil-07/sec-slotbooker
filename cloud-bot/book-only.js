@@ -1,4 +1,4 @@
-﻿process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason, promise) => {
     console.error('UNHANDLED REJECTION:', reason);
 });
 process.on('uncaughtException', (error) => {
@@ -34,7 +34,7 @@ let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, i
 let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
 let superAdminNotificationsEnabled = true; // Added for super admin notifications toggle
 
-// â”€â”€â”€ Persistent Task State (Gist-backed for GitHub Actions survival) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
 const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
 const GIST_TOKEN = process.env.GIST_TOKEN;
 const GIST_ID = process.env.GIST_ID;
@@ -225,7 +225,7 @@ function clearPersistedTasks() {
 }
 
 
-// â”€â”€â”€ Account Initialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Account Initialization ──────────────────────────────────────────────────
 
 async function initAccounts() {
     // 1. Always load the primary user first
@@ -389,7 +389,7 @@ async function fetchGistCommands() {
     return [];
 }
 
-// â”€â”€â”€ Telegram Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Telegram Helpers ────────────────────────────────────────────────────────
 
 async function sendTelegram(text, chatId = CHAT_ID) {
     if (!apiRequest) return;
@@ -463,7 +463,7 @@ async function getTelegramUpdates(offset) {
     }
 }
 
-// â”€â”€â”€ Time Helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Time Helper ─────────────────────────────────────────────────────────────
 
 function getDelayMsUntil(timeStr) {
     if (!timeStr) return 0;
@@ -491,7 +491,7 @@ function getDelayMsUntil(timeStr) {
     return diff;
 }
 
-// â”€â”€â”€ Booking Logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Booking Logic ────────────────────────────────────────────────────────────
 
 async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, targetDate, silent = false, chatId = CHAT_ID) {
     console.log(`[Bot] Navigating to Event Booking page...`);
@@ -502,10 +502,10 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         timeout: 60000
     });
 
-    // Check if session expired â€” if redirected to login page, re-login
+    // Check if session expired — if redirected to login page, re-login
     const currentUrl = page.url();
     if (currentUrl.includes('/login')) {
-        console.log('[Bot] Session expired â€” re-logging in...');
+        console.log('[Bot] Session expired — re-logging in...');
         const config = page._userConfig;
         await doLogin(page, config.user, config.pass);
         await page.goto('https://learner.saveetha.in/academicevents/event-booking/', {
@@ -612,7 +612,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                 matchDate = dateWords.every(w => fullTextNorm.includes(w) || titleTextNorm.includes(w));
             }
 
-            // â›” Check "Already Booked" or "Opening Soon" status
+            // ⛔ Check "Already Booked" or "Opening Soon" status
             const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');
             const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);
 
@@ -672,7 +672,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
 
         if (alreadyBooked) {
             console.log('[Bot] Slot is already booked.');
-            await sendTelegram(`âœ… *Status:* You are already booked/registered for *"${targetKeyword}"*. The scan will now stop.`, chatId);
+            await sendTelegram(`✅ *Status:* You are already booked/registered for *"${targetKeyword}"*. The scan will now stop.`, chatId);
             return 'ALREADY_BOOKED';
         }
 
@@ -681,7 +681,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
             const openingSoon = slotsFound.find(s => s.isOpeningSoon);
 
             if (openingSoon) {
-                reasonMsg = `\n\nðŸ•’ *Status:* Found the slot, but it says "Opening Soon".`;
+                reasonMsg = `\n\n🕒 *Status:* Found the slot, but it says "Opening Soon".`;
             } else {
                 const displayedSlots = availableSlots.slice(0, 15);
                 const moreCount = availableSlots.length - displayedSlots.length;
@@ -690,7 +690,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                     : '\n\nNo slots are currently available on the page.';
             }
 
-            await sendTelegram(`âš ï¸ No bookable slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${reasonMsg}`, chatId);
+            await sendTelegram(`⚠️ No bookable slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${reasonMsg}`, chatId);
         }
         return false;
     }
@@ -760,7 +760,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
     }, bookableSlots[0]);
 
     if (!tagged.success) {
-        await sendTelegram(`âš ï¸ Found the slot but failed to tag it: ${tagged.reason}`, chatId);
+        await sendTelegram(`⚠️ Found the slot but failed to tag it: ${tagged.reason}`, chatId);
         return false;
     }
 
@@ -792,7 +792,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
     try {
         const swal2Confirm = page.locator('.swal2-confirm');
         if (await swal2Confirm.count() > 0) {
-            console.log('[Bot] SweetAlert2 confirm found â€” clicking...');
+            console.log('[Bot] SweetAlert2 confirm found — clicking...');
             await swal2Confirm.first().click();
             await page.waitForTimeout(500);
         } else {
@@ -801,7 +801,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
             for (let i = 0; i < count; i++) {
                 const t = (await modalBtns.nth(i).innerText().catch(() => '')).toLowerCase().trim();
                 if (t === 'ok' || t === 'confirm' || t === 'yes' || t === 'book') {
-                    console.log(`[Bot] Modal button "${t}" â€” clicking...`);
+                    console.log(`[Bot] Modal button "${t}" — clicking...`);
                     await modalBtns.nth(i).click();
                     await page.waitForTimeout(500);
                     break;
@@ -845,21 +845,21 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         console.log(`[Bot] Expected confirmation banner not found. Text was: "${bannerFound.text}". Misunderstood click, returning false.`);
         if (!silent) {
             // Only send telegram message if it's not a silent scan
-            await sendTelegram(`âš ï¸ Attempted to book *"${targetKeyword}"*, but could not verify success (no banner found). Misunderstood button. Searching again...`, chatId);
+            await sendTelegram(`⚠️ Attempted to book *"${targetKeyword}"*, but could not verify success (no banner found). Misunderstood button. Searching again...`, chatId);
         }
         return false;
     }
 
     if (bannerFound.isAlready) {
         console.log(`[Bot] Confirmed via banner (Already Booked): ${bannerFound.text}`);
-        await sendTelegram(`âœ… *Status:* You are already booked/waitlisted for *"${targetKeyword}"*. The scan will now stop.`, chatId);
+        await sendTelegram(`✅ *Status:* You are already booked/waitlisted for *"${targetKeyword}"*. The scan will now stop.`, chatId);
         return 'ALREADY_BOOKED';
     }
 
     if (bannerFound.isFull) {
         console.log(`[Bot] Confirmed via banner (Waitlist Full): ${bannerFound.text}`);
         if (!silent) {
-            await sendTelegram(`âš ï¸ Attempted to book *"${targetKeyword}"*, but waitlist is full: ${bannerFound.text}. Searching again...`, chatId);
+            await sendTelegram(`⚠️ Attempted to book *"${targetKeyword}"*, but waitlist is full: ${bannerFound.text}. Searching again...`, chatId);
         }
         return false;
     }
@@ -869,12 +869,12 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
     const finalUrl = page.url();
     console.log(`[Bot] Final URL: ${finalUrl}`);
 
-    const actionStr = bookableSlots[0].isWaitlist ? 'ðŸ“‹ Waitlisted' : 'âœ… Booked';
+    const actionStr = bookableSlots[0].isWaitlist ? '📋 Waitlisted' : '✅ Booked';
     const tmpPath = path.join(__dirname, '_tmp_screenshot.png');
     await page.screenshot({ path: tmpPath, fullPage: false });
     await sendTelegramPhoto(
         tmpPath,
-        `${actionStr} Successfully!\n\nðŸŽ¯ Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\nðŸ”— URL: ${finalUrl}\n\nBooking complete! ðŸŽ‰`,
+        `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`,
         chatId
     );
 
@@ -883,7 +883,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         const userName = (ACCOUNTS[chatId] && ACCOUNTS[chatId].name) ? ACCOUNTS[chatId].name : chatId;
         await sendTelegramPhoto(
             tmpPath,
-            `ðŸ”” *User Successfully Booked!*\nUser: ${userName}\n${actionStr} Successfully!\n\nðŸŽ¯ Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}`,
+            `🔔 *User Successfully Booked!*\nUser: ${userName}\n${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}`,
             superAdminChatId
         );
     }
@@ -950,7 +950,7 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
     }, { kw: targetKeyword, time: targetTime });
 
     if (evaluation.slotsFound.length === 0) {
-        await sendTelegram(`âš ï¸ Could not find any booked slot matching *"${targetKeyword}"* to cancel.`, chatId);
+        await sendTelegram(`⚠️ Could not find any booked slot matching *"${targetKeyword}"* to cancel.`, chatId);
         return;
     }
 
@@ -984,12 +984,12 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
 
         const tmpPath = path.join(__dirname, '_cancel_screenshot.png');
         await page.screenshot({ path: tmpPath });
-        await sendTelegramPhoto(tmpPath, `ðŸ›‘ *Slot Cancelled Successfully!*\n\nðŸŽ¯ Slot: ${targetKeyword}\n\nCancellation complete.`, chatId);
+        await sendTelegramPhoto(tmpPath, `🛑 *Slot Cancelled Successfully!*\n\n🎯 Slot: ${targetKeyword}\n\nCancellation complete.`, chatId);
         try { fs.unlinkSync(tmpPath); } catch (_) { }
     }
 }
 
-// â”€â”€â”€ Login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Login ────────────────────────────────────────────────────────────────────
 
 async function doLogin(page, user, pass) {
     console.log(`[Bot] Logging in as ${user}...`);
@@ -1064,7 +1064,7 @@ async function doLogin(page, user, pass) {
     console.log('[Bot] Logged in. Current URL:', page.url());
 }
 
-// â”€â”€â”€ Timetable Scraper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Timetable Scraper ───────────────────────────────────────────────────────
 
 /**
  * Scrapes today's schedule from people_schedule page.
@@ -1081,7 +1081,7 @@ async function fetchTimetable(context, config) {
 
         // If redirected to login, re-login
         if (page.url().includes('/login')) {
-            console.log(`[Timetable] Session expired for ${config.name} â€” re-logging in...`);
+            console.log(`[Timetable] Session expired for ${config.name} — re-logging in...`);
             await doLogin(page, config.user, config.pass);
             await page.goto('https://learner.saveetha.in/academics/people_schedule/', {
                 waitUntil: 'domcontentloaded',
@@ -1111,7 +1111,7 @@ async function fetchTimetable(context, config) {
                 return { hour: h, minute: min, timeStr: timeText.trim() };
             }
 
-            // â”€â”€ Strategy 0: Saveetha people_schedule labeled-card format (PRIMARY) â”€â”€
+            // ── Strategy 0: Saveetha people_schedule labeled-card format (PRIMARY) ──
             // Find all elements that contain BOTH "SLOT :" and "VENUE :" labels.
             // Sort smallest-first so we get the most granular card element.
             const allEls = Array.from(document.querySelectorAll('div, li, section, article, tr'));
@@ -1181,7 +1181,7 @@ async function fetchTimetable(context, config) {
                 }
             }
 
-            // â”€â”€ Strategy 1: Table rows (fallback) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Strategy 1: Table rows (fallback) ─────────────────────────────────
             const tables = document.querySelectorAll('table');
             for (const table of tables) {
                 const rows = table.querySelectorAll('tr');
@@ -1258,7 +1258,7 @@ async function fetchTimetable(context, config) {
                 }
             }
 
-            // â”€â”€ Strategy 2: Generic class/schedule divs (last resort) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Strategy 2: Generic class/schedule divs (last resort) ─────────────
             if (results.length === 0) {
                 const cards = document.querySelectorAll(
                     '[class*="schedule"], [class*="timetable"], [class*="slot"], [class*="class"], [class*="period"], [class*="event"]'
@@ -1313,23 +1313,23 @@ function formatTimetable(slots, name) {
         weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
     });
     if (!slots || slots.length === 0) {
-        return `ðŸ“… *Good Morning ${name}!*\n\n*Today's Timetable (${today})*\n\nâœ… No classes scheduled today. Enjoy your day! ðŸŽ‰`;
+        return `📅 *Good Morning ${name}!*\n\n*Today's Timetable (${today})*\n\n✅ No classes scheduled today. Enjoy your day! 🎉`;
     }
-    let msg = `ðŸ“… *Good Morning ${name}!*\n\n*Today's Timetable â€” ${today}*\n${'â”€'.repeat(30)}\n\n`;
+    let msg = `📅 *Good Morning ${name}!*\n\n*Today's Timetable — ${today}*\n${'─'.repeat(30)}\n\n`;
     for (const s of slots) {
         const h = s.hour % 12 || 12;
         const period = s.hour < 12 ? 'AM' : 'PM';
         const minStr = String(s.minute).padStart(2, '0');
         const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : 'N/A (Check Portal)';
-        msg += `ðŸ• *${h}:${minStr} ${period}*\n`;
-        msg += `ðŸ“š ${s.slot}\n`;
-        msg += `ðŸ“ Venue: *${venueDisplay}*\n\n`;
+        msg += `🕐 *${h}:${minStr} ${period}*\n`;
+        msg += `📚 ${s.slot}\n`;
+        msg += `📍 Venue: *${venueDisplay}*\n\n`;
     }
-    msg += `_Have a productive day! ðŸ’ª_`;
+    msg += `_Have a productive day! 💪_`;
     return msg;
 }
 
-// â”€â”€â”€ Workflow Requests Scraper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Workflow Requests Scraper ───────────────────────────────────────────────
 
 /**
  * Scrapes workflow requests from the learner portal.
@@ -1344,7 +1344,7 @@ async function fetchWorkflowRequests(context, config, keyword = '') {
         });
 
         if (page.url().includes('/login')) {
-            console.log(`[Workflow] Session expired for ${config.name} â€” re-logging in...`);
+            console.log(`[Workflow] Session expired for ${config.name} — re-logging in...`);
             await doLogin(page, config.user, config.pass);
             await page.goto('https://learner.saveetha.in/academics/workflow-requests/', {
                 waitUntil: 'domcontentloaded',
@@ -1379,12 +1379,12 @@ async function fetchWorkflowRequests(context, config, keyword = '') {
             return `No open workflow requests found for *${config.name}*${keyword ? ` matching "${keyword}"` : ''}.`;
         }
 
-        let msg = `ðŸ“‹ *Workflow Requests for ${config.name}*\n\n`;
+        let msg = `📋 *Workflow Requests for ${config.name}*\n\n`;
 
         // Check all requests
         for (let i = 0; i < requestLinks.length; i++) {
             const req = requestLinks[i];
-            msg += `ðŸ”¹ *${req.title}* (${req.status})\n`;
+            msg += `🔹 *${req.title}* (${req.status})\n`;
 
             await page.goto(req.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await page.waitForTimeout(2000);
@@ -1421,14 +1421,14 @@ async function fetchWorkflowRequests(context, config, keyword = '') {
 
                 if (approvalData.length > 0) {
                     approvalData.forEach(level => {
-                        const icon = level.status.toLowerCase().includes('approved') ? 'âœ…' : (level.status.toLowerCase().includes('rejected') ? 'âŒ' : 'â³');
-                        msg += `  â†³ ${icon} ${level.role}: ${level.status} (${level.approver})\n`;
+                        const icon = level.status.toLowerCase().includes('approved') ? '✅' : (level.status.toLowerCase().includes('rejected') ? '❌' : '⏳');
+                        msg += `  ↳ ${icon} ${level.role}: ${level.status} (${level.approver})\n`;
                     });
                 } else {
-                    msg += `  â†³ â³ Pending (No approval steps assigned yet)\n`;
+                    msg += `  ↳ ⏳ Pending (No approval steps assigned yet)\n`;
                 }
             } else {
-                msg += `  â†³ âš ï¸ Could not load Approval Flow.\n`;
+                msg += `  ↳ ⚠️ Could not load Approval Flow.\n`;
             }
             msg += `\n`;
         }
@@ -1442,7 +1442,7 @@ async function fetchWorkflowRequests(context, config, keyword = '') {
     }
 }
 
-// â”€â”€â”€ Attendance Scraper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Attendance Scraper ───────────────────────────────────────────────────────
 
 /**
  * Scrapes attendance from studentsubjects page.
@@ -1458,7 +1458,7 @@ async function fetchAttendance(context, config) {
 
         // If redirected to login, re-login
         if (page.url().includes('/login')) {
-            console.log(`[Attendance] Session expired for ${config.name} â€” re-logging in...`);
+            console.log(`[Attendance] Session expired for ${config.name} — re-logging in...`);
             await doLogin(page, config.user, config.pass);
             await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
                 waitUntil: 'domcontentloaded',
@@ -1472,7 +1472,7 @@ async function fetchAttendance(context, config) {
         const attendanceData = await page.evaluate(() => {
             const results = [];
 
-            // â”€â”€ Strategy 1: Table rows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Strategy 1: Table rows ─────────────────────────────────
             const tables = document.querySelectorAll('table');
             for (const table of tables) {
                 const rows = table.querySelectorAll('tr');
@@ -1525,7 +1525,7 @@ async function fetchAttendance(context, config) {
                 if (results.length > 0) break; // Use the first table that yields results
             }
 
-            // â”€â”€ Strategy 2: Cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Strategy 2: Cards ──────────────────────────────────────
             if (results.length === 0) {
                 const allElements = Array.from(document.querySelectorAll('div, section, article, li'));
                 // Find all elements that contain typical card keywords
@@ -1591,10 +1591,10 @@ async function fetchAttendance(context, config) {
 
 function formatAttendance(data, userName) {
     if (!data || data.length === 0) {
-        return `âš ï¸ Could not find attendance records for ${userName}.`;
+        return `⚠️ Could not find attendance records for ${userName}.`;
     }
 
-    let msg = `ðŸ“Š *Attendance for ${userName}*\n\n`;
+    let msg = `📊 *Attendance for ${userName}*\n\n`;
 
     let totalAttended = 0;
     let totalConducted = 0;
@@ -1605,11 +1605,11 @@ function formatAttendance(data, userName) {
         if (sub.length > 55) sub = sub.substring(0, 52) + '...';
 
         let percentNum = parseFloat(item.percent);
-        let icon = 'âšª';
+        let icon = '⚪';
         if (!isNaN(percentNum)) {
-            if (percentNum >= 85) icon = 'ðŸŸ¢';
-            else if (percentNum >= 75) icon = 'ðŸŸ¡';
-            else icon = 'ðŸ”´';
+            if (percentNum >= 85) icon = '🟢';
+            else if (percentNum >= 75) icon = '🟡';
+            else icon = '🔴';
         }
 
         let percentText = item.percent ? item.percent.replace(/([_*`\[])/g, '\\$1') : 'N/A';
@@ -1622,18 +1622,18 @@ function formatAttendance(data, userName) {
             totalConducted += parseFloat(item.total);
         }
 
-        msg += `${icon} *${sub}*\n   â”” ${percentText}${stats}\n\n`;
+        msg += `${icon} *${sub}*\n   └ ${percentText}${stats}\n\n`;
     });
 
     if (totalConducted > 0) {
         let overallPercent = ((totalAttended / totalConducted) * 100).toFixed(2);
-        msg += `\nðŸŽ¯ *Overall Attendance: ${overallPercent}%* _(${totalAttended}/${totalConducted})_`;
+        msg += `\n🎯 *Overall Attendance: ${overallPercent}%* _(${totalAttended}/${totalConducted})_`;
     }
 
     return msg.trim();
 }
 
-// â”€â”€â”€ Bunk Calculator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Bunk Calculator ──────────────────────────────────────────────────────────
 
 async function fetchBunkStatsForSubject(context, config, targetSubject) {
     const page = await context.newPage();
@@ -1771,10 +1771,10 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
 
 function formatBunkStats(data, userName) {
     if (!data || data.length === 0) {
-        return `âš ï¸ Could not calculate bunk stats for ${userName}. (Missing schedule info)`;
+        return `⚠️ Could not calculate bunk stats for ${userName}. (Missing schedule info)`;
     }
 
-    let msg = `ðŸ›Œ *Bunk Calculator (80% Limit) for ${userName}*\n\n`;
+    let msg = `🛌 *Bunk Calculator (80% Limit) for ${userName}*\n\n`;
 
     data.forEach(item => {
         let sub = item.subject.replace(/([_*`\[])/g, '\\$1');
@@ -1782,34 +1782,34 @@ function formatBunkStats(data, userName) {
 
         let status = '';
         if (item.maxBunkSessions > 0) {
-            status = `ðŸŸ¢ *You can safely bunk ${item.maxBunkSessions} classes!*`;
+            status = `🟢 *You can safely bunk ${item.maxBunkSessions} classes!*`;
         } else if (item.maxBunkSessions === 0) {
-            status = `ðŸŸ¡ *Do NOT bunk anymore!* You are exactly on the line.`;
+            status = `🟡 *Do NOT bunk anymore!* You are exactly on the line.`;
         } else {
-            status = `ðŸ”´ *Shortage!* You need to attend ${Math.abs(item.maxBunkSessions)} extra classes to reach 80%.`;
+            status = `🔴 *Shortage!* You need to attend ${Math.abs(item.maxBunkSessions)} extra classes to reach 80%.`;
         }
 
-        msg += `ðŸ”¹ *${sub}*\n`;
-        msg += `   â”œ Current: *${item.percent.toFixed(2)}%*\n`;
+        msg += `🔹 *${sub}*\n`;
+        msg += `   ├ Current: *${item.percent.toFixed(2)}%*\n`;
         if (item.projectedFinalPercent !== undefined) {
             if (item.upcomingSessions > 0) {
-                msg += `   â”œ If attend all remaining: *${item.projectedFinalPercent.toFixed(2)}%*\n`;
+                msg += `   ├ If attend all remaining: *${item.projectedFinalPercent.toFixed(2)}%*\n`;
             } else {
-                msg += `   â”œ No upcoming classes left.\n`;
+                msg += `   ├ No upcoming classes left.\n`;
             }
         }
-        msg += `   â”” ${status}\n\n`;
+        msg += `   └ ${status}\n\n`;
     });
 
     return msg.trim();
 }
 
-// â”€â”€â”€ Timetable Scheduler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Timetable Scheduler ─────────────────────────────────────────────────────
 
 /**
  * Starts per-user timetable schedulers:
- *   1. Daily 8:00 AM â†’ send full timetable
- *   2. 15 min before each slot â†’ send reminder
+ *   1. Daily 8:00 AM → send full timetable
+ *   2. 15 min before each slot → send reminder
  *
  * Uses India Standard Time (IST = UTC+5:30).
  */
@@ -1905,13 +1905,13 @@ function startTimetableSchedulers(userSessions) {
                     const h = s.hour % 12 || 12;
                     const period = s.hour < 12 ? 'AM' : 'PM';
                     const minStr = String(s.minute).padStart(2, '0');
-                    const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : '(Venue not found â€” check timetable)';
+                    const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : '(Venue not found — check timetable)';
                     const msg =
-                        `â° *Class Reminder â€” 15 Minutes!*\n\n` +
-                        `ðŸ“š *${s.slot}*\n` +
-                        `ðŸ• Starts at: *${h}:${minStr} ${period}*\n` +
-                        `ðŸ“ Venue: *${venueDisplay}*\n\n` +
-                        `_Get ready! Class starts in 15 minutes. ðŸš€_`;
+                        `⏰ *Class Reminder — 15 Minutes!*\n\n` +
+                        `📚 *${s.slot}*\n` +
+                        `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
+                        `📍 Venue: *${venueDisplay}*\n\n` +
+                        `_Get ready! Class starts in 15 minutes. 🚀_`;
                     await sendTelegram(msg, chatId);
                     console.log(`[Scheduler] Reminder sent for "${s.slot}" (venue: ${venueDisplay}) to ${session.config.name}`);
                 } catch (err) {
@@ -2022,11 +2022,11 @@ function scheduleSlotReminders(chatId, session, slots) {
                 const minStr = String(s.minute).padStart(2, '0');
                 const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : 'N/A (Check Portal)';
                 const msg =
-                    `â° *Class Reminder â€” 15 Minutes!*\n\n` +
-                    `ðŸ“š *${s.slot}*\n` +
-                    `ðŸ• Starts at: *${h}:${minStr} ${period}*\n` +
-                    `ðŸ“ Venue: *${venueDisplay}*\n\n` +
-                    `_Get ready! Class starts in 15 minutes. ðŸš€_`;
+                    `⏰ *Class Reminder — 15 Minutes!*\n\n` +
+                    `📚 *${s.slot}*\n` +
+                    `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
+                    `📍 Venue: *${venueDisplay}*\n\n` +
+                    `_Get ready! Class starts in 15 minutes. 🚀_`;
                 await sendTelegram(msg, chatId);
             } catch (err) { }
         }, delay);
@@ -2035,7 +2035,7 @@ function scheduleSlotReminders(chatId, session, slots) {
     }
 }
 
-// â”€â”€â”€ Main: Persistent Bot Loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Main: Persistent Bot Loop ────────────────────────────────────────────────
 
 async function main() {
     if (!SAVEETHA_USER || !SAVEETHA_PASS || !TELEGRAM_BOT_TOKEN || !CHAT_ID) {
@@ -2087,13 +2087,13 @@ async function main() {
         const onlineCount = USER_SESSIONS.size;
         const totalCount = accountEntries.length;
         if (onlineCount === totalCount) {
-            await sendTelegram(`âœ… *Saveetha Bot Initialized!* (Hot Tab Mode)\nAll ${onlineCount} accounts logged in.\nðŸ“… Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
+            await sendTelegram(`✅ *Saveetha Bot Initialized!* (Hot Tab Mode)\nAll ${onlineCount} accounts logged in.\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
         } else {
             const failedNames = accountEntries
                 .filter(([chatId]) => !USER_SESSIONS.has(chatId))
                 .map(([chatId, config]) => config.name)
                 .join(', ');
-            await sendTelegram(`âš ï¸ *Saveetha Bot Initialized!* (Hot Tab Mode)\n${onlineCount}/${totalCount} accounts ready. Failed to login: *${failedNames}*\n_Retrying failed accounts in the background..._\nðŸ“… Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
+            await sendTelegram(`⚠️ *Saveetha Bot Initialized!* (Hot Tab Mode)\n${onlineCount}/${totalCount} accounts ready. Failed to login: *${failedNames}*\n_Retrying failed accounts in the background..._\n📅 Daily timetable at *8:00 AM IST* + 15-min class reminders are active!`);
         }
     })();
 
@@ -2122,7 +2122,7 @@ async function main() {
         }
     }, 60000); // Retry every 60 seconds
 
-    // â”€â”€ Start Timetable Schedulers for all users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Start Timetable Schedulers for all users ──────────────────────────────
     // (Note: Handled inside spawnUserSession now)
 
     // Track active bookings
@@ -2218,7 +2218,7 @@ async function main() {
             }
             if (resumedCount > 0) {
                 console.log(`[Bot] Resumed ${resumedCount} tasks from persistence.`);
-                await sendTelegram(`ðŸ”„ *Bot restarted!* Resumed *${resumedCount}* active task(s) automatically.`);
+                await sendTelegram(`🔄 *Bot restarted!* Resumed *${resumedCount}* active task(s) automatically.`);
             }
         }
     } catch (e) { console.error('[Bot] Error loading tasks:', e.message); }
@@ -2226,13 +2226,13 @@ async function main() {
     async function getOrSpawnSession(chatId, config) {
         let session = USER_SESSIONS.get(chatId);
         if (!session) {
-            await sendTelegram(`â³ Your session was not found (bot may have restarted). Attempting to log you in now, please wait...`, chatId);
+            await sendTelegram(`⏳ Your session was not found (bot may have restarted). Attempting to log you in now, please wait...`, chatId);
             const success = await spawnUserSession(browser, chatId, config);
             if (success) {
                 session = USER_SESSIONS.get(chatId);
-                await sendTelegram(`âœ… Session successfully initialized! Please send your command again if needed.`, chatId);
+                await sendTelegram(`✅ Session successfully initialized! Please send your command again if needed.`, chatId);
             } else {
-                await sendTelegram(`âŒ Failed to initialize session. The Saveetha portal might be down or slow. Please try again later.`, chatId);
+                await sendTelegram(`❌ Failed to initialize session. The Saveetha portal might be down or slow. Please try again later.`, chatId);
                 return null;
             }
         }
@@ -2296,7 +2296,7 @@ async function main() {
 
                 if (!userConfig && fromChatId !== ADMIN_CHAT_ID) {
                     console.log(`[Bot] Ignoring message from unauthorized chat: ${fromChatId}`);
-                    // Optional: await sendTelegram(`âš ï¸ Your Chat ID (${fromChatId}) is not authorized for this bot.`);
+                    // Optional: await sendTelegram(`⚠️ Your Chat ID (${fromChatId}) is not authorized for this bot.`);
                     continue;
                 }
 
@@ -2307,14 +2307,14 @@ async function main() {
 
                 let text = msg.text.trim().toLowerCase();
 
-                // â”€â”€ AI Natural Language Parsing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                // ── AI Natural Language Parsing ──────────────────────────────
                 if (!text.startsWith('!')) {
                     if (!aiClient) {
-                        await sendTelegram(`âš ï¸ Gemini API Key not configured. AI disabled. Use standard ! commands.`, fromChatId);
+                        await sendTelegram(`⚠️ Gemini API Key not configured. AI disabled. Use standard ! commands.`, fromChatId);
                         continue;
                     }
                     try {
-                        await sendTelegram(`ðŸ¤– Thinking...`, fromChatId);
+                        await sendTelegram(`🤖 Thinking...`, fromChatId);
                         const prompt = `You are an AI assistant for Saveetha University students. The user sent this message: "${msg.text}"
 Determine the intent and return ONLY valid JSON (no markdown).
 Possible actions:
@@ -2340,7 +2340,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         const aiData = JSON.parse(aiResponse);
 
                         if (aiData.action === 'reply') {
-                            await sendTelegram(`ðŸ¤– ${aiData.message}`, fromChatId);
+                            await sendTelegram(`🤖 ${aiData.message}`, fromChatId);
                             continue;
                         } else if (aiData.action === 'timetable') {
                             text = '!timetable';
@@ -2349,54 +2349,54 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         } else if (aiData.action === 'book') {
                             text = `!book ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''}`.trim();
                         } else {
-                            await sendTelegram(`ðŸ¤– I'm not sure how to handle that action.`, fromChatId);
+                            await sendTelegram(`🤖 I'm not sure how to handle that action.`, fromChatId);
                             continue;
                         }
                     } catch (e) {
                         console.error('[AI] Error:', e.message);
-                        await sendTelegram(`âŒ AI Error: Could not process request. Try using ! commands.`, fromChatId);
+                        await sendTelegram(`❌ AI Error: Could not process request. Try using ! commands.`, fromChatId);
                         continue;
                     }
                 }
-                // â”€â”€ !help â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                // ── !help ─────────────────────────────────────────────────
                 if (text === '!help' || text === '/start') {
                     let helpMsg =
-                        `ðŸ“– *Saveetha Bot Help*\n\n` +
+                        `📖 *Saveetha Bot Help*\n\n` +
                         `*Booking Commands:*\n` +
-                        `\`!book <keyword>\` â€” Book immediately\n` +
-                        `\`!book <keyword> @ 10:00 AM\` â€” Target specific time\n` +
-                        `\`!book <keyword> $ 5511\` â€” Target specific room/venue\n` +
-                        `\`!book <keyword> ~ 05/22/2026\` â€” Target specific date\n` +
-                        `\`!book <keyword> # 06:00 PM\` â€” Start scanning at 6 PM IST\n` +
-                        `\`!scan <keyword>\` â€” Scan every 30s until found\n` +
-                        `\`!unbook <keyword>\` â€” Cancel a booked slot\n\n` +
+                        `\`!book <keyword>\` — Book immediately\n` +
+                        `\`!book <keyword> @ 10:00 AM\` — Target specific time\n` +
+                        `\`!book <keyword> $ 5511\` — Target specific room/venue\n` +
+                        `\`!book <keyword> ~ 05/22/2026\` — Target specific date\n` +
+                        `\`!book <keyword> # 06:00 PM\` — Start scanning at 6 PM IST\n` +
+                        `\`!scan <keyword>\` — Scan every 30s until found\n` +
+                        `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
                         `*Timetable & Attendance Commands:*\n` +
-                        `\`!timetable\` or \`!tt\` â€” Get today's schedule\n` +
-                        `\`!attendance\` or \`!att\` â€” Get your attendance\n` +
-                        `\`!bunk\` â€” Calculate how many classes you can bunk (80% limit)\n` +
-                        `\`!workflow\` or \`!requests\` â€” Check workflow approval status\n\n` +
+                        `\`!timetable\` or \`!tt\` — Get today's schedule\n` +
+                        `\`!attendance\` or \`!att\` — Get your attendance\n` +
+                        `\`!bunk\` — Calculate how many classes you can bunk (80% limit)\n` +
+                        `\`!workflow\` or \`!requests\` — Check workflow approval status\n\n` +
                         `*System Commands:*\n` +
-                        `\`!status\` â€” Check if bot is alive\n` +
-                        `\`!progress\` â€” View active tasks\n` +
-                        `\`!stop <keyword>\` â€” Stop your specific task\n` +
-                        `\`!stop all\` â€” Stop all your tasks\n`;
+                        `\`!status\` — Check if bot is alive\n` +
+                        `\`!progress\` — View active tasks\n` +
+                        `\`!stop <keyword>\` — Stop your specific task\n` +
+                        `\`!stop all\` — Stop all your tasks\n`;
 
                     if (fromChatId === ADMIN_CHAT_ID) {
-                        helpMsg += `\n*ðŸ‘‘ Admin Commands:*\n` +
-                            `\`!listusers\` â€” Show all users\n` +
-                            `\`!allprogress\` â€” View all active tasks from all users\n` +
-                            `\`!cleartasks\` â€” Wipe all stuck tasks instantly\n` +
-                            `\`!stopuser <chatId> [keyword]\` â€” Stop all/specific tasks for a user\n` +
-                            `\`!stopany <keyword>\` â€” Stop any user's task by keyword\n` +
-                            `\`!block <chatId>\` â€” Block a user\n` +
-                            `\`!unblock <chatId>\` â€” Unblock a user\n` +
-                            `\`!broadcast <msg>\` â€” Message everyone\n`;
+                        helpMsg += `\n*👑 Admin Commands:*\n` +
+                            `\`!listusers\` — Show all users\n` +
+                            `\`!allprogress\` — View all active tasks from all users\n` +
+                            `\`!cleartasks\` — Wipe all stuck tasks instantly\n` +
+                            `\`!stopuser <chatId> [keyword]\` — Stop all/specific tasks for a user\n` +
+                            `\`!stopany <keyword>\` — Stop any user's task by keyword\n` +
+                            `\`!block <chatId>\` — Block a user\n` +
+                            `\`!unblock <chatId>\` — Unblock a user\n` +
+                            `\`!broadcast <msg>\` — Message everyone\n`;
                     }
                     const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
                     if (fromChatId === ADMIN_CHAT_ID || fromChatId === '8581009274' || fromChatId === superAdminChatId) {
-                        helpMsg += `\n*ðŸ› ï¸ Super Admin Commands:*\n` +
-                            `\`!stopbot\` â€” Permanently stop GitHub Actions bot\n` +
-                            `\`!restartbot\` â€” Restart GitHub Actions bot\n`;
+                        helpMsg += `\n*🛠️ Super Admin Commands:*\n` +
+                            `\`!stopbot\` — Permanently stop GitHub Actions bot\n` +
+                            `\`!restartbot\` — Restart GitHub Actions bot\n`;
                     }
 
                     helpMsg += `\n_Tip: Use "all" with !stop to clear the queue._`;
@@ -2404,14 +2404,14 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     continue;
                 }
 
-                // â”€â”€ !stopbot & !restartbot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                // ── !stopbot & !restartbot ───────────────────────────────
                 if (text === '!stopbot') {
                     const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
                     if (fromChatId !== '8581009274' && fromChatId !== ADMIN_CHAT_ID && fromChatId !== superAdminChatId) {
-                        await sendTelegram(`â›” Only super admin can use this command.`, fromChatId);
+                        await sendTelegram(`⛔ Only super admin can use this command.`, fromChatId);
                         continue;
                     }
-                    await sendTelegram(`ðŸ›‘ *Stopping GitHub Actions bot permanently...*\nIt will not restart until manually triggered from GitHub.`, fromChatId);
+                    await sendTelegram(`🛑 *Stopping GitHub Actions bot permanently...*\nIt will not restart until manually triggered from GitHub.`, fromChatId);
                     fs.writeFileSync('STOP_BOT', 'stop');
                     try { await getTelegramUpdates(update.update_id + 1); } catch (e) { }
                     process.exit(0);
@@ -2420,23 +2420,23 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 if (text === '!restartbot') {
                     const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
                     if (fromChatId !== '8581009274' && fromChatId !== ADMIN_CHAT_ID && fromChatId !== superAdminChatId) {
-                        await sendTelegram(`â›” Only super admin can use this command.`, fromChatId);
+                        await sendTelegram(`⛔ Only super admin can use this command.`, fromChatId);
                         continue;
                     }
-                    await sendTelegram(`ðŸ”„ *Restarting GitHub Actions bot...*\nPlease wait a few minutes for the new runner to initialize.`, fromChatId);
+                    await sendTelegram(`🔄 *Restarting GitHub Actions bot...*\nPlease wait a few minutes for the new runner to initialize.`, fromChatId);
                     try { fs.unlinkSync('STOP_BOT'); } catch (e) { }
                     try { await getTelegramUpdates(update.update_id + 1); } catch (e) { }
                     process.exit(0);
                 }
 
-                // â”€â”€ !status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                // ── !status ──────────────────────────────────────────────
                 if (text === '!status') {
                     const count = activeTasks.size;
-                    await sendTelegram(`âœ… Bot is running and logged in.\n${count > 0 ? `â³ Currently processing ${count} booking(s).` : 'ðŸŸ¢ Ready to book!'}`, fromChatId);
+                    await sendTelegram(`✅ Bot is running and logged in.\n${count > 0 ? `⏳ Currently processing ${count} booking(s).` : '🟢 Ready to book!'}`, fromChatId);
                     continue;
                 }
 
-                // â”€â”€ !progress & !allprogress â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                // ── !progress & !allprogress ──────────────────────────────
                 if (text === '!progress' || (text === '!allprogress' && (fromChatId === ADMIN_CHAT_ID || fromChatId === Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635')))) {
                     let filteredTasks = Array.from(activeTasks.entries());
                     if (text === '!progress') {
@@ -2444,20 +2444,20 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     }
 
                     if (filteredTasks.length === 0) {
-                        await sendTelegram(`ðŸŸ¢ *No active bookings.*\nBot is idle and ready.`, fromChatId);
+                        await sendTelegram(`🟢 *No active bookings.*\nBot is idle and ready.`, fromChatId);
                     } else {
-                        let statusMsg = `â³ *Active Bookings (${filteredTasks.length})*\n\n`;
+                        let statusMsg = `⏳ *Active Bookings (${filteredTasks.length})*\n\n`;
                         filteredTasks.forEach(([id, task]) => {
                             let ownerInfo = '';
                             if (text === '!allprogress') {
                                 const ownerName = task.userConfig ? task.userConfig.name : 'Unknown';
-                                ownerInfo = `ðŸ‘¤ Owner: ${ownerName} (${task.fromChatId})\n`;
+                                ownerInfo = `👤 Owner: ${ownerName} (${task.fromChatId})\n`;
                             }
-                            statusMsg += `ðŸ”¹ *${task.keyword}*\n` +
+                            statusMsg += `🔹 *${task.keyword}*\n` +
                                 ownerInfo +
-                                `ðŸ“ Phase: ${task.phase}\n` +
-                                `${task.targetTime ? `ðŸ• Target: ${task.targetTime}\n` : ''}` +
-                                `${task.startTime ? `â±ï¸ Start: ${task.startTime}\n` : ''}\n`;
+                                `📍 Phase: ${task.phase}\n` +
+                                `${task.targetTime ? `🕐 Target: ${task.targetTime}\n` : ''}` +
+                                `${task.startTime ? `⏱️ Start: ${task.startTime}\n` : ''}\n`;
                         });
                         statusMsg += `_To stop one: !stop <keyword>_`;
                         await sendTelegram(statusMsg, fromChatId);
@@ -2465,7 +2465,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     continue;
                 }
 
-                // â”€â”€ !stop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                // ── !stop ─────────────────────────────────────────────────
                 if (text.toLowerCase().startsWith('!stop ') || text.toLowerCase() === '!stop') {
                     const arg = text.substring(5).trim().toLowerCase();
 
@@ -2473,7 +2473,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     let userTasks = Array.from(activeTasks.entries()).filter(([id, task]) => task.fromChatId === fromChatId);
 
                     if (userTasks.length === 0) {
-                        await sendTelegram(`ðŸŸ¢ No active bookings to stop.`, fromChatId);
+                        await sendTelegram(`🟢 No active bookings to stop.`, fromChatId);
                         continue;
                     }
 
@@ -2483,7 +2483,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             task.stopRequested = true;
                             stoppedCount++;
                         });
-                        await sendTelegram(`ðŸ›‘ *Stopping ${stoppedCount} task(s)...*`, fromChatId);
+                        await sendTelegram(`🛑 *Stopping ${stoppedCount} task(s)...*`, fromChatId);
                         saveTasks();
                     } else if (arg) {
                         let found = false;
@@ -2494,22 +2494,22 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             }
                         });
                         if (found) {
-                            await sendTelegram(`ðŸ›‘ Stop requested for tasks matching: *${arg}*`, fromChatId);
+                            await sendTelegram(`🛑 Stop requested for tasks matching: *${arg}*`, fromChatId);
                             saveTasks();
                         }
-                        else await sendTelegram(`âš ï¸ No active task found for: *${arg}*`, fromChatId);
+                        else await sendTelegram(`⚠️ No active task found for: *${arg}*`, fromChatId);
                     } else {
                         // Stop the most recent one for this user
                         const lastId = userTasks[userTasks.length - 1][0];
                         const task = activeTasks.get(lastId);
                         task.stopRequested = true;
-                        await sendTelegram(`ðŸ›‘ Stopping most recent task: *${task.keyword}*`, fromChatId);
+                        await sendTelegram(`🛑 Stopping most recent task: *${task.keyword}*`, fromChatId);
                         saveTasks();
                     }
                     continue;
                 }
 
-                // ðŸ‘‘ ADMIN COMMANDS
+                // 👑 ADMIN COMMANDS
                 const superAdminChatIdForAdmin = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
                 if (fromChatId === ADMIN_CHAT_ID || fromChatId === '8581009274' || fromChatId === superAdminChatIdForAdmin) {
 
@@ -2519,7 +2519,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         const keywordArg = args.slice(1).join(' ').toLowerCase();
 
                         if (!targetId) {
-                            await sendTelegram(`âš ï¸ Please provide a user ID. Example: \`!stopuser 123456789 [keyword]\``, fromChatId);
+                            await sendTelegram(`⚠️ Please provide a user ID. Example: \`!stopuser 123456789 [keyword]\``, fromChatId);
                             continue;
                         }
 
@@ -2535,16 +2535,16 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
 
                         if (stoppedCount > 0) {
                             if (keywordArg) {
-                                await sendTelegram(`âœ… Stopped ${stoppedCount} task(s) matching *${keywordArg}* for user \`${targetId}\`.`, fromChatId);
+                                await sendTelegram(`✅ Stopped ${stoppedCount} task(s) matching *${keywordArg}* for user \`${targetId}\`.`, fromChatId);
                             } else {
-                                await sendTelegram(`âœ… Stopped ${stoppedCount} task(s) for user \`${targetId}\`.`, fromChatId);
+                                await sendTelegram(`✅ Stopped ${stoppedCount} task(s) for user \`${targetId}\`.`, fromChatId);
                             }
                             saveTasks();
                         } else {
                             if (keywordArg) {
-                                await sendTelegram(`âš ï¸ No active tasks matching *${keywordArg}* found for user \`${targetId}\`.`, fromChatId);
+                                await sendTelegram(`⚠️ No active tasks matching *${keywordArg}* found for user \`${targetId}\`.`, fromChatId);
                             } else {
-                                await sendTelegram(`âš ï¸ No active tasks found for user \`${targetId}\`.`, fromChatId);
+                                await sendTelegram(`⚠️ No active tasks found for user \`${targetId}\`.`, fromChatId);
                             }
                         }
                         continue;
@@ -2556,16 +2556,16 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         taskIdCounter = 0;
                         saveTasks();
                         clearPersistedTasks();
-                        await sendTelegram(`ðŸ—‘ï¸ *All tasks have been instantly cleared* from memory, the local file, and the Gist.\nThe task queue is completely empty.`, fromChatId);
+                        await sendTelegram(`🗑️ *All tasks have been instantly cleared* from memory, the local file, and the Gist.\nThe task queue is completely empty.`, fromChatId);
                         continue;
                     }
 
                     if (text === '!listusers') {
-                        let list = `ðŸ‘¥ *Authorized Users*\n\n`;
+                        let list = `👥 *Authorized Users*\n\n`;
                         for (const [id, config] of Object.entries(ACCOUNTS)) {
-                            const status = USER_SESSIONS.has(id) ? 'ðŸŸ¢ Online' : 'ðŸ”´ Offline';
+                            const status = USER_SESSIONS.has(id) ? '🟢 Online' : '🔴 Offline';
                             const blockStatus = blockedUsers.has(id) ? ' [BLOCKED]' : '';
-                            list += `â€¢ *${config.name}* (\`${id}\`)${blockStatus}\n  â”” User: ${config.user} | ${status}\n\n`;
+                            list += `• *${config.name}* (\`${id}\`)${blockStatus}\n  └ User: ${config.user} | ${status}\n\n`;
                         }
                         await sendTelegram(list, ADMIN_CHAT_ID);
                         continue;
@@ -2574,13 +2574,13 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     if (text.startsWith('!block ')) {
                         const targetId = text.substring(7).trim();
                         if (!targetId || !ACCOUNTS[targetId]) {
-                            await sendTelegram(`âš ï¸ Invalid user ID or user not found.`, fromChatId);
+                            await sendTelegram(`⚠️ Invalid user ID or user not found.`, fromChatId);
                         } else if (targetId === ADMIN_CHAT_ID) {
-                            await sendTelegram(`âš ï¸ Cannot block the admin.`, fromChatId);
+                            await sendTelegram(`⚠️ Cannot block the admin.`, fromChatId);
                         } else {
                             blockedUsers.add(targetId);
                             saveBlockedUsers();
-                            await sendTelegram(`ðŸš« User \`${targetId}\` (*${ACCOUNTS[targetId].name}*) has been blocked.`, fromChatId);
+                            await sendTelegram(`🚫 User \`${targetId}\` (*${ACCOUNTS[targetId].name}*) has been blocked.`, fromChatId);
                         }
                         continue;
                     }
@@ -2588,13 +2588,13 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     if (text.startsWith('!unblock ')) {
                         const targetId = text.substring(9).trim();
                         if (!targetId) {
-                            await sendTelegram(`âš ï¸ Please provide a user ID.`, fromChatId);
+                            await sendTelegram(`⚠️ Please provide a user ID.`, fromChatId);
                         } else if (blockedUsers.has(targetId)) {
                             blockedUsers.delete(targetId);
                             saveBlockedUsers();
-                            await sendTelegram(`âœ… User \`${targetId}\` has been unblocked.`, fromChatId);
+                            await sendTelegram(`✅ User \`${targetId}\` has been unblocked.`, fromChatId);
                         } else {
-                            await sendTelegram(`âš ï¸ User \`${targetId}\` is not blocked.`, fromChatId);
+                            await sendTelegram(`⚠️ User \`${targetId}\` is not blocked.`, fromChatId);
                         }
                         continue;
                     }
@@ -2610,7 +2610,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             const targetName = parts.length > 4 ? parts.slice(4).join(' ') : `User ${targetUser}`;
                             ACCOUNTS[targetChatId] = { user: targetUser, pass: targetPass, name: targetName };
                             await syncAccountsToGist();
-                            await sendTelegram(`âœ… Added user ${targetUser} (Name: ${targetName}) with Chat ID ${targetChatId} and saved to Gist.`, fromChatId);
+                            await sendTelegram(`✅ Added user ${targetUser} (Name: ${targetName}) with Chat ID ${targetChatId} and saved to Gist.`, fromChatId);
                         }
                         continue;
                     }
@@ -2625,9 +2625,9 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             if (ACCOUNTS[targetChatId]) {
                                 ACCOUNTS[targetChatId].name = targetName;
                                 await syncAccountsToGist();
-                                await sendTelegram(`âœ… Updated name for Chat ID ${targetChatId} to: ${targetName}`, fromChatId);
+                                await sendTelegram(`✅ Updated name for Chat ID ${targetChatId} to: ${targetName}`, fromChatId);
                             } else {
-                                await sendTelegram(`âš ï¸ User with Chat ID ${targetChatId} not found.`, fromChatId);
+                                await sendTelegram(`⚠️ User with Chat ID ${targetChatId} not found.`, fromChatId);
                             }
                         }
                         continue;
@@ -2640,17 +2640,17 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         } else if (ACCOUNTS[targetChatId]) {
                             delete ACCOUNTS[targetChatId];
                             await syncAccountsToGist();
-                            await sendTelegram(`âœ… Removed user with Chat ID ${targetChatId} and synced to Gist.`, fromChatId);
+                            await sendTelegram(`✅ Removed user with Chat ID ${targetChatId} and synced to Gist.`, fromChatId);
                         } else {
-                            await sendTelegram(`âš ï¸ Chat ID ${targetChatId} not found.`, fromChatId);
+                            await sendTelegram(`⚠️ Chat ID ${targetChatId} not found.`, fromChatId);
                         }
                         continue;
                     }
 
                     if (text === '!listusers') {
-                        let msgStr = 'ðŸ‘¥ *Registered Users:*\n\n';
+                        let msgStr = '👥 *Registered Users:*\n\n';
                         for (const [uid, udata] of Object.entries(ACCOUNTS)) {
-                            msgStr += `â€¢ ID: \`${uid}\` | User: ${udata.user}\n`;
+                            msgStr += `• ID: \`${uid}\` | User: ${udata.user}\n`;
                         }
                         await sendTelegram(msgStr, fromChatId);
                         continue;
@@ -2659,7 +2659,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 if (text === '!timetable' || text === '!tt') {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
-                    await sendTelegram(`â³ Fetching your timetable, please wait...`, fromChatId);
+                    await sendTelegram(`⏳ Fetching your timetable, please wait...`, fromChatId);
                     try {
                         const slots = await fetchTimetable(session.context, session.config);
                         const msg = formatTimetable(slots, session.config.name);
@@ -2667,7 +2667,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         // SYNC to GIST for the Pod to read silently
                         syncFileToGist('saveetha_timetable.txt', msg);
                     } catch (err) {
-                        await sendTelegram(`âŒ Failed to fetch timetable: ${err.message}`, fromChatId);
+                        await sendTelegram(`❌ Failed to fetch timetable: ${err.message}`, fromChatId);
                     }
                     continue;
                 }
@@ -2676,12 +2676,12 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
                     const args = text.split(' ').slice(1).join(' ').trim();
-                    await sendTelegram(`â³ Fetching your workflow requests, please wait...`, fromChatId);
+                    await sendTelegram(`⏳ Fetching your workflow requests, please wait...`, fromChatId);
                     try {
                         const msg = await fetchWorkflowRequests(session.context, session.config, args);
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
-                        await sendTelegram(`âŒ Failed to fetch workflow requests: ${err.message}`, fromChatId);
+                        await sendTelegram(`❌ Failed to fetch workflow requests: ${err.message}`, fromChatId);
                     }
                     continue;
                 }
@@ -2689,16 +2689,16 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 if (text === '!attendance' || text === '!att') {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
-                    await sendTelegram(`â³ Fetching your attendance, please wait...`, fromChatId);
+                    await sendTelegram(`⏳ Fetching your attendance, please wait...`, fromChatId);
                     try {
                         const data = await fetchAttendance(session.context, session.config);
                         let msg = formatAttendance(data, session.config.name);
-                        msg += `\n\n_ðŸ’¡ Tip: Type_ \`!bunk\` _to calculate how many classes you can skip while maintaining 80%!_`;
+                        msg += `\n\n_💡 Tip: Type_ \`!bunk\` _to calculate how many classes you can skip while maintaining 80%!_`;
                         await sendTelegram(msg, fromChatId);
                         // SYNC to GIST for the Pod to read silently
                         syncFileToGist('saveetha_attendance.txt', formatAttendance(data, session.config.name));
                     } catch (err) {
-                        await sendTelegram(`âŒ Failed to fetch attendance: ${err.message}`, fromChatId);
+                        await sendTelegram(`❌ Failed to fetch attendance: ${err.message}`, fromChatId);
                     }
                     continue;
                 }
@@ -2706,22 +2706,22 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 if (text === '!bunk') {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
-                    await sendTelegram(`â³ Fetching your subjects...`, fromChatId);
+                    await sendTelegram(`⏳ Fetching your subjects...`, fromChatId);
                     try {
                         const data = await fetchAttendance(session.context, session.config);
                         if (!data || data.length === 0) {
-                            await sendTelegram(`âš ï¸ No subjects found.`, fromChatId);
+                            await sendTelegram(`⚠️ No subjects found.`, fromChatId);
                             continue;
                         }
 
-                        let msg = `ðŸ§® *Select a Subject to Calculate Bunk Stats (80% Limit)*\n\n`;
+                        let msg = `🧮 *Select a Subject to Calculate Bunk Stats (80% Limit)*\n\n`;
                         data.forEach((item, i) => {
-                            msg += `ðŸ”¹ ${item.subject.replace(/([_*`\[])/g, '\\$1')}\n`;
+                            msg += `🔹 ${item.subject.replace(/([_*`\[])/g, '\\$1')}\n`;
                         });
                         msg += `\n_Reply with_ \`!bunk <subject>\` _(e.g., !bunk calculus) to calculate!_`;
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
-                        await sendTelegram(`âŒ Error: ${err.message}`, fromChatId);
+                        await sendTelegram(`❌ Error: ${err.message}`, fromChatId);
                     }
                     continue;
                 }
@@ -2732,11 +2732,11 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
 
                     const keyword = text.substring(6).trim().toLowerCase();
                     if (!keyword) {
-                        await sendTelegram(`âŒ Please provide a keyword. Example: \`!bunk calculus\``, fromChatId);
+                        await sendTelegram(`❌ Please provide a keyword. Example: \`!bunk calculus\``, fromChatId);
                         continue;
                     }
 
-                    await sendTelegram(`ðŸ” Searching for subject matching "${keyword}"...`, fromChatId);
+                    await sendTelegram(`🔍 Searching for subject matching "${keyword}"...`, fromChatId);
 
                     try {
                         const allSubjects = await fetchAttendance(session.context, session.config);
@@ -2756,18 +2756,18 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         }
 
                         if (matchedIndex === -1) {
-                            await sendTelegram(`âŒ Could not find any subject matching "${keyword}". Try using a word from the subject title.`, fromChatId);
+                            await sendTelegram(`❌ Could not find any subject matching "${keyword}". Try using a word from the subject title.`, fromChatId);
                             continue;
                         }
 
                         const matchedSubject = allSubjects[matchedIndex].subject;
-                        await sendTelegram(`ðŸ§® Calculating bunk stats for *${matchedSubject}*... Please wait...`, fromChatId);
+                        await sendTelegram(`🧮 Calculating bunk stats for *${matchedSubject}*... Please wait...`, fromChatId);
 
                         const data = await fetchBunkStatsForSubject(session.context, session.config, matchedSubject);
                         const msg = formatBunkStats(data, session.config.name);
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
-                        await sendTelegram(`âŒ Failed to calculate bunk stats: ${err.message}`, fromChatId);
+                        await sendTelegram(`❌ Failed to calculate bunk stats: ${err.message}`, fromChatId);
                     }
                     continue;
                 }
@@ -2775,23 +2775,23 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 if (text.toLowerCase().startsWith('!adminnotify')) {
                     const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
                     if (!superAdminChatId || String(fromChatId) !== String(superAdminChatId)) {
-                        await sendTelegram(`âŒ You are not authorized to use this command.`, fromChatId);
+                        await sendTelegram(`❌ You are not authorized to use this command.`, fromChatId);
                         continue;
                     }
                     const param = text.substring(12).trim().toLowerCase();
                     if (param === 'on') {
                         superAdminNotificationsEnabled = true;
-                        await sendTelegram(`âœ… Super admin notifications turned ON.`, fromChatId);
+                        await sendTelegram(`✅ Super admin notifications turned ON.`, fromChatId);
                     } else if (param === 'off') {
                         superAdminNotificationsEnabled = false;
-                        await sendTelegram(`âŒ Super admin notifications turned OFF.`, fromChatId);
+                        await sendTelegram(`❌ Super admin notifications turned OFF.`, fromChatId);
                     } else {
-                        await sendTelegram(`â„¹ï¸ Usage: \`!adminnotify on\` or \`!adminnotify off\`\nCurrent Status: ${superAdminNotificationsEnabled ? 'ON' : 'OFF'}`, fromChatId);
+                        await sendTelegram(`ℹ️ Usage: \`!adminnotify on\` or \`!adminnotify off\`\nCurrent Status: ${superAdminNotificationsEnabled ? 'ON' : 'OFF'}`, fromChatId);
                     }
                     continue;
                 }
 
-                // â”€â”€ !book / !unbook / !scan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                // ── !book / !unbook / !scan ──────────────────────────────
                 const isUnbook = text.toLowerCase().startsWith('!unbook');
                 const isScan = text.toLowerCase().startsWith('!scan');
                 if (!text.toLowerCase().startsWith('!book') && !isUnbook && !isScan) continue;
@@ -2821,7 +2821,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 if (modifiers.includes('#')) startTime = modifiers.split('#')[1].split(/[@~$]/)[0].trim();
 
                 if (!keyword) {
-                    await sendTelegram(`âš ï¸ Please provide a keyword. Example: \`!book CAT\``, fromChatId);
+                    await sendTelegram(`⚠️ Please provide a keyword. Example: \`!book CAT\``, fromChatId);
                     continue;
                 }
 
@@ -2841,7 +2841,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
                 if (superAdminNotificationsEnabled && superAdminChatId && String(fromChatId) !== String(superAdminChatId)) {
                     const userName = (ACCOUNTS[fromChatId] && ACCOUNTS[fromChatId].name) ? ACCOUNTS[fromChatId].name : fromChatId;
-                    sendTelegram(`ðŸ”” *Scan Started*\nUser: ${userName}\nTask: ${isScan ? '!scan' : '!book'} ${keyword}${targetTime ? ` @ ${targetTime}` : ''}`, superAdminChatId);
+                    sendTelegram(`🔔 *Scan Started*\nUser: ${userName}\nTask: ${isScan ? '!scan' : '!book'} ${keyword}${targetTime ? ` @ ${targetTime}` : ''}`, superAdminChatId);
                 }
 
                 startTaskLoop(taskId, task);
@@ -2862,7 +2862,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 const delayMs = getDelayMsUntil(startTime);
                 if (delayMs > 0) {
                     const delayMins = Math.round(delayMs / 60000);
-                    await sendTelegram(`â±ï¸ *Timer Active [${keyword}]*\nWaiting ${delayMins} min(s) until ${startTime}.\n_You can still start other bookings!_`, fromChatId);
+                    await sendTelegram(`⏱️ *Timer Active [${keyword}]*\nWaiting ${delayMins} min(s) until ${startTime}.\n_You can still start other bookings!_`, fromChatId);
                     task.phase = `Waiting until ${startTime}`;
                     saveTasks();
                     const endTime = Date.now() + delayMs;
@@ -2876,17 +2876,17 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
             }
 
             if (task.stopRequested) {
-                await sendTelegram(`ðŸ›‘ Task *${keyword}* was cancelled.`, fromChatId);
+                await sendTelegram(`🛑 Task *${keyword}* was cancelled.`, fromChatId);
                 return;
             }
 
             // Get user's pre-authenticated session
             let session = USER_SESSIONS.get(fromChatId);
             if (!session) {
-                await sendTelegram(`â³ Your session was not found (bot may have restarted). Attempting to log you in now, please wait...`, fromChatId);
+                await sendTelegram(`⏳ Your session was not found (bot may have restarted). Attempting to log you in now, please wait...`, fromChatId);
                 const success = await spawnUserSession(browser, fromChatId, userConfig);
                 if (!success) {
-                    await sendTelegram(`âŒ Failed to initialize session. The portal might be down. Please try again later.`, fromChatId);
+                    await sendTelegram(`❌ Failed to initialize session. The portal might be down. Please try again later.`, fromChatId);
                     return;
                 }
                 session = USER_SESSIONS.get(fromChatId);
@@ -2913,7 +2913,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     task.phase = `Scanning (Check #${scanCount})`;
                     // Removed saveTasks() here to avoid GitHub API 403 secondary rate limits.
                     if (scanCount === 1) {
-                        await sendTelegram(`ðŸ”Ž *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 5 seconds... Use \`!stop\` to cancel.`, fromChatId);
+                        await sendTelegram(`🔎 *Scanning Mode Active* for *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nChecking every 5 seconds... Use \`!stop\` to cancel.`, fromChatId);
                     }
 
                     try {
@@ -2932,7 +2932,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     } catch (scanErr) {
                         console.error(`[Bot] Scan #${scanCount} error for "${keyword}":`, scanErr.message);
                         if (scanCount === 1) {
-                            await sendTelegram(`âŒ Error during initial scan: ${scanErr.message}`, fromChatId);
+                            await sendTelegram(`❌ Error during initial scan: ${scanErr.message}`, fromChatId);
                         }
                     }
 
@@ -2946,17 +2946,17 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
             } else if (isUnbook) {
                 task.phase = 'Cancelling slot';
                 saveTasks();
-                await sendTelegram(`â³ Processing Cancellation for *${keyword}*...`, fromChatId);
+                await sendTelegram(`⏳ Processing Cancellation for *${keyword}*...`, fromChatId);
                 await runUnbookingOnPage(taskPage, keyword, targetTime, fromChatId);
             } else {
                 task.phase = 'Booking on portal';
                 saveTasks();
-                await sendTelegram(`ðŸš€ *Booking started!* (${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\nðŸŽ¯ Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
+                await sendTelegram(`🚀 *Booking started!* (${isUsingPersistent ? 'Hot Tab' : 'New Tab'})\n🎯 Slot: *${keyword}*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}\nPlease wait...`, fromChatId);
                 await runBookingOnPage(taskPage, keyword, targetTime, targetVenue, targetDate, false, fromChatId);
             }
         } catch (err) {
             console.error(`[Bot] Task ${taskId} Error:`, err.message);
-            await sendTelegram(`âŒ Error [${keyword}]: ${err.message}`, fromChatId);
+            await sendTelegram(`❌ Error [${keyword}]: ${err.message}`, fromChatId);
         } finally {
             const session = USER_SESSIONS.get(fromChatId);
             if (taskPage) {
@@ -2974,6 +2974,6 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
 
 main().catch(async (err) => {
     console.error('[Bot] Fatal error:', err);
-    await sendTelegram(`âŒ *Bot crashed:* ${err.message}`).catch(() => { });
+    await sendTelegram(`❌ *Bot crashed:* ${err.message}`).catch(() => { });
     process.exit(1);
-});
+});
