@@ -169,7 +169,7 @@ async function loadTasksFromGist() {
             const data = await new Promise((resolve, reject) => {
                 const req = https.request({
                     hostname: 'api.github.com',
-                    path: `/gists/${GIST_ID}`,
+                    path: `/gists/${GIST_ID}?t=${Date.now()}`,
                     method: 'GET',
                     headers: {
                         'Authorization': `Bearer ${GIST_TOKEN}`,
@@ -250,7 +250,7 @@ async function initAccounts() {
             const data = await new Promise((resolve, reject) => {
                 const req = https.request({
                     hostname: 'api.github.com',
-                    path: `/gists/${GIST_ID}`,
+                    path: `/gists/${GIST_ID}?t=${Date.now()}`,
                     method: 'GET',
                     headers: {
                         'Authorization': `Bearer ${GIST_TOKEN}`,
