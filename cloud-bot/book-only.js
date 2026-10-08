@@ -2629,6 +2629,14 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             blockedUsers.add(targetId);
                             saveBlockedUsers();
                             await sendTelegram(`🚫 User \`${targetId}\` (*${ACCOUNTS[targetId].name}*) has been blocked.`, fromChatId);
+                            
+                            // Close their active session
+                            if (USER_SESSIONS.has(targetId)) {
+                                const session = USER_SESSIONS.get(targetId);
+                                if (session.persistentPage) await session.persistentPage.close().catch(() => {});
+                                if (session.context) await session.context.close().catch(() => {});
+                                USER_SESSIONS.delete(targetId);
+                            }
                         }
                         continue;
                     }
@@ -2641,6 +2649,15 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             blockedUsers.delete(targetId);
                             saveBlockedUsers();
                             await sendTelegram(`✅ User \`${targetId}\` has been unblocked.`, fromChatId);
+                            
+                            // Immediately log them in if authorized
+                            if (ACCOUNTS[targetId] && !USER_SESSIONS.has(targetId)) {
+                                await sendTelegram(`⏳ Spawning session for \`${targetId}\`...`, fromChatId);
+                                spawnUserSession(browser, targetId, ACCOUNTS[targetId]).then(success => {
+                                    if(success) sendTelegram(`✅ Session ready for \`${targetId}\`.`, fromChatId);
+                                    else sendTelegram(`❌ Failed to start session for \`${targetId}\`.`, fromChatId);
+                                });
+                            }
                         } else {
                             await sendTelegram(`⚠️ User \`${targetId}\` is not blocked.`, fromChatId);
                         }
@@ -2659,6 +2676,14 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             ACCOUNTS[targetChatId] = { user: targetUser, pass: targetPass, name: targetName };
                             await syncAccountsToGist();
                             await sendTelegram(`✅ Added user ${targetUser} (Name: ${targetName}) with Chat ID ${targetChatId} and saved to Gist.`, fromChatId);
+                            
+                            if (!USER_SESSIONS.has(targetChatId) && !blockedUsers.has(targetChatId)) {
+                                await sendTelegram(`⏳ Spawning session for \`${targetChatId}\`...`, fromChatId);
+                                spawnUserSession(browser, targetChatId, ACCOUNTS[targetChatId]).then(success => {
+                                    if(success) sendTelegram(`✅ Session ready for \`${targetChatId}\`.`, fromChatId);
+                                    else sendTelegram(`❌ Failed to start session for \`${targetChatId}\`.`, fromChatId);
+                                });
+                            }
                         }
                         continue;
                     }
