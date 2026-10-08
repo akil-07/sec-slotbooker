@@ -58,6 +58,48 @@ function saveBlockedUsers() {
     } catch (e) {
         console.error('[Persist] Failed to save blocked users:', e.message);
     }
+    syncBlockedToGist().catch(e => console.error(e));
+}
+
+async function syncBlockedToGist() {
+    if (!GIST_TOKEN || !GIST_ID) return;
+    try {
+        const https = require('https');
+        const body = JSON.stringify({
+            files: {
+                'saveetha_blocked.json': {
+                    content: JSON.stringify(Array.from(blockedUsers), null, 2)
+                }
+            }
+        });
+        await new Promise((resolve, reject) => {
+            const req = https.request({
+                hostname: 'api.github.com',
+                path: `/gists/${GIST_ID}`,
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${GIST_TOKEN}`,
+                    'User-Agent': 'saveetha-bot',
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                    'Accept': 'application/vnd.github.v3+json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                }
+            }, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+                    else reject(new Error(`Gist save failed: ${res.statusCode}`));
+                });
+            });
+            req.on('error', reject);
+            req.write(body);
+            req.end();
+        });
+        console.log('[Persist] Synced blocked users to Gist.');
+    } catch (e) {
+        console.error('[Persist] Failed to sync blocked users:', e.message);
+    }
 }
 
 // Save tasks to local file AND to GitHub Gist (so they survive runner restarts)
@@ -271,6 +313,11 @@ async function initAccounts() {
                 const gistAccounts = JSON.parse(gist.files['saveetha_accounts.json'].content);
                 Object.assign(ACCOUNTS, gistAccounts);
                 console.log('[Bot] Loaded Gist accounts:', Object.keys(gistAccounts).length);
+            }
+            if (gist.files && gist.files['saveetha_blocked.json'] && gist.files['saveetha_blocked.json'].content) {
+                const gistBlocked = JSON.parse(gist.files['saveetha_blocked.json'].content);
+                gistBlocked.forEach(id => blockedUsers.add(id));
+                console.log('[Bot] Loaded Gist blocked users:', gistBlocked.length);
             }
         }
     } catch (e) {
