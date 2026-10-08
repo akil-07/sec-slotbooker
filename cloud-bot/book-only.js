@@ -2104,7 +2104,8 @@ async function main() {
     await initAccounts();
 
     // Set up accounts non-blocking (in the background)
-    const accountEntries = Object.entries(ACCOUNTS);
+    // Filter out blocked users from the initial startup sequence
+    const accountEntries = Object.entries(ACCOUNTS).filter(([chatId]) => !blockedUsers.has(chatId));
     accountEntries.forEach(([chatId, config]) => {
         if (!config.name) config.name = `User ${config.user}`;
     });
