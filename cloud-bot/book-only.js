@@ -1948,7 +1948,7 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
 
         if (!result) {
             console.error(`[Bunk] Failed to parse. Dump: present=${presentHours}, conducted=${conductedHours}, total=${totalSessions}, upcoming=${upcomingSessions}`);
-            throw new Error(`Could not find enough session data. (Present: ${presentHours}, Conducted: ${conductedHours}, Total: ${totalSessions})`);
+            throw new Error(`DEBUG_V2: Could not find enough session data. (Present: ${presentHours}, Conducted: ${conductedHours}, Total: ${totalSessions})`);
         }
 
         return [result]; // wrap in array for formatter
