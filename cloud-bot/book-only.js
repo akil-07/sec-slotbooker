@@ -1903,6 +1903,12 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
             upcomingSessions = Math.max(0, totalSessions - Math.round(conductedHours));
         }
 
+        // Specific fix: If UI says 0 conducted and 0 upcoming but total is known, it means classes haven't been scheduled yet.
+        // So all total sessions are actually upcoming.
+        if (upcomingSessions === 0 && conductedHours === 0 && totalSessions > 0) {
+            upcomingSessions = totalSessions;
+        }
+
         // If upcomingSessions is still null, default to 0
         if (upcomingSessions === null) {
             upcomingSessions = 0;
