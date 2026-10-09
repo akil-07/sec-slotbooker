@@ -33,6 +33,7 @@ let ACCOUNTS = {};
 let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, isBusy }
 let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
 let superAdminNotificationsEnabled = true; // Added for super admin notifications toggle
+const pendingOtpRequests = new Map(); // chatId -> callback function
 
 // ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
 const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
@@ -1034,6 +1035,127 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
         await sendTelegramPhoto(tmpPath, `🛑 *Slot Cancelled Successfully!*\n\n🎯 Slot: ${targetKeyword}\n\nCancellation complete.`, chatId);
         try { fs.unlinkSync(tmpPath); } catch (_) { }
     }
+}
+
+// ─── OTP Attendance Automation ────────────────────────────────────────────────
+
+async function startAttendanceMonitor(context, config, targetKeyword, startTimeStr, endTimeStr, chatId) {
+    const page = await context.newPage();
+    try {
+        await sendTelegram(`🚀 *Starting Attendance Monitor* for *${targetKeyword}*\nMonitoring from 10 mins before class to 10 mins after.`, chatId);
+        
+        await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        if (page.url().includes('/login')) {
+            await doLogin(page, config.user, config.pass);
+            await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        }
+
+        let classOpened = false;
+        for(let i=0; i < 240; i++) { // 240 * 5s = 20 mins
+            classOpened = await page.evaluate(({ kw }) => {
+                const cards = Array.from(document.querySelectorAll('div, li, section, article, tr'));
+                const classCards = cards.filter(el => /SLOT\s*:/i.test(el.innerText || ''));
+                for (const card of classCards) {
+                    if (card.innerText.toLowerCase().includes(kw.toLowerCase())) {
+                        const viewBtn = Array.from(card.querySelectorAll('button, a')).find(b => (b.innerText || '').toUpperCase().includes('VIEW ATTENDANCE'));
+                        if (viewBtn) {
+                            viewBtn.click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }, { kw: targetKeyword });
+
+            if (classOpened) break;
+            await page.waitForTimeout(5000);
+        }
+
+        if (!classOpened) {
+            await sendTelegram(`⚠️ Could not find "VIEW ATTENDANCE" button for *${targetKeyword}* within the 20-minute window.`, chatId);
+            return;
+        }
+
+        await page.waitForTimeout(3000);
+
+        // --- IN OTP POLLING ---
+        await sendTelegram(`⏳ Inside the subject page. Scanning for *IN OTP* every 5 seconds...`, chatId);
+        const inSuccess = await pollAndSubmitOtp(page, 'IN OTP', chatId);
+        if (inSuccess) {
+            await sendTelegram(`✅ IN OTP submitted! Will wait here until 10 minutes before class ends to scan for OUT OTP.`, chatId);
+        } else {
+            await sendTelegram(`❌ Timed out waiting for IN OTP.`, chatId);
+            return;
+        }
+
+        const delayMs = getDelayMsUntil(endTimeStr) - (10 * 60 * 1000); 
+        if (delayMs > 0) {
+            await page.waitForTimeout(delayMs);
+        }
+
+        // --- OUT OTP POLLING ---
+        await sendTelegram(`⏳ Scanning for *OUT OTP*...`, chatId);
+        const outSuccess = await pollAndSubmitOtp(page, 'OUT OTP', chatId);
+        if (outSuccess) {
+            await sendTelegram(`✅ OUT OTP submitted! Attendance complete for ${targetKeyword} 🎉`, chatId);
+        } else {
+            await sendTelegram(`❌ Timed out waiting for OUT OTP.`, chatId);
+        }
+
+    } catch (e) {
+        console.error('[AttendanceOTP] Error:', e);
+        await sendTelegram(`⚠️ Error in attendance monitor: ${e.message}`, chatId);
+    } finally {
+        await page.close().catch(() => {});
+    }
+}
+
+async function pollAndSubmitOtp(page, otpType, chatId) {
+    const maxRetries = 120; // 10 minutes window
+    
+    for (let i = 0; i < maxRetries; i++) {
+        const hasInput = await page.evaluate((type) => {
+            const sections = Array.from(document.querySelectorAll('div, section, .card'));
+            const targetSection = sections.find(s => (s.innerText || '').includes(type) && s.innerText.includes('OTP'));
+            if (targetSection) {
+                const input = targetSection.querySelector('input[type="text"], input[type="number"], input:not([type])');
+                if (input && !input.disabled) {
+                    input.setAttribute('data-saveetha-otp', type);
+                    return true;
+                }
+            }
+            return false;
+        }, otpType);
+
+        if (hasInput) {
+            await sendTelegram(`🚨 *${otpType} box is OPEN!* Please type the OTP below:`, chatId);
+            
+            const userOtp = await new Promise(resolve => {
+                const timeout = setTimeout(() => resolve(null), 10 * 60 * 1000);
+                pendingOtpRequests.set(chatId, (code) => {
+                    clearTimeout(timeout);
+                    resolve(code.trim());
+                });
+            });
+            
+            if (userOtp) {
+                const otpInput = page.locator(`[data-saveetha-otp="${otpType}"]`);
+                await otpInput.fill(userOtp);
+                await page.keyboard.press('Enter');
+                await page.waitForTimeout(2000);
+                
+                const tmpPath = require('path').join(__dirname, `_otp_${Date.now()}.png`);
+                await page.screenshot({ path: tmpPath });
+                await sendTelegramPhoto(tmpPath, `✅ System processed ${otpType}: ${userOtp}`, chatId);
+                try { require('fs').unlinkSync(tmpPath); } catch (_) {}
+                
+                return true;
+            }
+            return false; 
+        }
+        await page.waitForTimeout(5000); 
+    }
+    return false;
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
@@ -2078,6 +2200,24 @@ function scheduleSlotReminders(chatId, session, slots) {
             } catch (err) { }
         }, delay);
 
+        const attendanceDelay = slotIST.getTime() - 10 * 60 * 1000 - nowIST.getTime();
+        if (attendanceDelay > 0) {
+            setTimeout(() => {
+                const h = s.hour % 12 || 12;
+                const period = s.hour < 12 ? 'AM' : 'PM';
+                const minStr = String(s.minute).padStart(2, '0');
+                const startTimeStr = `${h}:${minStr} ${period}`;
+                
+                const endIST = new Date(slotIST.getTime() + 90 * 60 * 1000);
+                const eh = endIST.getUTCHours() % 12 || 12;
+                const eperiod = endIST.getUTCHours() < 12 ? 'AM' : 'PM';
+                const eminStr = String(endIST.getUTCMinutes()).padStart(2, '0');
+                const endTimeStr = `${eh}:${eminStr} ${eperiod}`;
+                
+                startAttendanceMonitor(session.context, session.config, s.slot, startTimeStr, endTimeStr, chatId);
+            }, attendanceDelay);
+        }
+
         activeReminders.set(reminderKey, timeoutId);
     }
 }
@@ -2354,6 +2494,14 @@ async function main() {
                 }
 
                 let text = msg.text.trim().toLowerCase();
+
+                // ── OTP Intercept ───────────────────────────────────────────
+                if (pendingOtpRequests.has(fromChatId)) {
+                    const callback = pendingOtpRequests.get(fromChatId);
+                    pendingOtpRequests.delete(fromChatId);
+                    callback(msg.text.trim());
+                    continue;
+                }
 
                 // ── AI Natural Language Parsing ──────────────────────────────
                 if (!text.startsWith('!')) {
