@@ -1892,11 +1892,18 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
             upcomingSessions = 0;
         }
 
+        // Fallback: If class hasn't started (no present/conducted), but we have total sessions.
+        if (presentHours === null && conductedHours === null && totalSessions !== null) {
+            presentHours = 0;
+            conductedHours = 0;
+            if (upcomingSessions === 0) upcomingSessions = totalSessions;
+        }
+
         let result = null;
         if (presentHours !== null && conductedHours !== null && totalSessions !== null) {
             const conductedSessions = totalSessions - upcomingSessions;
-            // Allow calculation if class has ended (conductedSessions === 0 but upcomingSessions === 0)
-            if (conductedSessions > 0 || (conductedSessions === 0 && upcomingSessions === 0)) {
+            // Allow calculation even if class hasn't started or has ended
+            if (conductedSessions >= 0) {
                 // Determine effective hours per session, default to 1 if we can't determine
                 const effectiveConducted = conductedSessions > 0 ? conductedSessions : Math.round(conductedHours);
                 const hoursPerSession = effectiveConducted > 0 ? conductedHours / effectiveConducted : 1;

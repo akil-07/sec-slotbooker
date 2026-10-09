@@ -5,6 +5,7 @@ const bulkInput = document.getElementById('bulkInput');
 const statusText = document.getElementById('statusText');
 const statusMsg = document.getElementById('statusMsg');
 const targetList = document.getElementById('targetList');
+const bulkTargetList = document.getElementById('bulkTargetList');
 
 function renderTags() {
   const text = courseInput.value;
@@ -19,6 +20,29 @@ function renderTags() {
     span.style.animationDelay = `${i * 0.05}s`; // Staggered animation
     targetList.appendChild(span);
   });
+
+  if (bulkTargetList && bulkInput) {
+    const bulkText = bulkInput.value;
+    const lines = bulkText.split('\n');
+    bulkTargetList.innerHTML = '';
+    
+    let tagIndex = 0;
+    lines.forEach(line => {
+      if (!line.trim()) return;
+      const parts = line.split('|');
+      let displayStr = parts[0].trim();
+      if (parts.length >= 2 && parts[1].trim()) {
+        displayStr += ` (${parts[1].trim()})`;
+      }
+      
+      const span = document.createElement('span');
+      span.className = 'target-tag';
+      span.textContent = displayStr;
+      span.style.animationDelay = `${tagIndex * 0.05}s`;
+      bulkTargetList.appendChild(span);
+      tagIndex++;
+    });
+  }
 }
 
 async function loadSettings() {
@@ -58,7 +82,12 @@ courseInput.addEventListener('input', () => {
   saveSettings();
 });
 sectionInput.addEventListener('input', saveSettings);
-if (bulkInput) bulkInput.addEventListener('input', saveSettings);
+if (bulkInput) {
+  bulkInput.addEventListener('input', () => {
+    renderTags();
+    saveSettings();
+  });
+}
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'CLICKED') {

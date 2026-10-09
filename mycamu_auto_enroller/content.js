@@ -110,14 +110,14 @@ function scanAndEnroll() {
     const validPoints = [];
 
     for (let btn of allButtons) {
-        const btnText = (btn.innerText || '').trim().toLowerCase();
-        if (btnText === 'enroll' && btn.offsetWidth > 0) {
+        const btnText = (btn.textContent || '').trim().toLowerCase();
+        if (btnText.includes('enroll')) {
 
             // Extract the "local text" (e.g., the specific row) around the button
             let localText = '';
             let p = btn.parentElement;
             for (let i = 0; i < 6 && p; i++) {
-                localText = (p.innerText || '').toLowerCase();
+                localText = (p.textContent || '').toLowerCase();
                 // If we found a chunk of text that likely represents the section row, stop
                 if (localText.length > 15) break;
                 p = p.parentElement;
@@ -130,7 +130,7 @@ function scanAndEnroll() {
             let matchedTarget = null;
 
             while (parent && depth < 15) {
-                const text = (parent.innerText || '').toLowerCase();
+                const text = (parent.textContent || '').toLowerCase();
 
                 if (text.length > 3000) break;
 
@@ -206,6 +206,7 @@ function scanAndEnroll() {
             const exactX = Math.round(rect.left + rect.width / 2);
             const exactY = Math.round(rect.top + rect.height / 2);
 
+            fakeCursor.style.transition = 'top 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), left 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s';
             fakeCursor.style.opacity = '1';
             fakeCursor.style.left = (exactX - 8) + 'px';
             fakeCursor.style.top = (exactY - 8) + 'px';
@@ -221,10 +222,24 @@ function scanAndEnroll() {
                 document.body.appendChild(ripple);
                 setTimeout(() => ripple.remove(), 500);
 
+                // Full synthetic mouse event sequence to perfectly mimic a real human click on complex websites
+                const clickEvents = ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+                clickEvents.forEach(eventType => {
+                    const event = new MouseEvent(eventType, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: exactX,
+                        clientY: exactY,
+                        buttons: 1
+                    });
+                    pt.element.dispatchEvent(event);
+                });
+
                 chrome.runtime.sendMessage({ type: 'REAL_CLICK', points: [{ x: exactX, y: exactY }] }).catch(() => { });
                 chrome.runtime.sendMessage({ type: 'CLICKED' }).catch(() => { });
 
-            }, 400);
+            }, 400); // 400ms human-like delay while gliding
         }, 50);
     } else {
         if (fakeCursor) fakeCursor.style.opacity = '0';
