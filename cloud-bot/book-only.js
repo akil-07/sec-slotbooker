@@ -1859,7 +1859,7 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         const pageText = await page.innerText('body');
 
         let presentHours = null, conductedHours = null;
-        let totalSessions = null, upcomingSessions = 0;
+        let totalSessions = null, upcomingSessions = null;
         let percent = 0;
 
         const attMatch = pageText.match(/Overall Attendance[\s\S]{0,50}?([\d.]+)%/i);
@@ -1896,7 +1896,16 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         if (presentHours === null && conductedHours === null && totalSessions !== null) {
             presentHours = 0;
             conductedHours = 0;
-            if (upcomingSessions === 0) upcomingSessions = totalSessions;
+        }
+
+        // Fallback for missing upcomingSessions when we know totalSessions and conductedHours
+        if (upcomingSessions === null && totalSessions !== null && conductedHours !== null) {
+            upcomingSessions = Math.max(0, totalSessions - Math.round(conductedHours));
+        }
+
+        // If upcomingSessions is still null, default to 0
+        if (upcomingSessions === null) {
+            upcomingSessions = 0;
         }
 
         let result = null;
