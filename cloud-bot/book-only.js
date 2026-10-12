@@ -732,20 +732,69 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
         function normalize(str) {
             if (!str) return '';
             return str.toLowerCase()
+                .replace(/([ap])\s*\.?\s*m\.?/gi, '$1m')
+                .replace(/[-_/·•]/g, ' ')
                 .replace(/[^a-z0-9\s:]/g, '')
                 .replace(/\s+/g, ' ')
                 .replace(/(\d)(am|pm)/g, '$1 $2')
                 .trim();
         }
 
-        function extractStartTime(normalizedText) {
-            const match = normalizedText.match(/\b(\d{1,2}(?::\d{2})?)\s*(am|pm)\b/);
-            if (!match) return '';
-            return match[1] + ' ' + match[2];
+        function parseMinutes(str) {
+            if (!str) return null;
+            const cleaned = str.toLowerCase()
+                .replace(/([ap])\s*\.?\s*m\.?/gi, '$1m')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const match = cleaned.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+            if (!match) return null;
+            let hour = parseInt(match[1], 10);
+            const minute = match[2] ? parseInt(match[2], 10) : 0;
+            const meridian = match[3];
+
+            if (meridian === 'pm') {
+                if (hour < 12) hour += 12;
+            } else if (meridian === 'am') {
+                if (hour === 12) hour = 0;
+            }
+            return hour * 60 + minute;
+        }
+
+        function extractSlotStartTime(fullText) {
+            const timingPortion = fullText.split(/booking\s*window|cancellation\s*ends/i)[0] || fullText;
+            const rangeMatch = timingPortion.match(/(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?|[ap]m))\s*[-–—to]+/i);
+            if (rangeMatch) return rangeMatch[1];
+            const singleMatch = timingPortion.match(/\b(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?|[ap]m))\b/i);
+            if (singleMatch) return singleMatch[1];
+            return '';
+        }
+
+        function doesTimeMatch(cardRaw, targetTimeStr) {
+            if (!targetTimeStr) return true;
+            const targetMin = parseMinutes(targetTimeStr);
+            if (targetMin === null) return true;
+
+            const slotStartStr = extractSlotStartTime(cardRaw);
+            const slotMin = parseMinutes(slotStartStr);
+            if (slotMin !== null && slotMin === targetMin) return true;
+
+            // Handle no meridian specified in target (e.g. "@3")
+            if (slotMin !== null && !/(am|pm)/i.test(targetTimeStr)) {
+                if (slotMin % 720 === targetMin % 720) return true;
+            }
+
+            // Fallback: check any time expression in timing portion
+            const timingPortion = cardRaw.split(/booking\s*window|cancellation\s*ends/i)[0] || cardRaw;
+            const matches = timingPortion.matchAll(/\b(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?|[ap]m))\b/gi);
+            for (const m of matches) {
+                const mMin = parseMinutes(m[1]);
+                if (mMin !== null && mMin === targetMin) return true;
+            }
+
+            return false;
         }
 
         const kwNorm = normalize(kw);
-        const timeNorm = normalize(time);
         const venueNorm = normalize(venue);
         const dateNorm = normalize(date);
 
@@ -787,11 +836,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
             // Prioritize title match; fall back to full card text
             let matchKeyword = !kwNorm || wholeWordMatch(titleTextNorm, kwWords) || wholeWordMatch(fullTextNorm, kwWords);
 
-            let matchTime = true;
-            if (timeNorm) {
-                const startTime = extractStartTime(fullTextNorm);
-                matchTime = startTime === timeNorm;
-            }
+            let matchTime = doesTimeMatch(fullTextRaw, time);
 
             let matchVenue = true;
             if (venueNorm) {
@@ -904,7 +949,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                 text.startsWith('book') || text.includes('waitlist');
         });
 
-        const btn = btns[targetData.index];
+        const btn = (targetData.tagId && document.querySelector(`[data-saveetha-btn="${targetData.tagId}"]`)) || btns[targetData.index];
         if (!btn) return { success: false, reason: 'Button vanished' };
 
         let current = btn;
@@ -1021,7 +1066,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                 const lower = text.toLowerCase();
                 if (lower.includes('booked') || lower.includes('cancelled') || lower.includes('waitlist') || lower.includes('success')) {
                     const isAlready = lower.includes('already');
-                    const isFull = /\\bfull\\b/.test(lower);
+                    const isFull = /\bfull\b/.test(lower);
                     return { found: true, text: text.trim(), isAlready, isFull };
                 }
                 return { found: false, text: text.trim() };
@@ -1116,7 +1161,56 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
 
         function normalize(str) {
             if (!str) return '';
-            return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+            return str.toLowerCase()
+                .replace(/([ap])\s*\.?\s*m\.?/gi, '$1m')
+                .replace(/[-_/·•]/g, ' ')
+                .replace(/[^a-z0-9\s]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function parseMinutes(str) {
+            if (!str) return null;
+            const cleaned = str.toLowerCase()
+                .replace(/([ap])\s*\.?\s*m\.?/gi, '$1m')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const match = cleaned.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+            if (!match) return null;
+            let hour = parseInt(match[1], 10);
+            const minute = match[2] ? parseInt(match[2], 10) : 0;
+            const meridian = match[3];
+
+            if (meridian === 'pm') {
+                if (hour < 12) hour += 12;
+            } else if (meridian === 'am') {
+                if (hour === 12) hour = 0;
+            }
+            return hour * 60 + minute;
+        }
+
+        function extractSlotStartTime(fullText) {
+            const timingPortion = fullText.split(/booking\s*window|cancellation\s*ends/i)[0] || fullText;
+            const rangeMatch = timingPortion.match(/(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?|[ap]m))\s*[-–—to]+/i);
+            if (rangeMatch) return rangeMatch[1];
+            const singleMatch = timingPortion.match(/\b(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?|[ap]m))\b/i);
+            if (singleMatch) return singleMatch[1];
+            return '';
+        }
+
+        function doesTimeMatch(cardRaw, targetTimeStr) {
+            if (!targetTimeStr) return true;
+            const targetMin = parseMinutes(targetTimeStr);
+            if (targetMin === null) return true;
+
+            const slotStartStr = extractSlotStartTime(cardRaw);
+            const slotMin = parseMinutes(slotStartStr);
+            if (slotMin !== null && slotMin === targetMin) return true;
+
+            if (slotMin !== null && !/(am|pm)/i.test(targetTimeStr)) {
+                if (slotMin % 720 === targetMin % 720) return true;
+            }
+            return false;
         }
 
         const kwNorm = normalize(kw);
@@ -1133,8 +1227,12 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
                 if (hasHeading) { card = current; break; }
             }
 
-            const fullTextNorm = normalize(card ? card.innerText : btn.innerText);
-            if (fullTextNorm.includes(kwNorm)) {
+            const fullTextRaw = card ? card.innerText : btn.innerText;
+            const fullTextNorm = normalize(fullTextRaw);
+            const matchKeyword = !kwNorm || fullTextNorm.includes(kwNorm);
+            const matchTime = doesTimeMatch(fullTextRaw, time);
+
+            if (matchKeyword && matchTime) {
                 results.push({ index: i, fullText: fullTextNorm });
             }
         }
@@ -1142,7 +1240,7 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
     }, { kw: targetKeyword, time: targetTime });
 
     if (evaluation.slotsFound.length === 0) {
-        await sendTelegram(`⚠️ Could not find any booked slot matching *"${targetKeyword}"* to cancel.`, chatId);
+        await sendTelegram(`⚠️ Could not find any booked slot matching *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''} to cancel.`, chatId);
         return;
     }
 

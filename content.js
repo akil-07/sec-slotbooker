@@ -192,10 +192,42 @@
   }
 
   // ─── Apply keyword and time filters (improved time parsing) ────────
+  function parseMinutes(str) {
+    if (!str) return null;
+    const cleaned = str.toLowerCase()
+      .replace(/([ap])\s*\.?\s*m\.?/gi, '$1m')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const match = cleaned.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+    if (!match) return null;
+    let hour = parseInt(match[1], 10);
+    const minute = match[2] ? parseInt(match[2], 10) : 0;
+    const meridian = match[3];
+
+    if (meridian === 'pm') {
+      if (hour < 12) hour += 12;
+    } else if (meridian === 'am') {
+      if (hour === 12) hour = 0;
+    }
+    return hour * 60 + minute;
+  }
+
+  function extractSlotStartTime(fullText) {
+    const timingPortion = fullText.split(/booking\s*window|cancellation\s*ends/i)[0] || fullText;
+    const rangeMatch = timingPortion.match(/(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?|[ap]m))\s*[-–—to]+/i);
+    if (rangeMatch) return rangeMatch[1];
+    const singleMatch = timingPortion.match(/\b(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?|[ap]m))\b/i);
+    if (singleMatch) return singleMatch[1];
+    return '';
+  }
+
   function normalizeText(str) {
     if (!str) return '';
     let standardized = str.toLowerCase();
     
+    // 0. Standardize p.m. / a.m. to pm / am
+    standardized = standardized.replace(/([ap])\s*\.?\s*m\.?/gi, '$1m');
+
     // 1. Insert space before am/pm if missing (e.g., "1:15pm" -> "1:15 pm")
     standardized = standardized.replace(/(\d)(am|pm)\b/g, '$1 $2');
     
@@ -220,7 +252,24 @@
     const timeNorm = normalizeText(timeKeyword);
 
     const matchesKeyword = !kwNorm || titleFull.includes(kwNorm) || textFull.includes(kwNorm);
-    const matchesTime = !timeNorm || titleFull.includes(timeNorm) || textFull.includes(timeNorm);
+    
+    let matchesTime = true;
+    if (timeKeyword) {
+      const targetMin = parseMinutes(timeKeyword);
+      if (targetMin !== null) {
+        const slotStart = extractSlotStartTime(slot.fullText);
+        const slotMin = parseMinutes(slotStart);
+        if (slotMin !== null && slotMin === targetMin) {
+          matchesTime = true;
+        } else if (slotMin !== null && !/(am|pm)/i.test(timeKeyword) && slotMin % 720 === targetMin % 720) {
+          matchesTime = true;
+        } else {
+          matchesTime = titleFull.includes(timeNorm) || textFull.includes(timeNorm);
+        }
+      } else {
+        matchesTime = !timeNorm || titleFull.includes(timeNorm) || textFull.includes(timeNorm);
+      }
+    }
 
     return matchesKeyword && matchesTime;
   }
