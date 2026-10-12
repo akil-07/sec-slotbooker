@@ -540,6 +540,110 @@ function getDelayMsUntil(timeStr) {
     return diff;
 }
 
+function levenshtein(a, b) {
+    if (!a || !b) return (a || b || '').length;
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] = Math.min(
+                dp[i - 1][j] + 1,
+                dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+            );
+        }
+    }
+    return dp[m][n];
+}
+
+function inspectTimeString(rawTimeStr) {
+    if (!rawTimeStr) return null;
+    const str = rawTimeStr.trim();
+
+    const hasDigits = /\d/.test(str);
+    if (!hasDigits) {
+        return {
+            isValid: false,
+            isTypo: false,
+            error: `Invalid time "${rawTimeStr}". No numbers found.`
+        };
+    }
+
+    const match = str.match(/^(\d{1,2})(?:[:\.](\d{2}))?\s*([a-zA-Z\.]*)$/);
+    if (!match) {
+        return {
+            isValid: false,
+            isTypo: false,
+            error: `Could not parse time "${rawTimeStr}".`
+        };
+    }
+
+    const hours = parseInt(match[1], 10);
+    const minsStr = match[2] || '00';
+    const mins = parseInt(minsStr, 10);
+    const rawSuffix = match[3] || '';
+    const cleanSuffix = rawSuffix.toLowerCase().replace(/[^a-z]/g, '');
+
+    if (hours < 0 || hours > 23 || mins < 0 || mins > 59) {
+        return {
+            isValid: false,
+            isTypo: false,
+            error: `Invalid time range in "${rawTimeStr}".`
+        };
+    }
+
+    if (!cleanSuffix) {
+        return {
+            isValid: true,
+            hours,
+            mins,
+            meridian: null,
+            formatted: `${hours}:${minsStr}`
+        };
+    }
+
+    if (cleanSuffix === 'am' || cleanSuffix === 'pm') {
+        return {
+            isValid: true,
+            hours,
+            mins,
+            meridian: cleanSuffix.toUpperCase(),
+            formatted: `${hours}:${minsStr} ${cleanSuffix.toUpperCase()}`
+        };
+    }
+
+    // Suffix is misspelled (e.g. "pn", "an", "om", "qm")
+    const pmTypos = ['pn', 'om', 'on', 'qm', 'pl', 'pj', 'pk', 'p', 'pmm', 'pmn', 'pms'];
+    const amTypos = ['an', 'sm', 'sn', 'wm', 'al', 'aj', 'ak', 'a', 'amm', 'amn', 'ams', 'em', 'im'];
+
+    let suggestedMeridian = null;
+    if (pmTypos.includes(cleanSuffix) || cleanSuffix.startsWith('p')) {
+        suggestedMeridian = 'PM';
+    } else if (amTypos.includes(cleanSuffix) || cleanSuffix.startsWith('a')) {
+        suggestedMeridian = 'AM';
+    } else if (cleanSuffix.includes('n')) {
+        if (cleanSuffix.includes('p')) suggestedMeridian = 'PM';
+        else if (cleanSuffix.includes('a')) suggestedMeridian = 'AM';
+        else suggestedMeridian = 'PM';
+    } else {
+        if (levenshtein(cleanSuffix, 'pm') <= 1) suggestedMeridian = 'PM';
+        else if (levenshtein(cleanSuffix, 'am') <= 1) suggestedMeridian = 'AM';
+    }
+
+    const suggestedTime = suggestedMeridian ? `${hours}:${minsStr} ${suggestedMeridian}` : null;
+
+    return {
+        isValid: false,
+        isTypo: true,
+        rawTime: rawTimeStr,
+        wrongSuffix: rawSuffix,
+        suggestedMeridian,
+        suggestedTime
+    };
+}
+
 function parseTimeHoursMinutes(timeStr) {
     if (!timeStr) return null;
     const match = timeStr.trim().match(/(\d{1,2})(?:[\.:]\s*(\d{2}))?\s*(am|pm)?/i);
@@ -2601,7 +2705,7 @@ async function main() {
                     continue;
                 }
 
-                // ── Unusual Time Confirmation Intercept ─────────────────────
+                // ── Unusual Time / Typo Confirmation Intercept ─────────────
                 if (pendingTimeConfirmations.has(fromChatId)) {
                     const pending = pendingTimeConfirmations.get(fromChatId);
                     const isYes = ['yes', 'y', 'commit', 'confirm', 'ok', 'proceed'].includes(text);
@@ -2609,7 +2713,34 @@ async function main() {
 
                     if (isYes) {
                         pendingTimeConfirmations.delete(fromChatId);
-                        await sendTelegram(`✅ *Confirmed!* Committing task for *${pending.keyword}* at *${pending.unusualTime}*...`, fromChatId);
+
+                        // If it was a typo confirmation, check if the corrected time is outside normal hours!
+                        const targetCheck = isOutsideNormalHours(pending.targetTime);
+                        const startCheck = isOutsideNormalHours(pending.startTime);
+                        const unusual = targetCheck || startCheck;
+
+                        if (unusual && pending.isTypoConfirmation) {
+                            pendingTimeConfirmations.set(fromChatId, {
+                                ...pending,
+                                isTypoConfirmation: false,
+                                unusualTime: unusual.timeStr,
+                                isTooEarly: unusual.isTooEarly
+                            });
+
+                            const actionName = pending.isUnbook ? 'unbooking' : (pending.isScan ? 'scan' : 'booking');
+                            const reason = unusual.isTooEarly ? 'too early' : 'outside normal college hours (after 6:00 PM)';
+                            await sendTelegram(
+                                `⚠️ *Time Corrected to ${unusual.timeStr}*\n\n` +
+                                `However, this time is *${reason}* (normal college hours are *8:00 AM – 6:00 PM*).\n\n` +
+                                `Should we commit this ${actionName} task for *${pending.keyword}* anyway?\n\n` +
+                                `👉 Reply *yes* or *commit* to proceed.\n` +
+                                `👉 Reply *no* or *cancel* to abort.`,
+                                fromChatId
+                            );
+                            continue;
+                        }
+
+                        await sendTelegram(`✅ *Confirmed!* Committing task for *${pending.keyword}* at *${pending.targetTime || pending.startTime || 'specified time'}*...`, fromChatId);
                         await executeBookingTask(pending);
                         continue;
                     } else if (isNo) {
@@ -2620,15 +2751,24 @@ async function main() {
                         // User issued another command, clear previous pending confirmation
                         pendingTimeConfirmations.delete(fromChatId);
                     } else {
-                        const reason = pending.isTooEarly ? 'it is too early' : 'it is outside normal college hours';
-                        await sendTelegram(
-                            `⚠️ *Confirmation Required*\n\n` +
-                            `The requested time (*${pending.unusualTime}*) is ${reason}. Normal college hours are *8:00 AM – 6:00 PM*.\n\n` +
-                            `Should we commit this task for *${pending.keyword}*?\n` +
-                            `👉 Reply *yes* or *commit* to proceed.\n` +
-                            `👉 Reply *no* or *cancel* to abort.`,
-                            fromChatId
-                        );
+                        if (pending.isTypoConfirmation) {
+                            await sendTelegram(
+                                `❓ Did you mean *${pending.suggestedTime}*?\n` +
+                                `👉 Reply *yes* to commit with *${pending.suggestedTime}*.\n` +
+                                `👉 Reply *no* to cancel.`,
+                                fromChatId
+                            );
+                        } else {
+                            const reason = pending.isTooEarly ? 'it is too early' : 'it is outside normal college hours';
+                            await sendTelegram(
+                                `⚠️ *Confirmation Required*\n\n` +
+                                `The requested time (*${pending.unusualTime}*) is ${reason}. Normal college hours are *8:00 AM – 6:00 PM*.\n\n` +
+                                `Should we commit this task for *${pending.keyword}*?\n` +
+                                `👉 Reply *yes* or *commit* to proceed.\n` +
+                                `👉 Reply *no* or *cancel* to abort.`,
+                                fromChatId
+                            );
+                        }
                         continue;
                     }
                 }
@@ -3177,7 +3317,81 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     continue;
                 }
 
-                // Check if targetTime or startTime is outside normal college hours (8:00 AM - 6:00 PM)
+                // 1. Inspect targetTime for typos/misspellings
+                if (targetTime) {
+                    const inspected = inspectTimeString(targetTime);
+                    if (!inspected.isValid) {
+                        if (inspected.isTypo && inspected.suggestedTime) {
+                            pendingTimeConfirmations.set(fromChatId, {
+                                keyword, targetTime: inspected.suggestedTime, targetVenue, targetDate, startTime,
+                                isScan, isUnbook, fromChatId, userConfig,
+                                isTypoConfirmation: true,
+                                originalWrongTime: targetTime,
+                                suggestedTime: inspected.suggestedTime,
+                                wrongSuffix: inspected.wrongSuffix,
+                                suggestedMeridian: inspected.suggestedMeridian
+                            });
+
+                            await sendTelegram(
+                                `❓ *Did you mean "${inspected.suggestedTime}"?*\n\n` +
+                                `You entered: \`${targetTime}\`\n` +
+                                `The suffix "*${inspected.wrongSuffix}*" looks misspelled (did you mean *${inspected.suggestedMeridian}*?).\n\n` +
+                                `👉 Reply *yes* or *commit* to use *${inspected.suggestedTime}*.\n` +
+                                `👉 Reply *no* to cancel, or re-type your command.`,
+                                fromChatId
+                            );
+                            continue;
+                        } else {
+                            await sendTelegram(
+                                `❌ *Invalid Time Format: "${targetTime}"*\n` +
+                                `Please specify a valid time like \`10:00 AM\` or \`03:00 PM\`.\n` +
+                                `Task was not scheduled.`,
+                                fromChatId
+                            );
+                            continue;
+                        }
+                    }
+                    targetTime = inspected.formatted;
+                }
+
+                // 2. Inspect startTime for typos/misspellings
+                if (startTime) {
+                    const inspected = inspectTimeString(startTime);
+                    if (!inspected.isValid) {
+                        if (inspected.isTypo && inspected.suggestedTime) {
+                            pendingTimeConfirmations.set(fromChatId, {
+                                keyword, targetTime, targetVenue, targetDate, startTime: inspected.suggestedTime,
+                                isScan, isUnbook, fromChatId, userConfig,
+                                isTypoConfirmation: true,
+                                originalWrongTime: startTime,
+                                suggestedTime: inspected.suggestedTime,
+                                wrongSuffix: inspected.wrongSuffix,
+                                suggestedMeridian: inspected.suggestedMeridian
+                            });
+
+                            await sendTelegram(
+                                `❓ *Did you mean "${inspected.suggestedTime}"?*\n\n` +
+                                `You entered: \`${startTime}\`\n` +
+                                `The suffix "*${inspected.wrongSuffix}*" looks misspelled (did you mean *${inspected.suggestedMeridian}*?).\n\n` +
+                                `👉 Reply *yes* or *commit* to use *${inspected.suggestedTime}*.\n` +
+                                `👉 Reply *no* to cancel, or re-type your command.`,
+                                fromChatId
+                            );
+                            continue;
+                        } else {
+                            await sendTelegram(
+                                `❌ *Invalid Time Format: "${startTime}"*\n` +
+                                `Please specify a valid time like \`10:00 AM\` or \`03:00 PM\`.\n` +
+                                `Task was not scheduled.`,
+                                fromChatId
+                            );
+                            continue;
+                        }
+                    }
+                    startTime = inspected.formatted;
+                }
+
+                // 3. Check if targetTime or startTime is outside normal college hours (8:00 AM - 6:00 PM)
                 const targetCheck = isOutsideNormalHours(targetTime);
                 const startCheck = isOutsideNormalHours(startTime);
                 const unusual = targetCheck || startCheck;
@@ -3187,7 +3401,8 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         keyword, targetTime, targetVenue, targetDate, startTime,
                         isScan, isUnbook, fromChatId, userConfig,
                         unusualTime: unusual.timeStr,
-                        isTooEarly: unusual.isTooEarly
+                        isTooEarly: unusual.isTooEarly,
+                        isTypoConfirmation: false
                     });
 
                     const actionName = isUnbook ? 'unbooking' : (isScan ? 'scan' : 'booking');
