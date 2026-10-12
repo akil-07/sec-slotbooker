@@ -1804,7 +1804,7 @@ function formatAttendance(data, userName) {
 
 // ─── Bunk Calculator ──────────────────────────────────────────────────────────
 
-async function fetchBunkStatsForSubject(context, config, targetSubject) {
+async function fetchBunkStatsForSubject(context, config, targetSubject, subjectSummary = null) {
     const page = await context.newPage();
     try {
         console.log(`[Bunk] Fetching bunk stats for: ${targetSubject}...`);
@@ -1849,109 +1849,133 @@ async function fetchBunkStatsForSubject(context, config, targetSubject) {
         }, targetSubject);
 
         if (!clickSuccess) {
-            throw new Error(`Could not find the details button for ${targetSubject}.`);
+            console.warn(`[Bunk] Could not find 'View Slot Details' button for ${targetSubject}. Proceeding with card summary.`);
+        } else {
+            await page.waitForTimeout(3000); // Wait for modal/drawer to load
+            await page.waitForSelector('text="Total Sessions"', { timeout: 8000 }).catch(() => { });
         }
 
-        await page.waitForTimeout(3000); // Wait for modal/page to load
-
-        // Wait for page to fully render the cards
-        await page.waitForSelector('text="Total Sessions"', { timeout: 8000 }).catch(() => { });
         const pageText = await page.innerText('body');
 
         let presentHours = null, conductedHours = null;
         let totalSessions = null, upcomingSessions = null;
         let percent = 0;
 
+        // 1. Overall Attendance %
         const attMatch = pageText.match(/Overall Attendance[\s\S]{0,50}?([\d.]+)%/i);
         if (attMatch) percent = parseFloat(attMatch[1]);
 
+        // 2. Present / Attended hours vs Conducted hours
         const presentMatch = pageText.match(/Present[\s\S]{0,30}?([\d.]+)\s*\/\s*([\d.]+)/i) ||
-            pageText.match(/(?:Attended|Present)[\s\S]{0,30}?([\d.]+)\s*(?:\/|out of)\s*([\d.]+)/i) ||
-            pageText.match(/([\d.]+)\s*\/\s*([\d.]+)/);
+            pageText.match(/(?:Attended|Present)[\s\S]{0,30}?([\d.]+)\s*(?:\/|out of)\s*([\d.]+)/i);
         if (presentMatch) {
             presentHours = parseFloat(presentMatch[1]);
             conductedHours = parseFloat(presentMatch[2]);
         }
 
-        const totalMatch = pageText.match(/Total Sessions[\s\S]{0,20}?(?<!\d)(\d+)(?!\d)/i) ||
+        // 3. Total scheduled sessions for this course
+        const totalMatch = pageText.match(/Total Sessions[\s\S]{0,30}?(?<!\d)(\d+)(?!\d)/i) ||
             pageText.match(/Total sessions scheduled:?\s*(\d+)/i) ||
+            pageText.match(/Total Classes:?\s*(\d+)/i) ||
             pageText.match(/Total:?\s*(\d+)/i);
         if (totalMatch) {
-            totalSessions = parseInt(totalMatch[1]);
+            totalSessions = parseInt(totalMatch[1], 10);
         }
 
-        const upMatch = pageText.match(/Upcoming:\s*(\d+)/i) ||
-            pageText.match(/Remaining:\s*(\d+)/i);
+        // 4. Upcoming / Remaining sessions
+        const upMatch = pageText.match(/Upcoming(?:\s*Sessions)?:?\s*(\d+)/i) ||
+            pageText.match(/Remaining(?:\s*Sessions)?:?\s*(\d+)/i);
         if (upMatch) {
-            upcomingSessions = parseInt(upMatch[1]);
+            upcomingSessions = parseInt(upMatch[1], 10);
         }
 
-        // Fallback: If we have present/conducted hours but no total sessions, assume class has ended.
-        if (presentHours !== null && conductedHours !== null && totalSessions === null) {
-            totalSessions = Math.round(conductedHours); // fallback: assume 1 hour = 1 session
-            upcomingSessions = 0;
-        }
-
-        // Fallback: If class hasn't started (no present/conducted), but we have total sessions.
-        if (presentHours === null && conductedHours === null && totalSessions !== null) {
-            presentHours = 0;
-            conductedHours = 0;
-        }
-
-        // Fallback for missing upcomingSessions when we know totalSessions and conductedHours
-        if (upcomingSessions === null && totalSessions !== null && conductedHours !== null) {
-            upcomingSessions = Math.max(0, totalSessions - Math.round(conductedHours));
-        }
-
-        // Specific fix: If UI says 0 conducted and 0 upcoming but total is known, it means classes haven't been scheduled yet.
-        // So all total sessions are actually upcoming.
-        if (upcomingSessions === 0 && conductedHours === 0 && totalSessions > 0) {
-            upcomingSessions = totalSessions;
-        }
-
-        // If upcomingSessions is still null, default to 0
-        if (upcomingSessions === null) {
-            upcomingSessions = 0;
-        }
-
-        let result = null;
-        if (presentHours !== null && conductedHours !== null && totalSessions !== null) {
-            const conductedSessions = totalSessions - upcomingSessions;
-            // Allow calculation even if class hasn't started or has ended
-            if (conductedSessions >= 0) {
-                // Determine effective hours per session, default to 1 if we can't determine
-                const effectiveConducted = conductedSessions > 0 ? conductedSessions : Math.round(conductedHours);
-                const hoursPerSession = effectiveConducted > 0 ? conductedHours / effectiveConducted : 1;
-
-                const remainingHours = upcomingSessions * hoursPerSession;
-                const totalSemesterHours = conductedHours + remainingHours;
-
-                const targetAttendedHours = totalSemesterHours * 0.80;
-                const maxBunkHours = totalSemesterHours - targetAttendedHours - (conductedHours - presentHours);
-                const maxBunkSessions = hoursPerSession > 0 ? Math.floor(maxBunkHours / hoursPerSession) : 0;
-
-                const projectedFinalPercent = totalSemesterHours > 0 ? ((presentHours + remainingHours) / totalSemesterHours) * 100 : percent;
-
-                result = {
-                    subject: targetSubject,
-                    percent,
-                    presentHours,
-                    conductedHours,
-                    upcomingSessions,
-                    totalSemesterHours,
-                    maxBunkSessions,
-                    projectedFinalPercent,
-                    targetPercent: 80
-                };
+        // 5. Fallback from subjectSummary (scraped directly from the subject card on main page)
+        if (subjectSummary) {
+            if (presentHours === null && subjectSummary.attended !== undefined && subjectSummary.attended !== '') {
+                const a = parseFloat(subjectSummary.attended);
+                if (!isNaN(a)) presentHours = a;
+            }
+            if (conductedHours === null && subjectSummary.total !== undefined && subjectSummary.total !== '') {
+                const c = parseFloat(subjectSummary.total);
+                if (!isNaN(c)) conductedHours = c;
+            }
+            if (!percent && subjectSummary.percent) {
+                const p = parseFloat(subjectSummary.percent.replace(/[^0-9.]/g, ''));
+                if (!isNaN(p)) percent = p;
             }
         }
 
-        if (!result) {
-            console.error(`[Bunk] Failed to parse. Dump: present=${presentHours}, conducted=${conductedHours}, total=${totalSessions}, upcoming=${upcomingSessions}`);
-            throw new Error(`DEBUG_V2: Could not find enough session data. (Present: ${presentHours}, Conducted: ${conductedHours}, Total: ${totalSessions})`);
+        // Clean up numbers
+        if (presentHours === null || isNaN(presentHours)) presentHours = 0;
+        if (conductedHours === null || isNaN(conductedHours)) conductedHours = 0;
+        if (percent === null || isNaN(percent)) {
+            percent = conductedHours > 0 ? (presentHours / conductedHours) * 100 : 0;
         }
 
-        return [result]; // wrap in array for formatter
+        // Determine session count and upcoming count
+        // Hours per session is AT LEAST 1 (never 0!)
+        const hoursPerSession = 1;
+        const conductedSessions = Math.round(conductedHours / hoursPerSession);
+
+        if (totalSessions && totalSessions > 0) {
+            if (conductedHours === 0) {
+                // If 0 classes conducted, ALL total sessions are upcoming!
+                upcomingSessions = totalSessions;
+            } else {
+                // Remaining sessions in the semester is total minus conducted
+                upcomingSessions = Math.max(0, totalSessions - conductedSessions);
+            }
+        } else {
+            // If totalSessions not found, use upcomingSessions if found, else 0
+            if (upcomingSessions === null) upcomingSessions = 0;
+            totalSessions = conductedSessions + upcomingSessions;
+        }
+
+        const remainingHours = upcomingSessions * hoursPerSession;
+        const totalSemesterHours = Math.max(
+            conductedHours + remainingHours,
+            totalSessions * hoursPerSession,
+            conductedHours
+        );
+
+        let maxBunkSessions = 0;
+        let projectedFinalPercent = percent;
+
+        if (totalSemesterHours > 0) {
+            // Target is 80% attendance
+            const targetAttendedHours = totalSemesterHours * 0.80;
+            const missedHours = Math.max(0, conductedHours - presentHours);
+
+            // Allowed total misses across semester minus misses already taken
+            const maxBunkHours = totalSemesterHours - targetAttendedHours - missedHours;
+            maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
+
+            projectedFinalPercent = ((presentHours + remainingHours) / totalSemesterHours) * 100;
+        } else if (conductedHours > 0) {
+            // Only current attendance known
+            const targetAttended = conductedHours * 0.80;
+            if (presentHours >= targetAttended) {
+                maxBunkSessions = Math.floor((presentHours - 0.80 * conductedHours) / 0.80);
+            } else {
+                const needed = Math.ceil((0.80 * conductedHours - presentHours) / 0.20);
+                maxBunkSessions = -needed;
+            }
+        }
+
+        const result = {
+            subject: targetSubject,
+            percent,
+            presentHours,
+            conductedHours,
+            totalSessions,
+            upcomingSessions,
+            totalSemesterHours,
+            maxBunkSessions,
+            projectedFinalPercent,
+            targetPercent: 80
+        };
+
+        return [result];
     } catch (err) {
         console.error(`[Bunk] Error for ${config.name}:`, err.message);
         throw err;
@@ -1973,18 +1997,30 @@ function formatBunkStats(data, userName) {
 
         let status = '';
         if (item.maxBunkSessions > 0) {
-            status = `🟢 *You can safely bunk ${item.maxBunkSessions} classes!*`;
+            status = `🟢 *You can safely bunk ${item.maxBunkSessions} class${item.maxBunkSessions > 1 ? 'es' : ''}!*`;
         } else if (item.maxBunkSessions === 0) {
-            status = `🟡 *Do NOT bunk anymore!* You are exactly on the line.`;
+            status = `🟡 *Do NOT bunk anymore!* You are on the borderline (attend all remaining classes).`;
         } else {
-            status = `🔴 *Shortage!* You need to attend ${Math.abs(item.maxBunkSessions)} extra classes to reach 80%.`;
+            const shortage = Math.abs(item.maxBunkSessions);
+            if (item.projectedFinalPercent !== undefined && item.projectedFinalPercent < 80) {
+                status = `🔴 *Shortage!* Even attending all remaining classes yields ${item.projectedFinalPercent.toFixed(2)}%. You need ${shortage} extra class${shortage > 1 ? 'es' : ''} to reach 80%.`;
+            } else {
+                status = `🔴 *Shortage!* You need to attend ${shortage} extra class${shortage > 1 ? 'es' : ''} to reach 80%.`;
+            }
         }
 
         msg += `🔹 *${sub}*\n`;
-        msg += `   ├ Current: *${item.percent.toFixed(2)}%*\n`;
-        if (item.projectedFinalPercent !== undefined) {
+        if (item.conductedHours === 0) {
+            msg += `   ├ Current: *0.00%* _(0 classes conducted yet)_\n`;
+        } else {
+            msg += `   ├ Current: *${item.percent.toFixed(2)}%* _(${item.presentHours}/${item.conductedHours} attended)_\n`;
+        }
+        if (item.totalSessions > 0) {
+            msg += `   ├ Total Semester Classes: *${item.totalSessions}*\n`;
+        }
+        if (item.projectedFinalPercent !== undefined && item.totalSemesterHours > 0) {
             if (item.upcomingSessions > 0) {
-                msg += `   ├ If attend all remaining: *${item.projectedFinalPercent.toFixed(2)}%*\n`;
+                msg += `   ├ If attend all remaining (${item.upcomingSessions}): *${item.projectedFinalPercent.toFixed(2)}%*\n`;
             } else {
                 msg += `   ├ No upcoming classes left.\n`;
             }
@@ -3003,10 +3039,11 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             continue;
                         }
 
-                        const matchedSubject = allSubjects[matchedIndex].subject;
+                        const matchedSubjectObj = allSubjects[matchedIndex];
+                        const matchedSubject = matchedSubjectObj.subject;
                         await sendTelegram(`🧮 Calculating bunk stats for *${matchedSubject}*... Please wait...`, fromChatId);
 
-                        const data = await fetchBunkStatsForSubject(session.context, session.config, matchedSubject);
+                        const data = await fetchBunkStatsForSubject(session.context, session.config, matchedSubject, matchedSubjectObj);
                         const msg = formatBunkStats(data, session.config.name);
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
