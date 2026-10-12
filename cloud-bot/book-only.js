@@ -34,6 +34,7 @@ let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, i
 let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
 let superAdminNotificationsEnabled = true; // Added for super admin notifications toggle
 const pendingOtpRequests = new Map(); // chatId -> callback function
+const pendingTimeConfirmations = new Map(); // chatId -> { params, unusualTime, isTooEarly }
 
 // ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
 const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
@@ -537,6 +538,45 @@ function getDelayMsUntil(timeStr) {
         diff = 0;
     }
     return diff;
+}
+
+function parseTimeHoursMinutes(timeStr) {
+    if (!timeStr) return null;
+    const match = timeStr.trim().match(/(\d{1,2})(?:[\.:]\s*(\d{2}))?\s*(am|pm)?/i);
+    if (!match) return null;
+
+    let hours = parseInt(match[1], 10);
+    const mins = match[2] ? parseInt(match[2], 10) : 0;
+    const meridian = match[3] ? match[3].toLowerCase() : null;
+
+    if (meridian === 'pm') {
+        if (hours < 12) hours += 12;
+    } else if (meridian === 'am') {
+        if (hours === 12) hours = 0;
+    } else {
+        if (hours >= 1 && hours <= 6) {
+            hours += 12;
+        }
+    }
+
+    return { hours, mins, totalMinutes: hours * 60 + mins };
+}
+
+function isOutsideNormalHours(timeStr) {
+    if (!timeStr) return null;
+    const parsed = parseTimeHoursMinutes(timeStr);
+    if (!parsed) return null;
+
+    const startMins = 8 * 60; // 08:00 AM (480 mins)
+    const endMins = 18 * 60;  // 06:00 PM (1080 mins)
+
+    if (parsed.totalMinutes < startMins) {
+        return { isTooEarly: true, isTooLate: false, timeStr, parsed };
+    }
+    if (parsed.totalMinutes > endMins) {
+        return { isTooEarly: false, isTooLate: true, timeStr, parsed };
+    }
+    return null;
 }
 
 // ─── Booking Logic ────────────────────────────────────────────────────────────
@@ -2561,6 +2601,38 @@ async function main() {
                     continue;
                 }
 
+                // ── Unusual Time Confirmation Intercept ─────────────────────
+                if (pendingTimeConfirmations.has(fromChatId)) {
+                    const pending = pendingTimeConfirmations.get(fromChatId);
+                    const isYes = ['yes', 'y', 'commit', 'confirm', 'ok', 'proceed'].includes(text);
+                    const isNo = ['no', 'n', 'cancel', 'abort', 'stop'].includes(text);
+
+                    if (isYes) {
+                        pendingTimeConfirmations.delete(fromChatId);
+                        await sendTelegram(`✅ *Confirmed!* Committing task for *${pending.keyword}* at *${pending.unusualTime}*...`, fromChatId);
+                        await executeBookingTask(pending);
+                        continue;
+                    } else if (isNo) {
+                        pendingTimeConfirmations.delete(fromChatId);
+                        await sendTelegram(`🛑 *Cancelled.* Booking task for *${pending.keyword}* was aborted.`, fromChatId);
+                        continue;
+                    } else if (text.startsWith('!')) {
+                        // User issued another command, clear previous pending confirmation
+                        pendingTimeConfirmations.delete(fromChatId);
+                    } else {
+                        const reason = pending.isTooEarly ? 'it is too early' : 'it is outside normal college hours';
+                        await sendTelegram(
+                            `⚠️ *Confirmation Required*\n\n` +
+                            `The requested time (*${pending.unusualTime}*) is ${reason}. Normal college hours are *8:00 AM – 6:00 PM*.\n\n` +
+                            `Should we commit this task for *${pending.keyword}*?\n` +
+                            `👉 Reply *yes* or *commit* to proceed.\n` +
+                            `👉 Reply *no* or *cancel* to abort.`,
+                            fromChatId
+                        );
+                        continue;
+                    }
+                }
+
                 // ── AI Natural Language Parsing ──────────────────────────────
                 if (!text.startsWith('!')) {
                     if (!aiClient) {
@@ -3105,26 +3177,36 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     continue;
                 }
 
-                const taskId = ++taskIdCounter;
-                const task = {
-                    keyword, targetTime, targetVenue, targetDate, startTime,
-                    phase: 'Initializing',
-                    stopRequested: false,
-                    page: null,
-                    isScan, isUnbook, fromChatId, userConfig
-                };
-                activeTasks.set(taskId, task);
-                saveTasks();
+                // Check if targetTime or startTime is outside normal college hours (8:00 AM - 6:00 PM)
+                const targetCheck = isOutsideNormalHours(targetTime);
+                const startCheck = isOutsideNormalHours(startTime);
+                const unusual = targetCheck || startCheck;
 
-                console.log(`[Bot] New Task [${taskId}]: !book "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${targetDate ? ` ~ ${targetDate}` : ''}${targetVenue ? ` $ ${targetVenue}` : ''}${startTime ? ` # ${startTime}` : ''}`);
+                if (unusual) {
+                    pendingTimeConfirmations.set(fromChatId, {
+                        keyword, targetTime, targetVenue, targetDate, startTime,
+                        isScan, isUnbook, fromChatId, userConfig,
+                        unusualTime: unusual.timeStr,
+                        isTooEarly: unusual.isTooEarly
+                    });
 
-                const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
-                if (superAdminNotificationsEnabled && superAdminChatId && String(fromChatId) !== String(superAdminChatId)) {
-                    const userName = (ACCOUNTS[fromChatId] && ACCOUNTS[fromChatId].name) ? ACCOUNTS[fromChatId].name : fromChatId;
-                    sendTelegram(`🔔 *Scan Started*\nUser: ${userName}\nTask: ${isScan ? '!scan' : '!book'} ${keyword}${targetTime ? ` @ ${targetTime}` : ''}`, superAdminChatId);
+                    const actionName = isUnbook ? 'unbooking' : (isScan ? 'scan' : 'booking');
+                    const reason = unusual.isTooEarly ? 'too early' : 'outside normal college hours (after 6:00 PM)';
+                    const warningMsg =
+                        `⚠️ *Unusual Time Warning: ${unusual.timeStr}*\n\n` +
+                        `The specified time is *${reason}* (normal college hours are *8:00 AM – 6:00 PM*).\n\n` +
+                        `Should we commit this ${actionName} task for *${keyword}* anyway?\n\n` +
+                        `👉 Reply *yes* or *commit* to proceed.\n` +
+                        `👉 Reply *no* or *cancel* to abort.`;
+
+                    await sendTelegram(warningMsg, fromChatId);
+                    continue;
                 }
 
-                startTaskLoop(taskId, task);
+                await executeBookingTask({
+                    keyword, targetTime, targetVenue, targetDate, startTime,
+                    isScan, isUnbook, fromChatId, userConfig
+                });
             }
         } catch (pollErr) {
             console.error('[Bot] Poll error:', pollErr.message);
@@ -3132,6 +3214,30 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
 
         // Small pause between polls (getUpdates uses long-polling of 30s already)
         await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    async function executeBookingTask(params) {
+        const { keyword, targetTime, targetVenue, targetDate, startTime, isScan, isUnbook, fromChatId, userConfig } = params;
+        const taskId = ++taskIdCounter;
+        const task = {
+            keyword, targetTime, targetVenue, targetDate, startTime,
+            phase: 'Initializing',
+            stopRequested: false,
+            page: null,
+            isScan, isUnbook, fromChatId, userConfig
+        };
+        activeTasks.set(taskId, task);
+        saveTasks();
+
+        console.log(`[Bot] New Task [${taskId}]: ${isUnbook ? '!unbook' : (isScan ? '!scan' : '!book')} "${keyword}"${targetTime ? ` @ ${targetTime}` : ''}${targetDate ? ` ~ ${targetDate}` : ''}${targetVenue ? ` $ ${targetVenue}` : ''}${startTime ? ` # ${startTime}` : ''}`);
+
+        const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
+        if (superAdminNotificationsEnabled && superAdminChatId && String(fromChatId) !== String(superAdminChatId)) {
+            const userName = (ACCOUNTS[fromChatId] && ACCOUNTS[fromChatId].name) ? ACCOUNTS[fromChatId].name : fromChatId;
+            sendTelegram(`🔔 *Scan Started*\nUser: ${userName}\nTask: ${isScan ? '!scan' : (isUnbook ? '!unbook' : '!book')} ${keyword}${targetTime ? ` @ ${targetTime}` : ''}`, superAdminChatId);
+        }
+
+        startTaskLoop(taskId, task);
     }
 
     async function startTaskLoop(taskId, task) {
