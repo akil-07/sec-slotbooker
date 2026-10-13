@@ -133,10 +133,12 @@ const ALERT_BEFORE_MS = 10 * 60 * 1000; // 10 minutes
 // ─── Browser helpers ──────────────────────────────────────────────────────────
 async function launchBrowser() {
     log('[Browser] Launching Chrome...');
+    // headless: true is required for GitHub Actions (no display server)
+    // Set HEADFUL=1 env var locally if you want to see the browser
+    const isHeadful = process.env.HEADFUL === '1';
     return chromium.launch({
-        headless: false,
-        channel: 'chrome',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        headless: !isHeadful,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     });
 }
 
@@ -410,61 +412,99 @@ function parseTimeToday(timeStr) {
 
 // ─── OTP Window Detection ─────────────────────────────────────────────────────
 /**
- * Polls the page every 3s for a visible OTP input modal.
- * Returns true if found within timeoutMs, false otherwise.
+ * Polls the page every 3s for a visible, ENABLED OTP input field.
+ * phase = 'start' → watches for IN OTP input to become enabled
+ * phase = 'end'   → watches for OUT OTP input to become enabled
+ * Returns true if found and enabled within timeoutMs, false otherwise.
  */
-async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000) {
-    log('[OTP] Polling for OTP window...');
+async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start') {
+    const otpLabel = phase === 'start' ? 'IN OTP' : 'OUT OTP';
+    log(`[OTP] Polling for ${otpLabel} window (phase=${phase})...`);
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
         try {
-            const found = await page.evaluate(() => {
-                // 1. Explicit OTP-named containers
+            const result = await page.evaluate((phaseArg) => {
+                function isVisibleEl(el) {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    // Note: Do NOT use offsetParent — it returns null for position:fixed/sticky
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                }
+
+                // ── Strategy 1: Saveetha's exact structure (phase-aware) ────────
+                // start → look for enabled "Enter IN OTP" input
+                // end   → look for enabled "Enter OUT OTP" input
+                const allInputs = document.querySelectorAll('input');
+                for (const inp of allInputs) {
+                    const ph = (inp.placeholder || '').toLowerCase();
+                    const nm = (inp.name || inp.id || '').toLowerCase();
+
+                    const isInOtp  = ph.includes('in otp')  || nm.includes('in_otp')  || nm.includes('inotp');
+                    const isOutOtp = ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp');
+                    const isGenericOtp = ph.includes('enter otp') || (ph.includes('otp') && !isInOtp && !isOutOtp);
+
+                    const relevant = phaseArg === 'start'
+                        ? (isInOtp  || isGenericOtp)
+                        : (isOutOtp || isGenericOtp);
+
+                    if (!relevant) continue;
+                    if (!isVisibleEl(inp)) continue;
+                    if (inp.disabled) continue; // Teacher hasn't opened it yet
+
+                    return { found: true, reason: `Saveetha ${phaseArg.toUpperCase()} OTP input enabled: placeholder="${inp.placeholder}"` };
+                }
+
+                // ── Strategy 2: Modal/Dialog containers with OTP input ──────────
                 const otpContainers = document.querySelectorAll(
                     '[class*="otp" i], [id*="otp" i], [class*="attendance" i],' +
-                    '[class*="verify" i], .modal, [role="dialog"], .swal2-container,' +
-                    '.popup, .overlay'
+                    '[class*="verify" i], .modal.show, .modal[style*="display: block"], ' +
+                    '[role="dialog"], .swal2-container, .popup, .overlay'
                 );
                 for (const c of otpContainers) {
-                    if (c.offsetParent === null && !document.body.contains(c)) continue;
-                    const style = window.getComputedStyle(c);
-                    if (style.display === 'none' || style.visibility === 'hidden') continue;
-                    // Must contain an input
+                    if (!isVisibleEl(c)) continue;
                     const inp = c.querySelector('input[type="text"], input[type="number"], input[maxlength]');
-                    if (inp && inp.offsetParent !== null) return true;
+                    if (inp && isVisibleEl(inp) && !inp.disabled) {
+                        return { found: true, reason: `OTP container found: ${c.className}` };
+                    }
                 }
 
-                // 2. Any visible input that smells like OTP
-                const inputs = document.querySelectorAll(
+                // ── Strategy 3: Any enabled input with OTP-like maxlength ───────
+                const shortInputs = document.querySelectorAll(
                     'input[maxlength="6"], input[maxlength="4"], input[maxlength="8"]'
                 );
-                for (const inp of inputs) {
-                    if (inp.offsetParent === null) continue;
-                    return true;
+                for (const inp of shortInputs) {
+                    if (!isVisibleEl(inp) || inp.disabled) continue;
+                    return { found: true, reason: `Short OTP-length input found (maxlength=${inp.maxLength})` };
                 }
 
-                // 3. Any visible input with OTP-related text nearby
-                const allInputs = document.querySelectorAll('input[type="text"], input[type="number"]');
-                for (const inp of allInputs) {
-                    if (inp.offsetParent === null) continue;
+                // ── Strategy 4: Enabled input with OTP-related text nearby ──────
+                const textInputs = document.querySelectorAll('input[type="text"], input[type="number"]');
+                for (const inp of textInputs) {
+                    if (!isVisibleEl(inp) || inp.disabled) continue;
                     const placeholder = (inp.placeholder || '').toLowerCase();
-                    const name       = (inp.name || inp.id || '').toLowerCase();
-                    const container  = inp.closest('form, .modal, [role="dialog"], div');
-                    const nearby     = (container ? container.innerText : '').toLowerCase();
+                    const container   = inp.closest('form, section, div') || document.body;
+                    const nearby      = (container.innerText || '').toLowerCase().substring(0, 500);
                     if (
-                        placeholder.includes('otp') || name.includes('otp') ||
-                        nearby.includes('otp') || nearby.includes('one time') ||
-                        nearby.includes('verify') || nearby.includes('attendance code') ||
-                        (nearby.includes('enter') && nearby.includes('digit'))
-                    ) return true;
+                        placeholder.includes('otp') ||
+                        nearby.includes('in otp') || nearby.includes('out otp') ||
+                        nearby.includes('one time') || nearby.includes('attendance code') ||
+                        (nearby.includes('enter') && (nearby.includes('otp') || nearby.includes('digit')))
+                    ) {
+                        return { found: true, reason: `OTP input detected via nearby text` };
+                    }
                 }
-                return false;
-            });
 
-            if (found) {
-                log('[OTP] OTP window DETECTED!');
+                return { found: false, reason: null };
+            }, phase);
+
+            if (result.found) {
+                log(`[OTP] ${otpLabel} window DETECTED! Reason: ${result.reason}`);
                 return true;
+            } else {
+                log(`[OTP] ${otpLabel} not yet open — waiting 3s... (${Math.round((deadline - Date.now()) / 1000)}s left)`);
             }
         } catch (e) {
             log(`[OTP] Eval error: ${e.message}`);
@@ -472,7 +512,7 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000) {
         await sleep(3000);
     }
 
-    log('[OTP] Timeout — no OTP window appeared.');
+    log(`[OTP] Timeout — ${otpLabel} window never appeared.`);
     return false;
 }
 
@@ -500,11 +540,22 @@ function askOtpViaTelegram(className, phase, chatId, timeoutMs = 5 * 60 * 1000) 
 }
 
 // ─── Enter OTP on Page ────────────────────────────────────────────────────────
-async function enterOtpOnPage(page, otp) {
-    log(`[OTP] Entering OTP: ${otp}`);
+/**
+ * phase = 'start' → fills the IN OTP field
+ * phase = 'end'   → fills the OUT OTP field
+ */
+async function enterOtpOnPage(page, otp, phase = 'start') {
+    log(`[OTP] Entering ${phase === 'start' ? 'IN' : 'OUT'} OTP: ${otp}`);
 
-    // Find the OTP input via Playwright locators (more reliable than evaluate)
+    // Build selectors with phase-specific ones at the top (highest priority)
+    const phaseSelectors = phase === 'start'
+        ? ['input[placeholder*="Enter IN OTP" i]',  'input[placeholder*="IN OTP" i]']
+        : ['input[placeholder*="Enter OUT OTP" i]', 'input[placeholder*="OUT OTP" i]'];
+
     const otpInputSelectors = [
+        // ── Phase-specific (Saveetha exact match) ─────────────────────────────
+        ...phaseSelectors,
+        // ── Generic OTP patterns ──────────────────────────────────────────────
         'input[maxlength="6"]',
         'input[maxlength="4"]',
         'input[maxlength="8"]',
@@ -516,7 +567,6 @@ async function enterOtpOnPage(page, otp) {
         '[role="dialog"] input[type="number"]',
         '.swal2-container input',
         'input[placeholder*="OTP" i]',
-        'input[placeholder*="otp" i]',
         'input[name*="otp" i]',
     ];
 
@@ -634,8 +684,10 @@ async function handleClassOtp(classInfo, phase, userContext) {
             await sleep(2000);
         }
 
-        // ── Wait for OTP window (up to 15 minutes) ────────────────────────
-        const otpFound = await waitForOtpWindow(page, 15 * 60 * 1000);
+        // ── Wait for OTP window (up to 15 minutes, phase-aware) ───────────
+        // start → waits for IN OTP to be enabled by teacher
+        // end   → waits for OUT OTP to be enabled by teacher
+        const otpFound = await waitForOtpWindow(page, 15 * 60 * 1000, phase);
 
         if (!otpFound) {
             await sendTelegram(chatId,
@@ -658,8 +710,8 @@ async function handleClassOtp(classInfo, phase, userContext) {
             return;
         }
 
-        // ── Enter OTP ─────────────────────────────────────────────────────
-        const result = await enterOtpOnPage(page, otp);
+        // ── Enter OTP (phase-aware: IN OTP for start, OUT OTP for end) ────
+        const result = await enterOtpOnPage(page, otp, phase);
         log(`[Flow] Enter result: ${JSON.stringify(result)}`);
 
         if (!result.success) {

@@ -1,4 +1,4 @@
-name: 🤖 Saveetha Telegram Bot (Persistent V2)
+name: 🤖 Saveetha Schedule OTP Bot
 
 on:
   workflow_dispatch:
@@ -45,20 +45,22 @@ jobs:
           cd cloud-bot
           npx playwright install chromium --with-deps
 
-      - name: 🤖 Run Telegram Bot
+      - name: 🤖 Run Schedule OTP Bot
         env:
           SAVEETHA_USER: ${{ secrets.SAVEETHA_USER }}
           SAVEETHA_PASS: ${{ secrets.SAVEETHA_PASS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
           ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
           TZ: Asia/Kolkata
+          DISPLAY: ''
         run: |
           cd cloud-bot
           # Run for up to 5.5 hours (19800 seconds)
-          timeout 19800 node book-only.js || true
+          timeout 19800 node schedule-otp-bot.js || true
           echo "Bot session ended."
 
       - name: 🔄 Trigger next run
