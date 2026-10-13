@@ -1,0 +1,75 @@
+﻿name: Saveetha Slot Booking Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: 'Keyword to book'
+        required: false
+      chat_id:
+        description: 'Chat ID'
+        required: false
+
+concurrency:
+  group: "slot-booking-bot"
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  bot:
+    name: Run Slot Booking Bot
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: cloud-bot/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd cloud-bot
+          npm install
+
+      - name: Install Playwright + Chromium
+        run: |
+          cd cloud-bot
+          npx playwright install chromium --with-deps
+
+      - name: Run Slot Booking Bot
+        env:
+          SAVEETHA_USER: ${{ secrets.SAVEETHA_USER }}
+          SAVEETHA_PASS: ${{ secrets.SAVEETHA_PASS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SUPER_ADMIN_NOTIFICATIONS: ${{ secrets.SUPER_ADMIN_NOTIFICATIONS }}
+          TZ: Asia/Kolkata
+        run: |
+          cd cloud-bot
+          timeout 19800 node book-only.js || true
+          echo "Slot booking bot session ended."
+
+      - name: Trigger next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f "cloud-bot/STOP_BOT" ]; then
+            echo "STOP_BOT flag found. Not triggering the next run."
+          else
+            gh workflow run book-only.yml
+          fi
