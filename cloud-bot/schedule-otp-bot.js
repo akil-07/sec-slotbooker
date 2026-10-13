@@ -885,16 +885,25 @@ async function runDailyInitForUser(userContext) {
     }
 }
 
+function isSuperAdmin(chatId) {
+    const cid = String(chatId);
+    return cid === String(ADMIN_CHAT_ID) || cid === '8581009274' || cid === '6374825608';
+}
+
 async function runDailyInit() {
     if (!botActive) {
         log('[Init] Bot is stopped. Skipping global daily schedule fetch.');
         return;
     }
-    log('[Init] Running global daily schedule fetch for all users...');
+    log('[Init] Running global daily schedule fetch for super admin...');
     const allUsers = getAllUsers();
     for (const [chatId, userData] of Object.entries(allUsers)) {
+        if (!isSuperAdmin(chatId)) {
+            log(`[Init] Skipping non-superadmin: ${chatId}`);
+            continue;
+        }
         await runDailyInitForUser({ chatId, ...userData });
-        await sleep(5000); // Wait 5 seconds between users to avoid rate limiting / browser crashing
+        await sleep(5000); // Wait 5 seconds between users
     }
     log('[Init] Global daily schedule fetch complete.');
 }
@@ -921,10 +930,17 @@ bot.on('message', async (msg) => {
         }
     }
 
-    // ── Check Access ───────────────────────────────────────────────────────
+    // ── Check Super Admin Access ────────────────────────────────────────────
+    if (!isSuperAdmin(chatId)) {
+        if (text.toLowerCase() === '!myid') {
+            return bot.sendMessage(chatId, `🆔 Your Telegram Chat ID is: \`${chatId}\``, { parse_mode: 'Markdown' });
+        }
+        return bot.sendMessage(chatId, '⛔ This OTP bot is restricted to super admin only.');
+    }
+
     const allUsers = getAllUsers();
     const isRegistered = !!allUsers[chatId];
-    const isAdmin = chatId === ADMIN_CHAT_ID;
+    const isAdmin = chatId === ADMIN_CHAT_ID || chatId === '8581009274';
 
     // ── Commands ───────────────────────────────────────────────────────────
     if (text.toLowerCase() === '!myid') {

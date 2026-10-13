@@ -36,6 +36,17 @@ let superAdminNotificationsEnabled = true; // Added for super admin notification
 const pendingOtpRequests = new Map(); // chatId -> callback function
 const pendingTimeConfirmations = new Map(); // chatId -> { params, unusualTime, isTooEarly }
 
+function isSuperAdmin(chatId) {
+    if (!chatId) return false;
+    const cid = String(chatId);
+    if (cid === String(ADMIN_CHAT_ID)) return true;
+    if (cid === String(process.env.CHAT_ID)) return true;
+    if (cid === '8581009274' || cid === '6374825608') return true;
+    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id] && ACCOUNTS[id].user === '25013635');
+    if (superAdminChatId && cid === String(superAdminChatId)) return true;
+    return false;
+}
+
 // ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
 const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
 const GIST_TOKEN = process.env.GIST_TOKEN;
@@ -1448,6 +1459,10 @@ async function enterOtpOnPage(page, otp, phase = 'start') {
 }
 
 async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chatId = CHAT_ID) {
+    if (!isSuperAdmin(chatId)) {
+        console.log(`[OTP] Skipped attendance monitor for non-superadmin: ${chatId}`);
+        return;
+    }
     const page = await session.context.newPage();
     const phaseLabel = phase === 'start' ? 'IN OTP (Class Start)' : 'OUT OTP (Class End)';
     const emoji = phase === 'start' ? '📥' : '📤';
@@ -2608,12 +2623,13 @@ function scheduleSlotReminders(chatId, session, slots) {
     const IST_OFFSET = 5.5 * 60 * 60 * 1000;
     const now = new Date();
     const nowIST = new Date(now.getTime() + IST_OFFSET);
+    const allowOtp = isSuperAdmin(chatId);
 
     for (const s of slots) {
         const slotIST = new Date(nowIST);
         slotIST.setUTCHours(s.hour, s.minute, 0, 0);
 
-        // ── 1. 15-Minute Class Reminder ──────────────────────────────────────
+        // ── 1. 15-Minute Class Reminder (All Users) ───────────────────────────
         const reminderTime = slotIST.getTime() - 15 * 60 * 1000;
         const reminderDelay = reminderTime - nowIST.getTime();
         const reminderKey = `rem_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
@@ -2642,45 +2658,47 @@ function scheduleSlotReminders(chatId, session, slots) {
             console.log(`[Scheduler] 15m reminder for "${s.slot}" in ${Math.round(reminderDelay / 60000)} min (${session.config.name})`);
         }
 
-        // ── 2. IN OTP Attendance (10 minutes before class start) ───────────────
-        const inAttendanceTime = slotIST.getTime() - 10 * 60 * 1000;
-        const inDelay = inAttendanceTime - nowIST.getTime();
-        const inKey = `in_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
+        // ── 2 & 3: OTP Attendance (SUPER ADMIN ONLY) ──────────────────────────
+        if (allowOtp) {
+            // IN OTP Attendance (10 minutes before class start)
+            const inAttendanceTime = slotIST.getTime() - 10 * 60 * 1000;
+            const inDelay = inAttendanceTime - nowIST.getTime();
+            const inKey = `in_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
-        if (inDelay > 0) {
-            if (activeReminders.has(inKey)) {
-                clearTimeout(activeReminders.get(inKey));
-            }
-            const inTimeoutId = setTimeout(() => {
-                activeReminders.delete(inKey);
+            if (inDelay > 0) {
+                if (activeReminders.has(inKey)) {
+                    clearTimeout(activeReminders.get(inKey));
+                }
+                const inTimeoutId = setTimeout(() => {
+                    activeReminders.delete(inKey);
+                    handleAttendanceOtp(session, s.slot, 'start', chatId);
+                }, inDelay);
+                activeReminders.set(inKey, inTimeoutId);
+                console.log(`[Scheduler] IN OTP monitor for "${s.slot}" in ${Math.round(inDelay / 60000)} min (${session.config.name})`);
+            } else if (nowIST.getTime() < slotIST.getTime() + 15 * 60 * 1000) {
+                // Class started within the last 15 minutes: trigger IN OTP scanner right away!
+                console.log(`[Scheduler] Class "${s.slot}" is active right now — scanning IN OTP immediately for ${session.config.name}`);
                 handleAttendanceOtp(session, s.slot, 'start', chatId);
-            }, inDelay);
-            activeReminders.set(inKey, inTimeoutId);
-            console.log(`[Scheduler] IN OTP monitor for "${s.slot}" in ${Math.round(inDelay / 60000)} min (${session.config.name})`);
-        } else if (nowIST.getTime() < slotIST.getTime() + 15 * 60 * 1000) {
-            // Class started within the last 15 minutes: trigger IN OTP scanner right away!
-            console.log(`[Scheduler] Class "${s.slot}" is active right now — scanning IN OTP immediately for ${session.config.name}`);
-            handleAttendanceOtp(session, s.slot, 'start', chatId);
-        }
-
-        // ── 3. OUT OTP Attendance (10 minutes before class end) ────────────────
-        // Standard class duration is 90 mins
-        const durationMs = 90 * 60 * 1000;
-        const endIST = new Date(slotIST.getTime() + durationMs);
-        const outAttendanceTime = endIST.getTime() - 10 * 60 * 1000;
-        const outDelay = outAttendanceTime - nowIST.getTime();
-        const outKey = `out_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
-
-        if (outDelay > 0) {
-            if (activeReminders.has(outKey)) {
-                clearTimeout(activeReminders.get(outKey));
             }
-            const outTimeoutId = setTimeout(() => {
-                activeReminders.delete(outKey);
-                handleAttendanceOtp(session, s.slot, 'end', chatId);
-            }, outDelay);
-            activeReminders.set(outKey, outTimeoutId);
-            console.log(`[Scheduler] OUT OTP monitor for "${s.slot}" in ${Math.round(outDelay / 60000)} min (${session.config.name})`);
+
+            // OUT OTP Attendance (10 minutes before class end)
+            const durationMs = 90 * 60 * 1000;
+            const endIST = new Date(slotIST.getTime() + durationMs);
+            const outAttendanceTime = endIST.getTime() - 10 * 60 * 1000;
+            const outDelay = outAttendanceTime - nowIST.getTime();
+            const outKey = `out_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
+
+            if (outDelay > 0) {
+                if (activeReminders.has(outKey)) {
+                    clearTimeout(activeReminders.get(outKey));
+                }
+                const outTimeoutId = setTimeout(() => {
+                    activeReminders.delete(outKey);
+                    handleAttendanceOtp(session, s.slot, 'end', chatId);
+                }, outDelay);
+                activeReminders.set(outKey, outTimeoutId);
+                console.log(`[Scheduler] OUT OTP monitor for "${s.slot}" in ${Math.round(outDelay / 60000)} min (${session.config.name})`);
+            }
         }
     }
 }
@@ -3427,6 +3445,10 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                 }
 
                 if (text.startsWith('!otp') || text.startsWith('!checkotp')) {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ The OTP attendance feature is restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
                     const parts = text.split(' ').slice(1);
