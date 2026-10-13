@@ -1536,12 +1536,44 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
             return;
         }
 
-        await page.waitForTimeout(2500);
+        // Wait for Saveetha POST submission to complete
+        await page.waitForTimeout(3500);
 
+        // Verify if attendance was marked/approved
+        let afterStatus = await getPageAttendanceStatus(page);
+        const checkApproved = phase === 'start' ? afterStatus.inApproved : afterStatus.outApproved;
+
+        // If server hasn't re-rendered yet, do a quick reload to get latest status
+        if (!checkApproved) {
+            await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+            await page.waitForTimeout(2000);
+            afterStatus = await getPageAttendanceStatus(page);
+        }
+
+        const isSuccess = phase === 'start' ? afterStatus.inApproved : afterStatus.outApproved;
         const afterPic = path.join(__dirname, `_otp_done_${Date.now()}.png`);
+
         try {
             await page.screenshot({ path: afterPic });
-            await sendTelegramPhoto(afterPic, `✅ Submitted ${phase === 'start' ? 'IN' : 'OUT'} OTP: *${userOtp}* for *${attendanceTarget.name}*`, chatId);
+            if (isSuccess) {
+                await sendTelegramPhoto(
+                    afterPic,
+                    `🎉 *OTP Entered & Attendance Approved!* ✅\n\n` +
+                    `📚 *Class:* *${attendanceTarget.name}*\n` +
+                    `🎯 *Phase:* ${phase === 'start' ? 'IN Attendance' : 'OUT Attendance'}\n` +
+                    `🔢 *Entered OTP:* \`${userOtp}\`\n` +
+                    `🟢 *Result:* Approved for this session!`,
+                    chatId
+                );
+            } else {
+                await sendTelegramPhoto(
+                    afterPic,
+                    `📸 *OTP Submitted:* \`${userOtp}\`\n\n` +
+                    `📚 *Class:* *${attendanceTarget.name}*\n` +
+                    `Please check the screenshot above for confirmation.`,
+                    chatId
+                );
+            }
         } catch (_) {}
         try { fs.unlinkSync(afterPic); } catch (_) {}
 
