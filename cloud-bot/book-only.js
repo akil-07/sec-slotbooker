@@ -1433,67 +1433,10 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
         await page.waitForTimeout(3000);
 
         // 2. Find attendance link for targetKeyword (or current active class)
-        const attendanceTarget = await page.evaluate((kw) => {
-            const links = Array.from(document.querySelectorAll('a')).filter(a => {
-                const h = a.getAttribute('href') || '';
-                return h.includes('attendance_process') || h.includes('event_attendance_process');
-            });
-            if (!links.length) return null;
-
-            // Strategy A: Match by keyword/subject in card text
-            if (kw) {
-                const kwLow = kw.toLowerCase().trim();
-                for (const a of links) {
-                    const card = a.closest('tr, .card, div') || a.parentElement;
-                    const cardText = (card ? card.innerText : '').toLowerCase();
-                    if (cardText.includes(kwLow)) {
-                        return {
-                            href: a.getAttribute('href'),
-                            name: (card ? card.innerText : '').split('\n')[0].trim() || kw
-                        };
-                    }
-                }
-            }
-
-            // Strategy B: Match active class based on current time
-            const now = new Date();
-            const nowMins = now.getHours() * 60 + now.getMinutes();
-            for (const a of links) {
-                const card = a.closest('tr, .card, div') || a.parentElement;
-                const cardText = card ? card.innerText : '';
-                const m = cardText.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[-–]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-                if (m) {
-                    let sh = parseInt(m[1], 10);
-                    if (m[3]?.toUpperCase() === 'PM' && sh < 12) sh += 12;
-                    if (m[3]?.toUpperCase() === 'AM' && sh === 12) sh = 0;
-                    const startMin = sh * 60 + parseInt(m[2], 10);
-
-                    let eh = parseInt(m[4], 10);
-                    if (m[6]?.toUpperCase() === 'PM' && eh < 12) eh += 12;
-                    if (m[6]?.toUpperCase() === 'AM' && eh === 12) eh = 0;
-                    const endMin = eh * 60 + parseInt(m[5], 10);
-
-                    // If currently within or near (15 mins before/after) this class
-                    if (nowMins >= startMin - 15 && nowMins <= endMin + 15) {
-                        return {
-                            href: a.getAttribute('href'),
-                            name: cardText.split('\n')[0].trim() || 'Current Class'
-                        };
-                    }
-                }
-            }
-
-            // Strategy C: Fallback to the first available link
-            const first = links[0];
-            const firstCard = first.closest('tr, .card, div') || first.parentElement;
-            return {
-                href: first.getAttribute('href'),
-                name: (firstCard ? firstCard.innerText : '').split('\n')[0].trim() || 'Class'
-            };
-        }, targetKeyword);
+        const attendanceTarget = await findAttendanceTarget(page, targetKeyword);
 
         if (!attendanceTarget || !attendanceTarget.href) {
-            await sendTelegram(`⚠️ No attendance link found on schedule for *${targetKeyword}*.`, chatId);
+            await sendTelegram(`⚠️ No attendance link found on schedule for *${targetKeyword || 'today'}*.`, chatId);
             return;
         }
 
@@ -1503,13 +1446,48 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
 
         console.log(`[OTP] Navigating directly to attendance page: ${attendanceUrl}`);
         await page.goto(attendanceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForTimeout(2500);
+        await page.waitForTimeout(2000);
 
-        // 3. Poll for OTP box (with auto-reload so teacher activation is caught!)
-        const otpResult = await waitForOtpWindow(page, 15 * 60 * 1000, phase);
+        // 3. Inspect attendance status immediately
+        const initialStatus = await getPageAttendanceStatus(page);
+        const targetType = phase === 'start' ? 'in' : 'out';
+        const isPhaseDone = targetType === 'in' ? initialStatus.inApproved : initialStatus.outApproved;
+
+        // If ALREADY DONE, say so immediately!
+        if (isPhaseDone) {
+            if (initialStatus.inApproved && initialStatus.outApproved) {
+                await sendTelegram(
+                    `✅ *It is already done!*\n\n` +
+                    `Both *IN* and *OUT* attendance have already been approved for *${attendanceTarget.name}*! 🎓🎉\n\n` +
+                    `No OTP entry needed.`,
+                    chatId
+                );
+            } else {
+                await sendTelegram(
+                    `✅ *It is already done!*\n\n` +
+                    `Your *${phase === 'start' ? 'IN' : 'OUT'} OTP* attendance has already been approved for *${attendanceTarget.name}*! 🎉\n\n` +
+                    (phase === 'start' ? `ℹ️ *OUT OTP Status:* ${initialStatus.outText}` : `ℹ️ *IN OTP Status:* ${initialStatus.inText}`),
+                    chatId
+                );
+            }
+            return;
+        }
+
+        // 4. Poll for OTP box if not already open (with auto-reload so teacher activation is caught!)
+        const isPhaseOpen = targetType === 'in' ? initialStatus.inOpen : initialStatus.outOpen;
+        let otpResult = { open: isPhaseOpen, alreadyMarked: false };
+
+        if (!isPhaseOpen) {
+            otpResult = await waitForOtpWindow(page, 15 * 60 * 1000, phase);
+        }
 
         if (otpResult.alreadyMarked) {
-            await sendTelegram(`✅ *${phaseLabel}* is already recorded/approved for *${attendanceTarget.name}*!\n\nNo OTP entry needed. 🎉`, chatId);
+            await sendTelegram(
+                `✅ *It is already done!*\n\n` +
+                `*${phaseLabel}* has already been approved for *${attendanceTarget.name}*! 🎉\n\n` +
+                `No OTP entry needed.`,
+                chatId
+            );
             return;
         }
 
@@ -1518,7 +1496,7 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
             return;
         }
 
-        // 4. Box is OPEN! Send photo & request OTP
+        // 5. Box is OPEN! Send photo & request OTP
         const beforePic = path.join(__dirname, `_otp_open_${Date.now()}.png`);
         try {
             await page.screenshot({ path: beforePic });
@@ -1570,6 +1548,192 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
     } catch (e) {
         console.error('[AttendanceOTP] Error:', e);
         await sendTelegram(`⚠️ Attendance monitor error: ${e.message}`, chatId);
+    } finally {
+        await page.close().catch(() => {});
+    }
+}
+
+// ─── Find Target Class from Schedule ──────────────────────────────────────────
+
+async function findAttendanceTarget(page, kw) {
+    return await page.evaluate((targetKw) => {
+        const links = Array.from(document.querySelectorAll('a')).filter(a => {
+            const h = a.getAttribute('href') || '';
+            return h.includes('attendance_process') || h.includes('event_attendance_process');
+        });
+        if (!links.length) return null;
+
+        function getCardText(a) {
+            let el = a.parentElement;
+            while (el && el !== document.body) {
+                if (/\d{1,2}:\d{2}\s*(?:AM|PM)/i.test(el.innerText)) {
+                    return el.innerText;
+                }
+                el = el.parentElement;
+            }
+            const fallback = a.closest('tr, .card') || a.parentElement;
+            return fallback ? fallback.innerText : '';
+        }
+
+        const items = links.map(a => {
+            const fullText = getCardText(a);
+            const lines = fullText.split('\n').map(l => l.trim()).filter(Boolean);
+            const name = lines[0] || 'Class';
+            return {
+                href: a.getAttribute('href'),
+                name,
+                fullText
+            };
+        });
+
+        // Strategy A: Match by keyword/subject in card text
+        if (targetKw) {
+            const kwLow = targetKw.toLowerCase().trim();
+            for (const item of items) {
+                if (item.fullText.toLowerCase().includes(kwLow)) {
+                    return item;
+                }
+            }
+        }
+
+        // Strategy B: Match active class based on current time
+        const now = new Date();
+        const nowMins = now.getHours() * 60 + now.getMinutes();
+        for (const item of items) {
+            const m = item.fullText.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[-–]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+            if (m) {
+                let sh = parseInt(m[1], 10);
+                if (m[3]?.toUpperCase() === 'PM' && sh < 12) sh += 12;
+                if (m[3]?.toUpperCase() === 'AM' && sh === 12) sh = 0;
+                const startMin = sh * 60 + parseInt(m[2], 10);
+
+                let eh = parseInt(m[4], 10);
+                if (m[6]?.toUpperCase() === 'PM' && eh < 12) eh += 12;
+                if (m[6]?.toUpperCase() === 'AM' && eh === 12) eh = 0;
+                const endMin = eh * 60 + parseInt(m[5], 10);
+
+                // If currently within or near (15 mins before/after) this class
+                if (nowMins >= startMin - 15 && nowMins <= endMin + 15) {
+                    return item;
+                }
+            }
+        }
+
+        // Strategy C: Fallback to the first available link
+        return items[0];
+    }, kw);
+}
+
+// ─── Inspect Real-time Status of Attendance Page ──────────────────────────────
+
+async function getPageAttendanceStatus(page) {
+    return await page.evaluate(() => {
+        const text = (document.body.innerText || '');
+        const bodyLower = text.toLowerCase();
+
+        // 1. IN OTP status
+        const inApproved = bodyLower.includes('in attendance has been approved') ||
+                           bodyLower.includes('in otp approved') ||
+                           bodyLower.includes('in otp submitted') ||
+                           /in otp[\s\S]{0,100}submitted/i.test(bodyLower);
+
+        const inForm = document.querySelector('form[data-otp-form][data-otp-type="in"], form[data-otp-type="in"]');
+        const inInput = inForm ? inForm.querySelector('input:not([type="hidden"])') : null;
+        const inOpen = !!(inInput && !inInput.disabled && inInput.offsetParent !== null);
+
+        let inText = '⏳ Waiting for faculty to generate';
+        if (inApproved) {
+            inText = '✅ Already done (Approved for this session)';
+        } else if (inOpen) {
+            inText = '🚨 OPEN NOW for entry!';
+        } else if (text.includes('IN OTP entry will be available once your faculty generates it')) {
+            inText = '⏳ Waiting for faculty to generate IN OTP';
+        }
+
+        // 2. OUT OTP status
+        const outMatch = text.match(/OUT OTP approved on ([^\n\.]+)/i);
+        const outApproved = !!outMatch ||
+                            bodyLower.includes('out attendance has been approved') ||
+                            bodyLower.includes('out otp approved') ||
+                            bodyLower.includes('out otp submitted') ||
+                            /out otp[\s\S]{0,100}submitted/i.test(bodyLower);
+
+        const outForm = document.querySelector('form[data-otp-form][data-otp-type="out"], form[data-otp-type="out"]');
+        const outInput = outForm ? outForm.querySelector('input:not([type="hidden"])') : null;
+        const outOpen = !!(outInput && !outInput.disabled && outInput.offsetParent !== null);
+
+        let outText = '⏳ Waiting for faculty to generate';
+        if (outApproved) {
+            outText = outMatch ? `✅ Already done (Approved on ${outMatch[1].trim()})` : '✅ Already done (Approved for this session)';
+        } else if (outOpen) {
+            outText = '🚨 OPEN NOW for entry!';
+        } else if (text.includes('OUT OTP will be enabled after your IN OTP entry')) {
+            outText = '⏳ Will be enabled after IN OTP entry';
+        } else if (text.includes('OUT OTP entry will be available once your faculty generates it')) {
+            outText = '⏳ Waiting for faculty to generate OUT OTP';
+        }
+
+        return { inApproved, inOpen, inText, outApproved, outOpen, outText };
+    });
+}
+
+// ─── Instant Attendance Status Snapshot ───────────────────────────────────────
+
+async function checkAttendanceStatus(session, targetKeyword, chatId = CHAT_ID) {
+    if (!isSuperAdmin(chatId)) {
+        await sendTelegram(`⛔ The OTP attendance feature is restricted to Super Admin only.`, chatId);
+        return;
+    }
+    const page = await session.context.newPage();
+    try {
+        await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        if (page.url().includes('/login')) {
+            await doLogin(page, session.config.user, session.config.pass);
+            await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        }
+        await page.waitForTimeout(2500);
+
+        const target = await findAttendanceTarget(page, targetKeyword);
+        if (!target || !target.href) {
+            await sendTelegram(`⚠️ No attendance link found on schedule for *${targetKeyword || 'today'}*.`, chatId);
+            return;
+        }
+
+        const attendanceUrl = target.href.startsWith('http') ? target.href : `https://learner.saveetha.in${target.href}`;
+        console.log(`[Status] Navigating to: ${attendanceUrl}`);
+        await page.goto(attendanceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(2000);
+
+        const status = await getPageAttendanceStatus(page);
+
+        const screenshotPath = path.join(__dirname, `_status_${Date.now()}.png`);
+        try {
+            await page.screenshot({ path: screenshotPath });
+            let msg = `📋 *Attendance Status*\n\n` +
+                      `📚 *Class:* *${target.name}*\n\n` +
+                      `• *IN OTP:* ${status.inText}\n` +
+                      `• *OUT OTP:* ${status.outText}\n`;
+
+            if (status.inApproved && status.outApproved) {
+                msg += `\n🎉 *It is already done!* Both IN and OUT attendance are complete for this session.`;
+            } else if (status.inApproved) {
+                msg += `\n✅ *It is already done!* IN attendance has already been approved for this session.`;
+            }
+
+            await sendTelegramPhoto(screenshotPath, msg, chatId);
+        } catch (err) {
+            await sendTelegram(
+                `📋 *Attendance Status — ${target.name}*\n\n` +
+                `• *IN OTP:* ${status.inText}\n` +
+                `• *OUT OTP:* ${status.outText}`,
+                chatId
+            );
+        } finally {
+            try { fs.unlinkSync(screenshotPath); } catch (_) {}
+        }
+    } catch (e) {
+        console.error('[AttendanceStatus] Error:', e);
+        await sendTelegram(`⚠️ Error checking attendance status: ${e.message}`, chatId);
     } finally {
         await page.close().catch(() => {});
     }
@@ -3124,9 +3288,10 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                             `\`!unblock <chatId>\` — Unblock a user\n` +
                             `\`!broadcast <msg>\` — Message everyone\n`;
                     }
-                    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
-                    if (fromChatId === ADMIN_CHAT_ID || fromChatId === '8581009274' || fromChatId === superAdminChatId) {
+                    if (isSuperAdmin(fromChatId)) {
                         helpMsg += `\n*🛠️ Super Admin Commands:*\n` +
+                            `\`!checkotp [class]\` — Instant attendance status check with screenshot\n` +
+                            `\`!otp [class] [in/out]\` — Monitor, detect & submit class OTP\n` +
                             `\`!stopbot\` — Permanently stop GitHub Actions bot\n` +
                             `\`!restartbot\` — Restart GitHub Actions bot\n`;
                     }
@@ -3430,7 +3595,20 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     continue;
                 }
 
-                if (text.startsWith('!otp') || text.startsWith('!checkotp')) {
+                if (text.startsWith('!checkotp')) {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ The OTP attendance feature is restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    const kw = text.split(' ').slice(1).join(' ').trim();
+                    await sendTelegram(`🔍 Checking attendance status for *${kw || 'current class'}*...`, fromChatId);
+                    checkAttendanceStatus(session, kw, fromChatId);
+                    continue;
+                }
+
+                if (text.startsWith('!otp')) {
                     if (!isSuperAdmin(fromChatId)) {
                         await sendTelegram(`⛔ The OTP attendance feature is restricted to Super Admin only.`, fromChatId);
                         continue;
@@ -3440,7 +3618,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     const parts = text.split(' ').slice(1);
                     const phase = text.includes('out') ? 'end' : 'start';
                     const kw = parts.filter(p => !['in', 'out'].includes(p.toLowerCase())).join(' ').trim();
-                    await sendTelegram(`🔍 Starting manual *${phase === 'start' ? 'IN' : 'OUT'} OTP* scan for *${kw || 'current class'}*...`, fromChatId);
+                    await sendTelegram(`🔍 Checking & scanning *${phase === 'start' ? 'IN' : 'OUT'} OTP* for *${kw || 'current class'}*...`, fromChatId);
                     handleAttendanceOtp(session, kw, phase, fromChatId);
                     continue;
                 }
