@@ -1,17 +1,10 @@
-name: 🤖 Saveetha Schedule OTP Bot
+﻿name: Saveetha Bots (OTP + Slot Booking)
 
 on:
   workflow_dispatch:
-    inputs:
-      keyword:
-        description: 'Keyword to book'
-        required: false
-      chat_id:
-        description: 'Chat ID'
-        required: false
 
 concurrency:
-  group: "telegram-bot-v2"
+  group: "saveetha-bots"
   cancel-in-progress: true
 
 permissions:
@@ -19,33 +12,31 @@ permissions:
   contents: read
 
 jobs:
-  bot:
-    name: Run Persistent Telegram Bot
+
+  # ── Job 1: Schedule OTP Bot ────────────────────────────────────────────────
+  otp-bot:
+    name: Schedule OTP Bot
     runs-on: ubuntu-latest
-    timeout-minutes: 350   # 350 mins so the 5.5hr (330m) run completes safely
+    timeout-minutes: 350
 
     steps:
-      - name: 📥 Checkout code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: ⚙️ Setup Node.js 20
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: cloud-bot/package-lock.json
 
-      - name: 📦 Install dependencies
-        run: |
-          cd cloud-bot
-          npm install
+      - name: Install dependencies
+        run: cd cloud-bot && npm install
 
-      - name: 🎭 Install Playwright + Chromium
-        run: |
-          cd cloud-bot
-          npx playwright install chromium --with-deps
+      - name: Install Playwright + Chromium
+        run: cd cloud-bot && npx playwright install chromium --with-deps
 
-      - name: 🤖 Run Schedule OTP Bot
+      - name: Run Schedule OTP Bot
         env:
           SAVEETHA_USER: ${{ secrets.SAVEETHA_USER }}
           SAVEETHA_PASS: ${{ secrets.SAVEETHA_PASS }}
@@ -56,20 +47,70 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
           TZ: Asia/Kolkata
-          DISPLAY: ''
         run: |
           cd cloud-bot
-          # Run for up to 5.5 hours (19800 seconds)
           timeout 19800 node schedule-otp-bot.js || true
-          echo "Bot session ended."
+          echo "OTP bot session ended."
 
-      - name: 🔄 Trigger next run
-        if: always()
+  # ── Job 2: Slot Booking Bot ────────────────────────────────────────────────
+  booking-bot:
+    name: Slot Booking Bot
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: cloud-bot/package-lock.json
+
+      - name: Install dependencies
+        run: cd cloud-bot && npm install
+
+      - name: Install Playwright + Chromium
+        run: cd cloud-bot && npx playwright install chromium --with-deps
+
+      - name: Run Slot Booking Bot
+        env:
+          SAVEETHA_USER: ${{ secrets.SAVEETHA_USER }}
+          SAVEETHA_PASS: ${{ secrets.SAVEETHA_PASS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SUPER_ADMIN_NOTIFICATIONS: ${{ secrets.SUPER_ADMIN_NOTIFICATIONS }}
+          TZ: Asia/Kolkata
+        run: |
+          cd cloud-bot
+          timeout 19800 node book-only.js || true
+          echo "Slot booking bot session ended."
+
+  # ── Job 3: Self-restart (waits for BOTH bots to finish) ───────────────────
+  restart:
+    name: Trigger Next Run
+    runs-on: ubuntu-latest
+    needs: [otp-bot, booking-bot]
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Trigger next run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -f "cloud-bot/STOP_BOT" ]; then
-            echo "🛑 STOP_BOT flag found. Not triggering the next run."
+            echo "STOP_BOT flag found. Not restarting."
           else
+            echo "Both bots finished. Restarting workflow..."
             gh workflow run bot.yml
           fi
