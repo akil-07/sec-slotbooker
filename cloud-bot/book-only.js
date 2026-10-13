@@ -1290,171 +1290,119 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
     }
 }
 
-// ─── OTP Attendance Automation (Robust Phase-Aware) ──────────────────────────
+// ─── OTP Attendance Automation (Auto-Reloading & Exact URL Routing) ──────────
 
 async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start') {
+    const targetType = phase === 'start' ? 'in' : 'out';
     const otpLabel = phase === 'start' ? 'IN OTP' : 'OUT OTP';
-    console.log(`[OTP] Polling for ${otpLabel} window (phase=${phase})...`);
+    console.log(`[OTP] Polling for ${otpLabel} window (type=${targetType})...`);
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
         try {
-            const result = await page.evaluate((phaseArg) => {
-                function isVisibleEl(el) {
-                    if (!el) return false;
-                    const style = window.getComputedStyle(el);
-                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-                    const rect = el.getBoundingClientRect();
-                    return rect.width > 0 && rect.height > 0;
+            const check = await page.evaluate((type) => {
+                const bodyText = (document.body.innerText || '').toLowerCase();
+
+                // 1. Check if already approved / marked
+                if (type === 'in') {
+                    if (bodyText.includes('in attendance has been approved') || bodyText.includes('in otp approved') || bodyText.includes('in otp submitted')) {
+                        return { status: 'already_marked', reason: 'IN OTP already marked/approved' };
+                    }
+                } else {
+                    if (bodyText.includes('out otp approved') || bodyText.includes('out attendance has been approved') || bodyText.includes('out otp submitted')) {
+                        return { status: 'already_marked', reason: 'OUT OTP already marked/approved' };
+                    }
                 }
 
-                // Strategy 1: Saveetha exact match (phase-aware)
-                const allInputs = document.querySelectorAll('input');
+                // 2. Check Saveetha exact form: form[data-otp-form][data-otp-type="in" or "out"]
+                const otpForms = Array.from(document.querySelectorAll('form[data-otp-form], form'));
+                for (const form of otpForms) {
+                    const fType = (form.getAttribute('data-otp-type') || '').toLowerCase();
+                    if (fType && fType !== type) continue; // Skip other phase form
+                    const input = form.querySelector('input:not([type="hidden"])');
+                    if (input && !input.disabled && input.offsetParent !== null) {
+                        return { status: 'open', reason: `Saveetha form[data-otp-type="${fType || type}"] is open and active` };
+                    }
+                }
+
+                // 3. Fallback: check any visible text/number input on the page
+                const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
                 for (const inp of allInputs) {
-                    const ph = (inp.placeholder || '').toLowerCase();
-                    const nm = (inp.name || inp.id || '').toLowerCase();
-
-                    const isInOtp = ph.includes('in otp') || nm.includes('in_otp') || nm.includes('inotp');
-                    const isOutOtp = ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp');
-                    const isGenericOtp = ph.includes('enter otp') || (ph.includes('otp') && !isInOtp && !isOutOtp);
-
-                    const relevant = phaseArg === 'start'
-                        ? (isInOtp || isGenericOtp)
-                        : (isOutOtp || isGenericOtp);
-
-                    if (relevant && !inp.disabled && isVisibleEl(inp)) {
-                        return { found: true, reason: `Exact match: placeholder="${inp.placeholder}", name="${inp.name}"` };
-                    }
+                    if (inp.offsetParent === null || inp.disabled || inp.readOnly) continue;
+                    // Ignore search or feedback inputs
+                    if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
+                    return { status: 'open', reason: `Enabled input found: placeholder="${inp.placeholder}", name="${inp.name}"` };
                 }
 
-                // Strategy 2: Label proximity (phase-aware)
-                const targetText = phaseArg === 'start' ? 'in otp' : 'out otp';
-                const labels = document.querySelectorAll('label, span, div, p, strong, b');
-                for (const lbl of labels) {
-                    const txt = (lbl.innerText || '').toLowerCase().trim();
-                    if (txt.includes(targetText) || (txt.includes('otp') && !txt.includes(phaseArg === 'start' ? 'out' : 'in'))) {
-                        const container = lbl.closest('tr, .form-group, .card, div') || lbl.parentElement;
-                        if (container) {
-                            const inp = container.querySelector('input');
-                            if (inp && !inp.disabled && isVisibleEl(inp)) {
-                                return { found: true, reason: `Label match "${lbl.innerText.trim()}"` };
-                            }
-                        }
-                    }
-                }
+                return { status: 'waiting', reason: 'Waiting for faculty to generate OTP' };
+            }, targetType);
 
-                // Strategy 3: Modal / SweetAlert popup
-                const modal = document.querySelector('.modal.show, .swal2-shown, [role="dialog"]');
-                if (modal && isVisibleEl(modal)) {
-                    const inp = modal.querySelector('input[type="text"], input[type="number"], input:not([type])');
-                    if (inp && !inp.disabled && isVisibleEl(inp)) {
-                        return { found: true, reason: 'Enabled input in open modal dialog' };
-                    }
-                }
-
-                // Strategy 4: Nearby text
-                const textInputs = document.querySelectorAll('input[type="text"], input[type="number"]');
-                for (const inp of textInputs) {
-                    if (!isVisibleEl(inp) || inp.disabled) continue;
-                    const placeholder = (inp.placeholder || '').toLowerCase();
-                    const container = inp.closest('form, section, div') || document.body;
-                    const nearby = (container.innerText || '').toLowerCase().substring(0, 500);
-                    if (
-                        placeholder.includes('otp') ||
-                        nearby.includes('in otp') || nearby.includes('out otp') ||
-                        nearby.includes('one time') || nearby.includes('attendance code') ||
-                        (nearby.includes('enter') && (nearby.includes('otp') || nearby.includes('digit')))
-                    ) {
-                        return { found: true, reason: 'OTP input detected via nearby text' };
-                    }
-                }
-
-                return { found: false, reason: null };
-            }, phase);
-
-            if (result.found) {
-                console.log(`[OTP] ${otpLabel} window DETECTED! Reason: ${result.reason}`);
-                return true;
+            if (check.status === 'already_marked') {
+                console.log(`[OTP] ${otpLabel}: ${check.reason}`);
+                return { open: false, alreadyMarked: true, reason: check.reason };
             }
+
+            if (check.status === 'open') {
+                console.log(`[OTP] ${otpLabel} DETECTED! (${check.reason})`);
+                return { open: true, alreadyMarked: false, reason: check.reason };
+            }
+
+            const secsLeft = Math.round((deadline - Date.now()) / 1000);
+            console.log(`[OTP] ${otpLabel} not yet open (${secsLeft}s left). Reloading page in 5s...`);
+            await new Promise(r => setTimeout(r, 5000));
+
+            // CRITICAL: Reload page so Django server-rendered HTML reflects when faculty generates OTP!
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+            await new Promise(r => setTimeout(r, 2000));
+
         } catch (e) {
-            console.error(`[OTP] Eval error: ${e.message}`);
+            console.error(`[OTP] Polling error: ${e.message}`);
+            await new Promise(r => setTimeout(r, 5000));
         }
-        await new Promise(r => setTimeout(r, 3000));
     }
 
-    console.log(`[OTP] Timeout — ${otpLabel} window never appeared.`);
-    return false;
+    console.log(`[OTP] Timeout — ${otpLabel} never opened.`);
+    return { open: false, alreadyMarked: false, reason: 'Timeout' };
 }
 
 async function enterOtpOnPage(page, otp, phase = 'start') {
-    console.log(`[OTP] Entering ${phase === 'start' ? 'IN' : 'OUT'} OTP: ${otp}`);
+    const targetType = phase === 'start' ? 'in' : 'out';
+    console.log(`[OTP] Entering ${targetType.toUpperCase()} OTP: ${otp}`);
 
-    const phaseSelectors = phase === 'start'
-        ? ['input[placeholder*="Enter IN OTP" i]', 'input[placeholder*="IN OTP" i]']
-        : ['input[placeholder*="Enter OUT OTP" i]', 'input[placeholder*="OUT OTP" i]'];
+    // Try finding the specific Saveetha OTP form first
+    const formLocator = page.locator(`form[data-otp-form][data-otp-type="${targetType}" i]`).first();
+    let input = null;
+    let submitBtn = null;
 
-    const otpInputSelectors = [
-        ...phaseSelectors,
-        'input[maxlength="6"]',
-        'input[maxlength="4"]',
-        'input[maxlength="8"]',
-        '[class*="otp" i] input',
-        '[id*="otp" i] input',
-        '.modal input[type="text"]',
-        '.modal input[type="number"]',
-        '[role="dialog"] input[type="text"]',
-        '[role="dialog"] input[type="number"]',
-        '.swal2-container input',
-        'input[placeholder*="OTP" i]',
-        'input[name*="otp" i]',
-    ];
-
-    let inputLocator = null;
-    for (const sel of otpInputSelectors) {
-        const loc = page.locator(sel).first();
-        if (await loc.count() > 0) {
-            const visible = await loc.isVisible().catch(() => false);
-            if (visible) {
-                inputLocator = loc;
-                console.log(`[OTP] Found input with selector: ${sel}`);
-                break;
-            }
-        }
+    if (await formLocator.count() > 0) {
+        input = formLocator.locator('input:not([type="hidden"])').first();
+        submitBtn = formLocator.locator('button[type="submit"], button').first();
     }
 
-    if (!inputLocator) {
-        console.log('[OTP] Could not find OTP input field.');
-        return { success: false, reason: 'OTP input not found' };
+    // Fallback: any visible input
+    if (!input || !(await input.count())) {
+        input = page.locator('form[data-otp-form] input:not([type="hidden"]), input[type="text"]:visible, input[type="number"]:visible').first();
+        submitBtn = page.locator('form[data-otp-form] button[type="submit"], button:has-text("Submit"):visible, button[type="submit"]:visible').first();
     }
 
-    await inputLocator.click();
-    await inputLocator.fill('');
-    await inputLocator.fill(otp);
+    if (!input || !(await input.count())) {
+        console.log('[OTP] Could not find OTP input field on page.');
+        return { success: false, reason: 'OTP input field not found on page' };
+    }
+
+    await input.click();
+    await input.fill('');
+    await input.fill(otp);
     await new Promise(r => setTimeout(r, 500));
 
-    const submitSelectors = [
-        'button:has-text("Submit")', 'button:has-text("Confirm")',
-        'button:has-text("Verify")', 'button:has-text("OK")',
-        'button:has-text("Accept")', 'button:has-text("Attend")',
-        'button:has-text("Enter")',
-        '.swal2-confirm',
-        '[class*="submit" i]', '[class*="confirm" i]',
-        '.modal button[type="submit"]',
-        '[role="dialog"] button[type="submit"]',
-        'input[type="submit"]',
-    ];
-
-    for (const sel of submitSelectors) {
-        const loc = page.locator(sel).first();
-        if (await loc.count() > 0 && await loc.isVisible().catch(() => false)) {
-            await loc.click();
-            console.log(`[OTP] Clicked submit: ${sel}`);
-            return { success: true };
-        }
+    if (submitBtn && (await submitBtn.count())) {
+        await submitBtn.click();
+        console.log('[OTP] Clicked submit button.');
+    } else {
+        await input.press('Enter');
+        console.log('[OTP] Pressed Enter.');
     }
 
-    await inputLocator.press('Enter');
-    console.log('[OTP] Pressed Enter to submit.');
     return { success: true };
 }
 
@@ -1470,68 +1418,107 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
     try {
         await sendTelegram(
             `⏰ *10 Minutes Alert — Attendance Scanner Active*\n\n` +
-            `📚 Class: *${targetKeyword}*\n` +
+            `📚 Class: *${targetKeyword || 'Current Class'}*\n` +
             `🎯 Phase: *${phaseLabel}*\n\n` +
-            `Navigating to attendance page and scanning for ${phase === 'start' ? 'IN' : 'OUT'} OTP box...`,
+            `Locating class and opening attendance process page...`,
             chatId
         );
 
+        // 1. Go to people_schedule
         await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         if (page.url().includes('/login')) {
             await doLogin(page, session.config.user, session.config.pass);
             await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         }
+        await page.waitForTimeout(3000);
 
-        // Click "VIEW ATTENDANCE" or "View" for this class
-        let classOpened = false;
-        for (let i = 0; i < 24; i++) { // wait up to 2 mins for cards
-            classOpened = await page.evaluate(({ kw }) => {
-                const cards = Array.from(document.querySelectorAll('div, li, section, article, tr'));
-                const classCards = cards.filter(el => /SLOT\s*:/i.test(el.innerText || ''));
-                for (const card of classCards) {
-                    if (card.innerText.toLowerCase().includes(kw.toLowerCase())) {
-                        const viewBtn = Array.from(card.querySelectorAll('button, a')).find(b =>
-                            /VIEW\s*ATTENDANCE/i.test(b.innerText || '') || /^view$/i.test((b.innerText || '').trim())
-                        );
-                        if (viewBtn) {
-                            viewBtn.click();
-                            return true;
-                        }
+        // 2. Find attendance link for targetKeyword (or current active class)
+        const attendanceTarget = await page.evaluate((kw) => {
+            const links = Array.from(document.querySelectorAll('a')).filter(a => {
+                const h = a.getAttribute('href') || '';
+                return h.includes('attendance_process') || h.includes('event_attendance_process');
+            });
+            if (!links.length) return null;
+
+            // Strategy A: Match by keyword/subject in card text
+            if (kw) {
+                const kwLow = kw.toLowerCase().trim();
+                for (const a of links) {
+                    const card = a.closest('tr, .card, div') || a.parentElement;
+                    const cardText = (card ? card.innerText : '').toLowerCase();
+                    if (cardText.includes(kwLow)) {
+                        return {
+                            href: a.getAttribute('href'),
+                            name: (card ? card.innerText : '').split('\n')[0].trim() || kw
+                        };
                     }
                 }
-                for (const card of cards) {
-                    if (card.innerText.toLowerCase().includes(kw.toLowerCase())) {
-                        const viewBtn = Array.from(card.querySelectorAll('button, a')).find(b =>
-                            /VIEW\s*ATTENDANCE/i.test(b.innerText || '') || /^view$/i.test((b.innerText || '').trim())
-                        );
-                        if (viewBtn) {
-                            viewBtn.click();
-                            return true;
-                        }
+            }
+
+            // Strategy B: Match active class based on current time
+            const now = new Date();
+            const nowMins = now.getHours() * 60 + now.getMinutes();
+            for (const a of links) {
+                const card = a.closest('tr, .card, div') || a.parentElement;
+                const cardText = card ? card.innerText : '';
+                const m = cardText.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[-–]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+                if (m) {
+                    let sh = parseInt(m[1], 10);
+                    if (m[3]?.toUpperCase() === 'PM' && sh < 12) sh += 12;
+                    if (m[3]?.toUpperCase() === 'AM' && sh === 12) sh = 0;
+                    const startMin = sh * 60 + parseInt(m[2], 10);
+
+                    let eh = parseInt(m[4], 10);
+                    if (m[6]?.toUpperCase() === 'PM' && eh < 12) eh += 12;
+                    if (m[6]?.toUpperCase() === 'AM' && eh === 12) eh = 0;
+                    const endMin = eh * 60 + parseInt(m[5], 10);
+
+                    // If currently within or near (15 mins before/after) this class
+                    if (nowMins >= startMin - 15 && nowMins <= endMin + 15) {
+                        return {
+                            href: a.getAttribute('href'),
+                            name: cardText.split('\n')[0].trim() || 'Current Class'
+                        };
                     }
                 }
-                return false;
-            }, { kw: targetKeyword });
+            }
 
-            if (classOpened) break;
-            await new Promise(r => setTimeout(r, 5000));
-        }
+            // Strategy C: Fallback to the first available link
+            const first = links[0];
+            const firstCard = first.closest('tr, .card, div') || first.parentElement;
+            return {
+                href: first.getAttribute('href'),
+                name: (firstCard ? firstCard.innerText : '').split('\n')[0].trim() || 'Class'
+            };
+        }, targetKeyword);
 
-        if (!classOpened) {
-            console.log(`[OTP] Could not find specific VIEW ATTENDANCE button for ${targetKeyword}. Proceeding to scan page directly.`);
-        }
-
-        await new Promise(r => setTimeout(r, 2000));
-
-        // Poll for OTP window (up to 15 mins)
-        const otpOpen = await waitForOtpWindow(page, 15 * 60 * 1000, phase);
-
-        if (!otpOpen) {
-            await sendTelegram(`ℹ️ No ${phase === 'start' ? 'IN' : 'OUT'} OTP box opened for *${targetKeyword}* within 15 minutes.`, chatId);
+        if (!attendanceTarget || !attendanceTarget.href) {
+            await sendTelegram(`⚠️ No attendance link found on schedule for *${targetKeyword}*.`, chatId);
             return;
         }
 
-        // Send screenshot of open OTP window
+        const attendanceUrl = attendanceTarget.href.startsWith('http')
+            ? attendanceTarget.href
+            : `https://learner.saveetha.in${attendanceTarget.href}`;
+
+        console.log(`[OTP] Navigating directly to attendance page: ${attendanceUrl}`);
+        await page.goto(attendanceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(2500);
+
+        // 3. Poll for OTP box (with auto-reload so teacher activation is caught!)
+        const otpResult = await waitForOtpWindow(page, 15 * 60 * 1000, phase);
+
+        if (otpResult.alreadyMarked) {
+            await sendTelegram(`✅ *${phaseLabel}* is already recorded/approved for *${attendanceTarget.name}*!\n\nNo OTP entry needed. 🎉`, chatId);
+            return;
+        }
+
+        if (!otpResult.open) {
+            await sendTelegram(`ℹ️ No ${phase === 'start' ? 'IN' : 'OUT'} OTP box opened for *${attendanceTarget.name}* within 15 minutes.`, chatId);
+            return;
+        }
+
+        // 4. Box is OPEN! Send photo & request OTP
         const beforePic = path.join(__dirname, `_otp_open_${Date.now()}.png`);
         try {
             await page.screenshot({ path: beforePic });
@@ -1539,10 +1526,9 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
         } catch (_) {}
         try { fs.unlinkSync(beforePic); } catch (_) {}
 
-        // Request OTP from user via Telegram
         await sendTelegram(
             `🔔 *OTP Window is Open!*\n\n` +
-            `${emoji} *${phase === 'start' ? 'Entry (IN)' : 'Exit (OUT)'} OTP* for:\n*${targetKeyword}*\n\n` +
+            `${emoji} *${phase === 'start' ? 'Entry (IN)' : 'Exit (OUT)'} OTP* for:\n*${attendanceTarget.name}*\n\n` +
             `👉 Reply directly to this bot with the *6-digit OTP* now:`,
             chatId
         );
@@ -1562,7 +1548,7 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
         });
 
         if (!userOtp) {
-            await sendTelegram(`⏰ Timed out waiting for OTP (5 minutes). Session closed for *${targetKeyword}*.`, chatId);
+            await sendTelegram(`⏰ Timed out waiting for OTP (5 minutes). Session closed for *${attendanceTarget.name}*.`, chatId);
             return;
         }
 
@@ -1572,18 +1558,18 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
             return;
         }
 
-        await new Promise(r => setTimeout(r, 2500));
+        await page.waitForTimeout(2500);
 
         const afterPic = path.join(__dirname, `_otp_done_${Date.now()}.png`);
         try {
             await page.screenshot({ path: afterPic });
-            await sendTelegramPhoto(afterPic, `✅ Submitted ${phase === 'start' ? 'IN' : 'OUT'} OTP: *${userOtp}* for *${targetKeyword}*`, chatId);
+            await sendTelegramPhoto(afterPic, `✅ Submitted ${phase === 'start' ? 'IN' : 'OUT'} OTP: *${userOtp}* for *${attendanceTarget.name}*`, chatId);
         } catch (_) {}
         try { fs.unlinkSync(afterPic); } catch (_) {}
 
     } catch (e) {
         console.error('[AttendanceOTP] Error:', e);
-        await sendTelegram(`⚠️ Attendance monitor error for *${targetKeyword}*: ${e.message}`, chatId);
+        await sendTelegram(`⚠️ Attendance monitor error: ${e.message}`, chatId);
     } finally {
         await page.close().catch(() => {});
     }
