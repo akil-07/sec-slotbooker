@@ -1008,7 +1008,7 @@ bot.on('message', async (msg) => {
             '',
             '*User Commands:*',
             '!myid     — Get your Chat ID to give to the admin',
-            isRegistered ? '!schedule — Re-fetch today\'s schedule now' : '',
+            isRegistered ? "!schedule — Re-fetch today's schedule now" : '',
             isRegistered ? '!status   — Show active alert count' : '',
             '!help     — Show this message',
             '',
@@ -1016,8 +1016,8 @@ bot.on('message', async (msg) => {
             isAdmin ? '!adduser <id> <user> <pass>' : '',
             isAdmin ? '!removeuser <id>' : '',
             isAdmin ? '!listusers' : '',
-            chatId === '8581009274' ? '!stop     — Pause the bot\\'s activities' : '',
-            chatId === '8581009274' ? '!restart  — Resume the bot\\'s activities' : ''
+            chatId === '8581009274' ? "!stop     — Pause the bot's activities" : '',
+            chatId === '8581009274' ? "!restart  — Resume the bot's activities" : ''
         ].filter(Boolean).join('\n'), { parse_mode: 'Markdown' });
     }
 
