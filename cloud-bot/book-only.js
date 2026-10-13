@@ -1279,27 +1279,216 @@ async function runUnbookingOnPage(page, targetKeyword, targetTime, chatId = CHAT
     }
 }
 
-// ─── OTP Attendance Automation ────────────────────────────────────────────────
+// ─── OTP Attendance Automation (Robust Phase-Aware) ──────────────────────────
 
-async function startAttendanceMonitor(context, config, targetKeyword, startTimeStr, endTimeStr, chatId) {
-    const page = await context.newPage();
+async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start') {
+    const otpLabel = phase === 'start' ? 'IN OTP' : 'OUT OTP';
+    console.log(`[OTP] Polling for ${otpLabel} window (phase=${phase})...`);
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+        try {
+            const result = await page.evaluate((phaseArg) => {
+                function isVisibleEl(el) {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                }
+
+                // Strategy 1: Saveetha exact match (phase-aware)
+                const allInputs = document.querySelectorAll('input');
+                for (const inp of allInputs) {
+                    const ph = (inp.placeholder || '').toLowerCase();
+                    const nm = (inp.name || inp.id || '').toLowerCase();
+
+                    const isInOtp = ph.includes('in otp') || nm.includes('in_otp') || nm.includes('inotp');
+                    const isOutOtp = ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp');
+                    const isGenericOtp = ph.includes('enter otp') || (ph.includes('otp') && !isInOtp && !isOutOtp);
+
+                    const relevant = phaseArg === 'start'
+                        ? (isInOtp || isGenericOtp)
+                        : (isOutOtp || isGenericOtp);
+
+                    if (relevant && !inp.disabled && isVisibleEl(inp)) {
+                        return { found: true, reason: `Exact match: placeholder="${inp.placeholder}", name="${inp.name}"` };
+                    }
+                }
+
+                // Strategy 2: Label proximity (phase-aware)
+                const targetText = phaseArg === 'start' ? 'in otp' : 'out otp';
+                const labels = document.querySelectorAll('label, span, div, p, strong, b');
+                for (const lbl of labels) {
+                    const txt = (lbl.innerText || '').toLowerCase().trim();
+                    if (txt.includes(targetText) || (txt.includes('otp') && !txt.includes(phaseArg === 'start' ? 'out' : 'in'))) {
+                        const container = lbl.closest('tr, .form-group, .card, div') || lbl.parentElement;
+                        if (container) {
+                            const inp = container.querySelector('input');
+                            if (inp && !inp.disabled && isVisibleEl(inp)) {
+                                return { found: true, reason: `Label match "${lbl.innerText.trim()}"` };
+                            }
+                        }
+                    }
+                }
+
+                // Strategy 3: Modal / SweetAlert popup
+                const modal = document.querySelector('.modal.show, .swal2-shown, [role="dialog"]');
+                if (modal && isVisibleEl(modal)) {
+                    const inp = modal.querySelector('input[type="text"], input[type="number"], input:not([type])');
+                    if (inp && !inp.disabled && isVisibleEl(inp)) {
+                        return { found: true, reason: 'Enabled input in open modal dialog' };
+                    }
+                }
+
+                // Strategy 4: Nearby text
+                const textInputs = document.querySelectorAll('input[type="text"], input[type="number"]');
+                for (const inp of textInputs) {
+                    if (!isVisibleEl(inp) || inp.disabled) continue;
+                    const placeholder = (inp.placeholder || '').toLowerCase();
+                    const container = inp.closest('form, section, div') || document.body;
+                    const nearby = (container.innerText || '').toLowerCase().substring(0, 500);
+                    if (
+                        placeholder.includes('otp') ||
+                        nearby.includes('in otp') || nearby.includes('out otp') ||
+                        nearby.includes('one time') || nearby.includes('attendance code') ||
+                        (nearby.includes('enter') && (nearby.includes('otp') || nearby.includes('digit')))
+                    ) {
+                        return { found: true, reason: 'OTP input detected via nearby text' };
+                    }
+                }
+
+                return { found: false, reason: null };
+            }, phase);
+
+            if (result.found) {
+                console.log(`[OTP] ${otpLabel} window DETECTED! Reason: ${result.reason}`);
+                return true;
+            }
+        } catch (e) {
+            console.error(`[OTP] Eval error: ${e.message}`);
+        }
+        await new Promise(r => setTimeout(r, 3000));
+    }
+
+    console.log(`[OTP] Timeout — ${otpLabel} window never appeared.`);
+    return false;
+}
+
+async function enterOtpOnPage(page, otp, phase = 'start') {
+    console.log(`[OTP] Entering ${phase === 'start' ? 'IN' : 'OUT'} OTP: ${otp}`);
+
+    const phaseSelectors = phase === 'start'
+        ? ['input[placeholder*="Enter IN OTP" i]', 'input[placeholder*="IN OTP" i]']
+        : ['input[placeholder*="Enter OUT OTP" i]', 'input[placeholder*="OUT OTP" i]'];
+
+    const otpInputSelectors = [
+        ...phaseSelectors,
+        'input[maxlength="6"]',
+        'input[maxlength="4"]',
+        'input[maxlength="8"]',
+        '[class*="otp" i] input',
+        '[id*="otp" i] input',
+        '.modal input[type="text"]',
+        '.modal input[type="number"]',
+        '[role="dialog"] input[type="text"]',
+        '[role="dialog"] input[type="number"]',
+        '.swal2-container input',
+        'input[placeholder*="OTP" i]',
+        'input[name*="otp" i]',
+    ];
+
+    let inputLocator = null;
+    for (const sel of otpInputSelectors) {
+        const loc = page.locator(sel).first();
+        if (await loc.count() > 0) {
+            const visible = await loc.isVisible().catch(() => false);
+            if (visible) {
+                inputLocator = loc;
+                console.log(`[OTP] Found input with selector: ${sel}`);
+                break;
+            }
+        }
+    }
+
+    if (!inputLocator) {
+        console.log('[OTP] Could not find OTP input field.');
+        return { success: false, reason: 'OTP input not found' };
+    }
+
+    await inputLocator.click();
+    await inputLocator.fill('');
+    await inputLocator.fill(otp);
+    await new Promise(r => setTimeout(r, 500));
+
+    const submitSelectors = [
+        'button:has-text("Submit")', 'button:has-text("Confirm")',
+        'button:has-text("Verify")', 'button:has-text("OK")',
+        'button:has-text("Accept")', 'button:has-text("Attend")',
+        'button:has-text("Enter")',
+        '.swal2-confirm',
+        '[class*="submit" i]', '[class*="confirm" i]',
+        '.modal button[type="submit"]',
+        '[role="dialog"] button[type="submit"]',
+        'input[type="submit"]',
+    ];
+
+    for (const sel of submitSelectors) {
+        const loc = page.locator(sel).first();
+        if (await loc.count() > 0 && await loc.isVisible().catch(() => false)) {
+            await loc.click();
+            console.log(`[OTP] Clicked submit: ${sel}`);
+            return { success: true };
+        }
+    }
+
+    await inputLocator.press('Enter');
+    console.log('[OTP] Pressed Enter to submit.');
+    return { success: true };
+}
+
+async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chatId = CHAT_ID) {
+    const page = await session.context.newPage();
+    const phaseLabel = phase === 'start' ? 'IN OTP (Class Start)' : 'OUT OTP (Class End)';
+    const emoji = phase === 'start' ? '📥' : '📤';
+
     try {
-        await sendTelegram(`🚀 *Starting Attendance Monitor* for *${targetKeyword}*\nMonitoring from 10 mins before class to 10 mins after.`, chatId);
-        
+        await sendTelegram(
+            `⏰ *10 Minutes Alert — Attendance Scanner Active*\n\n` +
+            `📚 Class: *${targetKeyword}*\n` +
+            `🎯 Phase: *${phaseLabel}*\n\n` +
+            `Navigating to attendance page and scanning for ${phase === 'start' ? 'IN' : 'OUT'} OTP box...`,
+            chatId
+        );
+
         await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         if (page.url().includes('/login')) {
-            await doLogin(page, config.user, config.pass);
+            await doLogin(page, session.config.user, session.config.pass);
             await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         }
 
+        // Click "VIEW ATTENDANCE" or "View" for this class
         let classOpened = false;
-        for(let i=0; i < 240; i++) { // 240 * 5s = 20 mins
+        for (let i = 0; i < 24; i++) { // wait up to 2 mins for cards
             classOpened = await page.evaluate(({ kw }) => {
                 const cards = Array.from(document.querySelectorAll('div, li, section, article, tr'));
                 const classCards = cards.filter(el => /SLOT\s*:/i.test(el.innerText || ''));
                 for (const card of classCards) {
                     if (card.innerText.toLowerCase().includes(kw.toLowerCase())) {
-                        const viewBtn = Array.from(card.querySelectorAll('button, a')).find(b => (b.innerText || '').toUpperCase().includes('VIEW ATTENDANCE'));
+                        const viewBtn = Array.from(card.querySelectorAll('button, a')).find(b =>
+                            /VIEW\s*ATTENDANCE/i.test(b.innerText || '') || /^view$/i.test((b.innerText || '').trim())
+                        );
+                        if (viewBtn) {
+                            viewBtn.click();
+                            return true;
+                        }
+                    }
+                }
+                for (const card of cards) {
+                    if (card.innerText.toLowerCase().includes(kw.toLowerCase())) {
+                        const viewBtn = Array.from(card.querySelectorAll('button, a')).find(b =>
+                            /VIEW\s*ATTENDANCE/i.test(b.innerText || '') || /^view$/i.test((b.innerText || '').trim())
+                        );
                         if (viewBtn) {
                             viewBtn.click();
                             return true;
@@ -1310,94 +1499,85 @@ async function startAttendanceMonitor(context, config, targetKeyword, startTimeS
             }, { kw: targetKeyword });
 
             if (classOpened) break;
-            await page.waitForTimeout(5000);
+            await new Promise(r => setTimeout(r, 5000));
         }
 
         if (!classOpened) {
-            await sendTelegram(`⚠️ Could not find "VIEW ATTENDANCE" button for *${targetKeyword}* within the 20-minute window.`, chatId);
+            console.log(`[OTP] Could not find specific VIEW ATTENDANCE button for ${targetKeyword}. Proceeding to scan page directly.`);
+        }
+
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Poll for OTP window (up to 15 mins)
+        const otpOpen = await waitForOtpWindow(page, 15 * 60 * 1000, phase);
+
+        if (!otpOpen) {
+            await sendTelegram(`ℹ️ No ${phase === 'start' ? 'IN' : 'OUT'} OTP box opened for *${targetKeyword}* within 15 minutes.`, chatId);
             return;
         }
 
-        await page.waitForTimeout(3000);
+        // Send screenshot of open OTP window
+        const beforePic = path.join(__dirname, `_otp_open_${Date.now()}.png`);
+        try {
+            await page.screenshot({ path: beforePic });
+            await sendTelegramPhoto(beforePic, `🚨 *${phase === 'start' ? 'IN' : 'OUT'} OTP Box is OPEN!*`, chatId);
+        } catch (_) {}
+        try { fs.unlinkSync(beforePic); } catch (_) {}
 
-        // --- IN OTP POLLING ---
-        await sendTelegram(`⏳ Inside the subject page. Scanning for *IN OTP* every 5 seconds...`, chatId);
-        const inSuccess = await pollAndSubmitOtp(page, 'IN OTP', chatId);
-        if (inSuccess) {
-            await sendTelegram(`✅ IN OTP submitted! Will wait here until 10 minutes before class ends to scan for OUT OTP.`, chatId);
-        } else {
-            await sendTelegram(`❌ Timed out waiting for IN OTP.`, chatId);
+        // Request OTP from user via Telegram
+        await sendTelegram(
+            `🔔 *OTP Window is Open!*\n\n` +
+            `${emoji} *${phase === 'start' ? 'Entry (IN)' : 'Exit (OUT)'} OTP* for:\n*${targetKeyword}*\n\n` +
+            `👉 Reply directly to this bot with the *6-digit OTP* now:`,
+            chatId
+        );
+
+        const userOtp = await new Promise(resolve => {
+            const timeout = setTimeout(() => {
+                if (pendingOtpRequests.has(chatId)) {
+                    pendingOtpRequests.delete(chatId);
+                }
+                resolve(null);
+            }, 5 * 60 * 1000);
+
+            pendingOtpRequests.set(chatId, (code) => {
+                clearTimeout(timeout);
+                resolve(code.trim());
+            });
+        });
+
+        if (!userOtp) {
+            await sendTelegram(`⏰ Timed out waiting for OTP (5 minutes). Session closed for *${targetKeyword}*.`, chatId);
             return;
         }
 
-        const delayMs = getDelayMsUntil(endTimeStr) - (10 * 60 * 1000); 
-        if (delayMs > 0) {
-            await page.waitForTimeout(delayMs);
+        const res = await enterOtpOnPage(page, userOtp, phase);
+        if (!res.success) {
+            await sendTelegram(`❌ Failed to enter OTP: ${res.reason}`, chatId);
+            return;
         }
 
-        // --- OUT OTP POLLING ---
-        await sendTelegram(`⏳ Scanning for *OUT OTP*...`, chatId);
-        const outSuccess = await pollAndSubmitOtp(page, 'OUT OTP', chatId);
-        if (outSuccess) {
-            await sendTelegram(`✅ OUT OTP submitted! Attendance complete for ${targetKeyword} 🎉`, chatId);
-        } else {
-            await sendTelegram(`❌ Timed out waiting for OUT OTP.`, chatId);
-        }
+        await new Promise(r => setTimeout(r, 2500));
+
+        const afterPic = path.join(__dirname, `_otp_done_${Date.now()}.png`);
+        try {
+            await page.screenshot({ path: afterPic });
+            await sendTelegramPhoto(afterPic, `✅ Submitted ${phase === 'start' ? 'IN' : 'OUT'} OTP: *${userOtp}* for *${targetKeyword}*`, chatId);
+        } catch (_) {}
+        try { fs.unlinkSync(afterPic); } catch (_) {}
 
     } catch (e) {
         console.error('[AttendanceOTP] Error:', e);
-        await sendTelegram(`⚠️ Error in attendance monitor: ${e.message}`, chatId);
+        await sendTelegram(`⚠️ Attendance monitor error for *${targetKeyword}*: ${e.message}`, chatId);
     } finally {
         await page.close().catch(() => {});
     }
 }
 
-async function pollAndSubmitOtp(page, otpType, chatId) {
-    const maxRetries = 120; // 10 minutes window
-    
-    for (let i = 0; i < maxRetries; i++) {
-        const hasInput = await page.evaluate((type) => {
-            const sections = Array.from(document.querySelectorAll('div, section, .card'));
-            const targetSection = sections.find(s => (s.innerText || '').includes(type) && s.innerText.includes('OTP'));
-            if (targetSection) {
-                const input = targetSection.querySelector('input[type="text"], input[type="number"], input:not([type])');
-                if (input && !input.disabled) {
-                    input.setAttribute('data-saveetha-otp', type);
-                    return true;
-                }
-            }
-            return false;
-        }, otpType);
-
-        if (hasInput) {
-            await sendTelegram(`🚨 *${otpType} box is OPEN!* Please type the OTP below:`, chatId);
-            
-            const userOtp = await new Promise(resolve => {
-                const timeout = setTimeout(() => resolve(null), 10 * 60 * 1000);
-                pendingOtpRequests.set(chatId, (code) => {
-                    clearTimeout(timeout);
-                    resolve(code.trim());
-                });
-            });
-            
-            if (userOtp) {
-                const otpInput = page.locator(`[data-saveetha-otp="${otpType}"]`);
-                await otpInput.fill(userOtp);
-                await page.keyboard.press('Enter');
-                await page.waitForTimeout(2000);
-                
-                const tmpPath = require('path').join(__dirname, `_otp_${Date.now()}.png`);
-                await page.screenshot({ path: tmpPath });
-                await sendTelegramPhoto(tmpPath, `✅ System processed ${otpType}: ${userOtp}`, chatId);
-                try { require('fs').unlinkSync(tmpPath); } catch (_) {}
-                
-                return true;
-            }
-            return false; 
-        }
-        await page.waitForTimeout(5000); 
-    }
-    return false;
+// Backward-compatibility alias
+async function startAttendanceMonitor(context, config, targetKeyword, startTimeStr, endTimeStr, chatId) {
+    const session = USER_SESSIONS.get(chatId) || { context, config };
+    return handleAttendanceOtp(session, targetKeyword, 'start', chatId);
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
@@ -2345,50 +2525,7 @@ function startTimetableSchedulers(userSessions) {
         }
     }
 
-    function scheduleSlotReminders(chatId, session, slots) {
-        if (!slots || slots.length === 0) return;
-        const IST_OFFSET = 5.5 * 60 * 60 * 1000;
-
-        for (const s of slots) {
-            const now = new Date();
-            const nowIST = new Date(now.getTime() + IST_OFFSET);
-
-            // Build the slot's start time in UTC today (IST - offset)
-            const slotIST = new Date(nowIST);
-            slotIST.setUTCHours(s.hour, s.minute, 0, 0);
-
-            // Reminder = 15 minutes before slot
-            const reminderTime = slotIST.getTime() - 15 * 60 * 1000;
-            const delay = reminderTime - nowIST.getTime();
-
-            if (delay <= 0) {
-                console.log(`[Scheduler] Skipping past slot: ${s.slot} at ${s.hour}:${s.minute}`);
-                continue;
-            }
-
-            const delayMin = Math.round(delay / 60000);
-            console.log(`[Scheduler] Reminder for "${s.slot}" in ${delayMin} min (${session.config.name})`);
-
-            setTimeout(async () => {
-                try {
-                    const h = s.hour % 12 || 12;
-                    const period = s.hour < 12 ? 'AM' : 'PM';
-                    const minStr = String(s.minute).padStart(2, '0');
-                    const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : '(Venue not found — check timetable)';
-                    const msg =
-                        `⏰ *Class Reminder — 15 Minutes!*\n\n` +
-                        `📚 *${s.slot}*\n` +
-                        `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
-                        `📍 Venue: *${venueDisplay}*\n\n` +
-                        `_Get ready! Class starts in 15 minutes. 🚀_`;
-                    await sendTelegram(msg, chatId);
-                    console.log(`[Scheduler] Reminder sent for "${s.slot}" (venue: ${venueDisplay}) to ${session.config.name}`);
-                } catch (err) {
-                    console.error(`[Scheduler] Reminder error:`, err.message);
-                }
-            }, delay);
-        }
-    }
+    // Schedulers started
 
     console.log('[Scheduler] All timetable schedulers started.');
 }
@@ -2467,58 +2604,84 @@ async function sendDailyTimetable(chatId, session) {
 const activeReminders = new Map();
 
 function scheduleSlotReminders(chatId, session, slots) {
-    if (!slots || slots.length === 0) return;
+    if (!slots || !slots.length) return;
     const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+    const now = new Date();
+    const nowIST = new Date(now.getTime() + IST_OFFSET);
+
     for (const s of slots) {
-        const now = new Date();
-        const nowIST = new Date(now.getTime() + IST_OFFSET);
         const slotIST = new Date(nowIST);
         slotIST.setUTCHours(s.hour, s.minute, 0, 0);
+
+        // ── 1. 15-Minute Class Reminder ──────────────────────────────────────
         const reminderTime = slotIST.getTime() - 15 * 60 * 1000;
-        const delay = reminderTime - nowIST.getTime();
-        if (delay <= 0) continue;
+        const reminderDelay = reminderTime - nowIST.getTime();
+        const reminderKey = `rem_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
-        const reminderKey = `${chatId}_${s.slot}_${s.hour}_${s.minute}`;
-        if (activeReminders.has(reminderKey)) {
-            clearTimeout(activeReminders.get(reminderKey));
+        if (reminderDelay > 0) {
+            if (activeReminders.has(reminderKey)) {
+                clearTimeout(activeReminders.get(reminderKey));
+            }
+            const timeoutId = setTimeout(async () => {
+                activeReminders.delete(reminderKey);
+                try {
+                    const h = s.hour % 12 || 12;
+                    const period = s.hour < 12 ? 'AM' : 'PM';
+                    const minStr = String(s.minute).padStart(2, '0');
+                    const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : 'N/A (Check Portal)';
+                    const msg =
+                        `⏰ *Class Reminder — 15 Minutes!*\n\n` +
+                        `📚 *${s.slot}*\n` +
+                        `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
+                        `📍 Venue: *${venueDisplay}*\n\n` +
+                        `_Get ready! Class starts in 15 minutes. 🚀_`;
+                    await sendTelegram(msg, chatId);
+                } catch (err) {}
+            }, reminderDelay);
+            activeReminders.set(reminderKey, timeoutId);
+            console.log(`[Scheduler] 15m reminder for "${s.slot}" in ${Math.round(reminderDelay / 60000)} min (${session.config.name})`);
         }
 
-        const timeoutId = setTimeout(async () => {
-            activeReminders.delete(reminderKey);
-            try {
-                const h = s.hour % 12 || 12;
-                const period = s.hour < 12 ? 'AM' : 'PM';
-                const minStr = String(s.minute).padStart(2, '0');
-                const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : 'N/A (Check Portal)';
-                const msg =
-                    `⏰ *Class Reminder — 15 Minutes!*\n\n` +
-                    `📚 *${s.slot}*\n` +
-                    `🕐 Starts at: *${h}:${minStr} ${period}*\n` +
-                    `📍 Venue: *${venueDisplay}*\n\n` +
-                    `_Get ready! Class starts in 15 minutes. 🚀_`;
-                await sendTelegram(msg, chatId);
-            } catch (err) { }
-        }, delay);
+        // ── 2. IN OTP Attendance (10 minutes before class start) ───────────────
+        const inAttendanceTime = slotIST.getTime() - 10 * 60 * 1000;
+        const inDelay = inAttendanceTime - nowIST.getTime();
+        const inKey = `in_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
-        const attendanceDelay = slotIST.getTime() - 10 * 60 * 1000 - nowIST.getTime();
-        if (attendanceDelay > 0) {
-            setTimeout(() => {
-                const h = s.hour % 12 || 12;
-                const period = s.hour < 12 ? 'AM' : 'PM';
-                const minStr = String(s.minute).padStart(2, '0');
-                const startTimeStr = `${h}:${minStr} ${period}`;
-                
-                const endIST = new Date(slotIST.getTime() + 90 * 60 * 1000);
-                const eh = endIST.getUTCHours() % 12 || 12;
-                const eperiod = endIST.getUTCHours() < 12 ? 'AM' : 'PM';
-                const eminStr = String(endIST.getUTCMinutes()).padStart(2, '0');
-                const endTimeStr = `${eh}:${eminStr} ${eperiod}`;
-                
-                startAttendanceMonitor(session.context, session.config, s.slot, startTimeStr, endTimeStr, chatId);
-            }, attendanceDelay);
+        if (inDelay > 0) {
+            if (activeReminders.has(inKey)) {
+                clearTimeout(activeReminders.get(inKey));
+            }
+            const inTimeoutId = setTimeout(() => {
+                activeReminders.delete(inKey);
+                handleAttendanceOtp(session, s.slot, 'start', chatId);
+            }, inDelay);
+            activeReminders.set(inKey, inTimeoutId);
+            console.log(`[Scheduler] IN OTP monitor for "${s.slot}" in ${Math.round(inDelay / 60000)} min (${session.config.name})`);
+        } else if (nowIST.getTime() < slotIST.getTime() + 15 * 60 * 1000) {
+            // Class started within the last 15 minutes: trigger IN OTP scanner right away!
+            console.log(`[Scheduler] Class "${s.slot}" is active right now — scanning IN OTP immediately for ${session.config.name}`);
+            handleAttendanceOtp(session, s.slot, 'start', chatId);
         }
 
-        activeReminders.set(reminderKey, timeoutId);
+        // ── 3. OUT OTP Attendance (10 minutes before class end) ────────────────
+        // Standard class duration is 90 mins
+        const durationMs = 90 * 60 * 1000;
+        const endIST = new Date(slotIST.getTime() + durationMs);
+        const outAttendanceTime = endIST.getTime() - 10 * 60 * 1000;
+        const outDelay = outAttendanceTime - nowIST.getTime();
+        const outKey = `out_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
+
+        if (outDelay > 0) {
+            if (activeReminders.has(outKey)) {
+                clearTimeout(activeReminders.get(outKey));
+            }
+            const outTimeoutId = setTimeout(() => {
+                activeReminders.delete(outKey);
+                handleAttendanceOtp(session, s.slot, 'end', chatId);
+            }, outDelay);
+            activeReminders.set(outKey, outTimeoutId);
+            console.log(`[Scheduler] OUT OTP monitor for "${s.slot}" in ${Math.round(outDelay / 60000)} min (${session.config.name})`);
+        }
     }
 }
 
@@ -2935,7 +3098,8 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         `\`!scan <keyword>\` — Scan every 30s until found\n` +
                         `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
                         `*Timetable & Attendance Commands:*\n` +
-                        `\`!timetable\` or \`!tt\` — Get today's schedule\n` +
+                        `\`!timetable\` or \`!tt\` — Get today's schedule & activate reminders\n` +
+                        `\`!otp <keyword> [in/out]\` — Manually trigger OTP scan\n` +
                         `\`!attendance\` or \`!att\` — Get your attendance\n` +
                         `\`!bunk\` — Calculate how many classes you can bunk (80% limit)\n` +
                         `\`!workflow\` or \`!requests\` — Check workflow approval status\n\n` +
@@ -3253,11 +3417,23 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         const slots = await fetchTimetable(session.context, session.config);
                         const msg = formatTimetable(slots, session.config.name);
                         await sendTelegram(msg, fromChatId);
+                        scheduleSlotReminders(fromChatId, session, slots);
                         // SYNC to GIST for the Pod to read silently
                         syncFileToGist('saveetha_timetable.txt', msg);
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch timetable: ${err.message}`, fromChatId);
                     }
+                    continue;
+                }
+
+                if (text.startsWith('!otp') || text.startsWith('!checkotp')) {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    const parts = text.split(' ').slice(1);
+                    const phase = text.includes('out') ? 'end' : 'start';
+                    const kw = parts.filter(p => !['in', 'out'].includes(p.toLowerCase())).join(' ').trim();
+                    await sendTelegram(`🔍 Starting manual *${phase === 'start' ? 'IN' : 'OUT'} OTP* scan for *${kw || 'current class'}*...`, fromChatId);
+                    handleAttendanceOtp(session, kw, phase, fromChatId);
                     continue;
                 }
 
