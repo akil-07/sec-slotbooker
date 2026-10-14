@@ -47,6 +47,10 @@ function isSuperAdmin(chatId) {
     return false;
 }
 
+function getNowIST() {
+    return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+}
+
 // ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
 const TASKS_FILE = path.join(__dirname, 'active_tasks.json');
 const GIST_TOKEN = process.env.GIST_TOKEN;
@@ -1349,15 +1353,14 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
 
             const secsLeft = Math.round((deadline - Date.now()) / 1000);
             console.log(`[OTP] ${otpLabel} not yet open (${secsLeft}s left). Reloading page in 5s...`);
-            await new Promise(r => setTimeout(r, 5000));
+            await page.waitForTimeout(5000);
 
             // CRITICAL: Reload page so Django server-rendered HTML reflects when faculty generates OTP!
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-            await new Promise(r => setTimeout(r, 2000));
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
 
         } catch (e) {
             console.error(`[OTP] Polling error: ${e.message}`);
-            await new Promise(r => setTimeout(r, 5000));
+            await page.waitForTimeout(5000);
         }
     }
 
@@ -1406,7 +1409,57 @@ async function enterOtpOnPage(page, otp, phase = 'start') {
     return { success: true };
 }
 
-async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chatId = CHAT_ID) {
+async function enterAndVerifyOtp(page, userOtp, phase, className, chatId) {
+    const res = await enterOtpOnPage(page, userOtp, phase);
+    if (!res.success) {
+        await sendTelegram(`❌ Failed to enter OTP: ${res.reason}`, chatId);
+        return false;
+    }
+
+    // Wait for Saveetha POST submission to complete
+    await page.waitForTimeout(3000);
+
+    // Verify if attendance was marked/approved
+    let afterStatus = await getPageAttendanceStatus(page);
+    const checkApproved = phase === 'start' ? afterStatus.inApproved : afterStatus.outApproved;
+
+    // If server hasn't re-rendered yet, do a quick reload to get latest status
+    if (!checkApproved) {
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+        await page.waitForTimeout(2000);
+        afterStatus = await getPageAttendanceStatus(page);
+    }
+
+    const isSuccess = phase === 'start' ? afterStatus.inApproved : afterStatus.outApproved;
+    const afterPic = path.join(__dirname, `_otp_done_${Date.now()}.png`);
+
+    try {
+        await page.screenshot({ path: afterPic });
+        if (isSuccess) {
+            await sendTelegramPhoto(
+                afterPic,
+                `🎉 *OTP Entered & Attendance Approved!* ✅\n\n` +
+                `📚 *Class:* *${className}*\n` +
+                `🎯 *Phase:* ${phase === 'start' ? 'IN Attendance' : 'OUT Attendance'}\n` +
+                `🔢 *Entered OTP:* \`${userOtp}\`\n` +
+                `🟢 *Result:* Approved for this session!`,
+                chatId
+            );
+        } else {
+            await sendTelegramPhoto(
+                afterPic,
+                `📸 *OTP Submitted:* \`${userOtp}\`\n\n` +
+                `📚 *Class:* *${className}*\n` +
+                `Please check the screenshot above for confirmation.`,
+                chatId
+            );
+        }
+    } catch (_) {}
+    try { fs.unlinkSync(afterPic); } catch (_) {}
+    return isSuccess;
+}
+
+async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chatId = CHAT_ID, prefilledOtp = null, maxScanDurationMs = 15 * 60 * 1000) {
     if (!isSuperAdmin(chatId)) {
         console.log(`[OTP] Skipped attendance monitor for non-superadmin: ${chatId}`);
         return;
@@ -1417,9 +1470,10 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
 
     try {
         await sendTelegram(
-            `⏰ *10 Minutes Alert — Attendance Scanner Active*\n\n` +
+            `⏰ *Attendance Scanner Active*\n\n` +
             `📚 Class: *${targetKeyword || 'Current Class'}*\n` +
-            `🎯 Phase: *${phaseLabel}*\n\n` +
+            `🎯 Phase: *${phaseLabel}*\n` +
+            `⏱️ Refresh interval: *Every 5 seconds*\n\n` +
             `Locating class and opening attendance process page...`,
             chatId
         );
@@ -1430,7 +1484,7 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
             await doLogin(page, session.config.user, session.config.pass);
             await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         }
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(2500);
 
         // 2. Find attendance link for targetKeyword (or current active class)
         const attendanceTarget = await findAttendanceTarget(page, targetKeyword);
@@ -1473,12 +1527,12 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
             return;
         }
 
-        // 4. Poll for OTP box if not already open (with auto-reload so teacher activation is caught!)
+        // 4. Poll for OTP box if not already open (with 5-second auto-reload)
         const isPhaseOpen = targetType === 'in' ? initialStatus.inOpen : initialStatus.outOpen;
         let otpResult = { open: isPhaseOpen, alreadyMarked: false };
 
         if (!isPhaseOpen) {
-            otpResult = await waitForOtpWindow(page, 15 * 60 * 1000, phase);
+            otpResult = await waitForOtpWindow(page, maxScanDurationMs, phase);
         }
 
         if (otpResult.alreadyMarked) {
@@ -1492,90 +1546,51 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
         }
 
         if (!otpResult.open) {
-            await sendTelegram(`ℹ️ No ${phase === 'start' ? 'IN' : 'OUT'} OTP box opened for *${attendanceTarget.name}* within 15 minutes.`, chatId);
+            await sendTelegram(`ℹ️ Attendance scan window ended for *${attendanceTarget.name}*. No OTP opened.`, chatId);
             return;
         }
 
-        // 5. Box is OPEN! Send photo & request OTP
-        const beforePic = path.join(__dirname, `_otp_open_${Date.now()}.png`);
-        try {
-            await page.screenshot({ path: beforePic });
-            await sendTelegramPhoto(beforePic, `🚨 *${phase === 'start' ? 'IN' : 'OUT'} OTP Box is OPEN!*`, chatId);
-        } catch (_) {}
-        try { fs.unlinkSync(beforePic); } catch (_) {}
-
-        await sendTelegram(
-            `🔔 *OTP Window is Open!*\n\n` +
-            `${emoji} *${phase === 'start' ? 'Entry (IN)' : 'Exit (OUT)'} OTP* for:\n*${attendanceTarget.name}*\n\n` +
-            `👉 Reply directly to this bot with the *6-digit OTP* now:`,
-            chatId
-        );
-
-        const userOtp = await new Promise(resolve => {
-            const timeout = setTimeout(() => {
-                if (pendingOtpRequests.has(chatId)) {
-                    pendingOtpRequests.delete(chatId);
-                }
-                resolve(null);
-            }, 5 * 60 * 1000);
-
-            pendingOtpRequests.set(chatId, (code) => {
-                clearTimeout(timeout);
-                resolve(code.trim());
-            });
-        });
+        // 5. Box is OPEN!
+        let userOtp = prefilledOtp;
 
         if (!userOtp) {
-            await sendTelegram(`⏰ Timed out waiting for OTP (5 minutes). Session closed for *${attendanceTarget.name}*.`, chatId);
-            return;
-        }
+            const beforePic = path.join(__dirname, `_otp_open_${Date.now()}.png`);
+            try {
+                await page.screenshot({ path: beforePic });
+                await sendTelegramPhoto(beforePic, `🚨 *${phase === 'start' ? 'IN' : 'OUT'} OTP Box is OPEN!*`, chatId);
+            } catch (_) {}
+            try { fs.unlinkSync(beforePic); } catch (_) {}
 
-        const res = await enterOtpOnPage(page, userOtp, phase);
-        if (!res.success) {
-            await sendTelegram(`❌ Failed to enter OTP: ${res.reason}`, chatId);
-            return;
-        }
+            await sendTelegram(
+                `🔔 *OTP Window is Open!*\n\n` +
+                `${emoji} *${phase === 'start' ? 'Entry (IN)' : 'Exit (OUT)'} OTP* for:\n*${attendanceTarget.name}*\n\n` +
+                `👉 Reply directly to this bot with the *6-digit OTP* now:`,
+                chatId
+            );
 
-        // Wait for Saveetha POST submission to complete
-        await page.waitForTimeout(3500);
+            userOtp = await new Promise(resolve => {
+                const timeout = setTimeout(() => {
+                    if (pendingOtpRequests.has(chatId)) {
+                        pendingOtpRequests.delete(chatId);
+                    }
+                    resolve(null);
+                }, 5 * 60 * 1000);
 
-        // Verify if attendance was marked/approved
-        let afterStatus = await getPageAttendanceStatus(page);
-        const checkApproved = phase === 'start' ? afterStatus.inApproved : afterStatus.outApproved;
+                pendingOtpRequests.set(chatId, (code) => {
+                    clearTimeout(timeout);
+                    resolve(code.trim());
+                });
+            });
 
-        // If server hasn't re-rendered yet, do a quick reload to get latest status
-        if (!checkApproved) {
-            await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
-            await page.waitForTimeout(2000);
-            afterStatus = await getPageAttendanceStatus(page);
-        }
-
-        const isSuccess = phase === 'start' ? afterStatus.inApproved : afterStatus.outApproved;
-        const afterPic = path.join(__dirname, `_otp_done_${Date.now()}.png`);
-
-        try {
-            await page.screenshot({ path: afterPic });
-            if (isSuccess) {
-                await sendTelegramPhoto(
-                    afterPic,
-                    `🎉 *OTP Entered & Attendance Approved!* ✅\n\n` +
-                    `📚 *Class:* *${attendanceTarget.name}*\n` +
-                    `🎯 *Phase:* ${phase === 'start' ? 'IN Attendance' : 'OUT Attendance'}\n` +
-                    `🔢 *Entered OTP:* \`${userOtp}\`\n` +
-                    `🟢 *Result:* Approved for this session!`,
-                    chatId
-                );
-            } else {
-                await sendTelegramPhoto(
-                    afterPic,
-                    `📸 *OTP Submitted:* \`${userOtp}\`\n\n` +
-                    `📚 *Class:* *${attendanceTarget.name}*\n` +
-                    `Please check the screenshot above for confirmation.`,
-                    chatId
-                );
+            if (!userOtp) {
+                await sendTelegram(`⏰ Timed out waiting for OTP (5 minutes). Session closed for *${attendanceTarget.name}*.`, chatId);
+                return;
             }
-        } catch (_) {}
-        try { fs.unlinkSync(afterPic); } catch (_) {}
+        } else {
+            console.log(`[OTP] Using prefilled OTP: ${userOtp}`);
+        }
+
+        await enterAndVerifyOtp(page, userOtp, phase, attendanceTarget.name, chatId);
 
     } catch (e) {
         console.error('[AttendanceOTP] Error:', e);
@@ -1748,11 +1763,45 @@ async function checkAttendanceStatus(session, targetKeyword, chatId = CHAT_ID) {
 
             if (status.inApproved && status.outApproved) {
                 msg += `\n🎉 *It is already done!* Both IN and OUT attendance are complete for this session.`;
-            } else if (status.inApproved) {
+                await sendTelegramPhoto(screenshotPath, msg, chatId);
+                return;
+            } else if (status.inApproved && !status.outOpen) {
                 msg += `\n✅ *It is already done!* IN attendance has already been approved for this session.`;
             }
 
-            await sendTelegramPhoto(screenshotPath, msg, chatId);
+            const isOpen = status.inOpen || status.outOpen;
+            if (isOpen) {
+                const activePhase = status.inOpen ? 'start' : 'end';
+                const activeLabel = status.inOpen ? 'IN OTP' : 'OUT OTP';
+                msg += `\n🚨 *${activeLabel} Box is OPEN NOW!*`;
+                msg += `\n\n👉 *Reply directly with your 6-digit OTP now to submit!*`;
+                await sendTelegramPhoto(screenshotPath, msg, chatId);
+
+                // Wait for user to reply with 6-digit OTP via Telegram!
+                const userOtp = await new Promise(resolve => {
+                    const timeout = setTimeout(() => {
+                        if (pendingOtpRequests.has(chatId)) {
+                            pendingOtpRequests.delete(chatId);
+                        }
+                        resolve(null);
+                    }, 5 * 60 * 1000);
+
+                    pendingOtpRequests.set(chatId, (code) => {
+                        clearTimeout(timeout);
+                        resolve(code.trim());
+                    });
+                });
+
+                if (!userOtp) {
+                    await sendTelegram(`⏰ Timed out waiting for OTP. Session closed for *${target.name}*.`, chatId);
+                    return;
+                }
+
+                await enterAndVerifyOtp(page, userOtp, activePhase, target.name, chatId);
+                return;
+            } else {
+                await sendTelegramPhoto(screenshotPath, msg, chatId);
+            }
         } catch (err) {
             await sendTelegram(
                 `📋 *Attendance Status — ${target.name}*\n\n` +
@@ -2802,18 +2851,20 @@ const activeReminders = new Map();
 
 function scheduleSlotReminders(chatId, session, slots) {
     if (!slots || !slots.length) return;
-    const IST_OFFSET = 5.5 * 60 * 60 * 1000;
-    const now = new Date();
-    const nowIST = new Date(now.getTime() + IST_OFFSET);
     const allowOtp = isSuperAdmin(chatId);
+    const nowIST = getNowIST();
 
     for (const s of slots) {
-        const slotIST = new Date(nowIST);
-        slotIST.setUTCHours(s.hour, s.minute, 0, 0);
+        // Class start time today in IST
+        const slotStart = getNowIST();
+        slotStart.setHours(s.hour, s.minute, 0, 0);
+
+        // Class end time today in IST (default 90 min)
+        const slotEnd = new Date(slotStart.getTime() + (s.durationMinutes || 90) * 60 * 1000);
 
         // ── 1. 15-Minute Class Reminder (All Users) ───────────────────────────
-        const reminderTime = slotIST.getTime() - 15 * 60 * 1000;
-        const reminderDelay = reminderTime - nowIST.getTime();
+        const reminderTime = new Date(slotStart.getTime() - 15 * 60 * 1000);
+        const reminderDelay = reminderTime.getTime() - nowIST.getTime();
         const reminderKey = `rem_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
         if (reminderDelay > 0) {
@@ -2842,9 +2893,13 @@ function scheduleSlotReminders(chatId, session, slots) {
 
         // ── 2 & 3: OTP Attendance (SUPER ADMIN ONLY) ──────────────────────────
         if (allowOtp) {
-            // IN OTP Attendance (10 minutes before class start)
-            const inAttendanceTime = slotIST.getTime() - 10 * 60 * 1000;
-            const inDelay = inAttendanceTime - nowIST.getTime();
+            // IN OTP: starts 10 min before class start (e.g. 7:50 AM for 8:00 AM class)
+            // and stops 5 min after class start (e.g. 8:05 AM)
+            const inScanStart = new Date(slotStart.getTime() - 10 * 60 * 1000);
+            const inScanStop = new Date(slotStart.getTime() + 5 * 60 * 1000);
+            const inScanDuration = 15 * 60 * 1000; // 15 min total
+
+            const inDelay = inScanStart.getTime() - nowIST.getTime();
             const inKey = `in_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
             if (inDelay > 0) {
@@ -2853,21 +2908,24 @@ function scheduleSlotReminders(chatId, session, slots) {
                 }
                 const inTimeoutId = setTimeout(() => {
                     activeReminders.delete(inKey);
-                    handleAttendanceOtp(session, s.slot, 'start', chatId);
+                    console.log(`[Scheduler] IN OTP 7:50 AM trigger fired for "${s.slot}" — scanning until 8:05 AM (15 min)`);
+                    handleAttendanceOtp(session, s.slot, 'start', chatId, null, inScanDuration);
                 }, inDelay);
                 activeReminders.set(inKey, inTimeoutId);
-                console.log(`[Scheduler] IN OTP monitor for "${s.slot}" in ${Math.round(inDelay / 60000)} min (${session.config.name})`);
-            } else if (nowIST.getTime() < slotIST.getTime() + 15 * 60 * 1000) {
-                // Class started within the last 15 minutes: trigger IN OTP scanner right away!
-                console.log(`[Scheduler] Class "${s.slot}" is active right now — scanning IN OTP immediately for ${session.config.name}`);
-                handleAttendanceOtp(session, s.slot, 'start', chatId);
+                console.log(`[Scheduler] IN OTP monitor for "${s.slot}" scheduled in ${Math.round(inDelay / 60000)} min (${session.config.name})`);
+            } else if (nowIST.getTime() >= inScanStart.getTime() && nowIST.getTime() <= inScanStop.getTime()) {
+                // Class is within the 7:50 AM - 8:05 AM window right now!
+                const remainingMs = inScanStop.getTime() - nowIST.getTime();
+                console.log(`[Scheduler] Class "${s.slot}" is in 7:50-8:05 window — scanning IN OTP for remaining ${Math.round(remainingMs / 60000)} min`);
+                handleAttendanceOtp(session, s.slot, 'start', chatId, null, remainingMs);
             }
 
-            // OUT OTP Attendance (10 minutes before class end)
-            const durationMs = 90 * 60 * 1000;
-            const endIST = new Date(slotIST.getTime() + durationMs);
-            const outAttendanceTime = endIST.getTime() - 10 * 60 * 1000;
-            const outDelay = outAttendanceTime - nowIST.getTime();
+            // OUT OTP: starts 10 min before class end and stops 5 min after class end
+            const outScanStart = new Date(slotEnd.getTime() - 10 * 60 * 1000);
+            const outScanStop = new Date(slotEnd.getTime() + 5 * 60 * 1000);
+            const outScanDuration = 15 * 60 * 1000;
+
+            const outDelay = outScanStart.getTime() - nowIST.getTime();
             const outKey = `out_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
             if (outDelay > 0) {
@@ -2876,10 +2934,15 @@ function scheduleSlotReminders(chatId, session, slots) {
                 }
                 const outTimeoutId = setTimeout(() => {
                     activeReminders.delete(outKey);
-                    handleAttendanceOtp(session, s.slot, 'end', chatId);
+                    console.log(`[Scheduler] OUT OTP trigger fired for "${s.slot}" — scanning (15 min)`);
+                    handleAttendanceOtp(session, s.slot, 'end', chatId, null, outScanDuration);
                 }, outDelay);
                 activeReminders.set(outKey, outTimeoutId);
-                console.log(`[Scheduler] OUT OTP monitor for "${s.slot}" in ${Math.round(outDelay / 60000)} min (${session.config.name})`);
+                console.log(`[Scheduler] OUT OTP monitor for "${s.slot}" scheduled in ${Math.round(outDelay / 60000)} min (${session.config.name})`);
+            } else if (nowIST.getTime() >= outScanStart.getTime() && nowIST.getTime() <= outScanStop.getTime()) {
+                const remainingMs = outScanStop.getTime() - nowIST.getTime();
+                console.log(`[Scheduler] Class "${s.slot}" is in OUT OTP window — scanning for remaining ${Math.round(remainingMs / 60000)} min`);
+                handleAttendanceOtp(session, s.slot, 'end', chatId, null, remainingMs);
             }
         }
     }
@@ -3163,6 +3226,17 @@ async function main() {
                     const callback = pendingOtpRequests.get(fromChatId);
                     pendingOtpRequests.delete(fromChatId);
                     callback(msg.text.trim());
+                    continue;
+                }
+
+                // ── Direct 6-Digit OTP message from Super Admin ─────────────
+                if (isSuperAdmin(fromChatId) && /^\d{6}$/.test(msg.text.trim())) {
+                    const code = msg.text.trim();
+                    await sendTelegram(`⚡ Detected 6-digit OTP: \`${code}\`. Opening attendance page to submit now...`, fromChatId);
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (session) {
+                        handleAttendanceOtp(session, '', 'start', fromChatId, code, 30000);
+                    }
                     continue;
                 }
 
@@ -3649,9 +3723,14 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     if (!session) continue;
                     const parts = text.split(' ').slice(1);
                     const phase = text.includes('out') ? 'end' : 'start';
-                    const kw = parts.filter(p => !['in', 'out'].includes(p.toLowerCase())).join(' ').trim();
-                    await sendTelegram(`🔍 Checking & scanning *${phase === 'start' ? 'IN' : 'OUT'} OTP* for *${kw || 'current class'}*...`, fromChatId);
-                    handleAttendanceOtp(session, kw, phase, fromChatId);
+                    const directOtp = parts.find(p => /^\d{6}$/.test(p)) || null;
+                    const kw = parts.filter(p => !['in', 'out'].includes(p.toLowerCase()) && !/^\d{6}$/.test(p)).join(' ').trim();
+                    if (directOtp) {
+                        await sendTelegram(`🔍 Submitting *${phase === 'start' ? 'IN' : 'OUT'} OTP* \`${directOtp}\` for *${kw || 'current class'}*...`, fromChatId);
+                    } else {
+                        await sendTelegram(`🔍 Checking & scanning *${phase === 'start' ? 'IN' : 'OUT'} OTP* for *${kw || 'current class'}*...`, fromChatId);
+                    }
+                    handleAttendanceOtp(session, kw, phase, fromChatId, directOtp);
                     continue;
                 }
 
