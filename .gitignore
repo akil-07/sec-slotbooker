@@ -3,3 +3,5 @@ node_modules/
 .wwebjs_auth/
 .wwebjs_cache/
 *.log
+*twilio_config.json
+*call_config.json
