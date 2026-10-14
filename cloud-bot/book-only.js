@@ -80,12 +80,13 @@ async function triggerCallMeBotVoiceCall(targetUser, message) {
     const user = targetUser || CALLMEBOT_USER;
     if (!user) {
         console.log('[CallMeBot] No CallMeBot username or phone configured.');
-        return { success: false, reason: 'No CallMeBot user configured. Use !setcall @your_username' };
+        return { success: false, reason: 'No CallMeBot user configured. Use `!setcall @your_username`' };
     }
     const cleanUser = user.startsWith('@') || user.startsWith('+') ? user : `@${user}`;
     const textMsg = message || 'Hostel attendance reminder. Please mark your hostel attendance now.';
     const encodedText = encodeURIComponent(textMsg);
-    const url = `https://api.callmebot.com/start.php?user=${encodeURIComponent(cleanUser)}&text=${encodedText}&lang=en-US&rpt=2`;
+    // Use api2.callmebot.com with standard TTS voice
+    const url = `https://api2.callmebot.com/start.php?user=${encodeURIComponent(cleanUser)}&text=${encodedText}&lang=en-US-Standard-B&rpt=2`;
 
     console.log(`[CallMeBot] Triggering voice call to ${cleanUser}...`);
     return new Promise((resolve) => {
@@ -93,12 +94,28 @@ async function triggerCallMeBotVoiceCall(targetUser, message) {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
-                console.log(`[CallMeBot] Call response for ${cleanUser}:`, data.substring(0, 150));
-                resolve({ success: true, data });
+                const cleanText = data.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+                console.log(`[CallMeBot] Call response for ${cleanUser}:`, cleanText.substring(0, 200));
+
+                const isAuthError = /not authorized|not received|whitelist/i.test(cleanText) && !/is in the whitelist/i.test(cleanText);
+                const isInvalidError = /invalid username|invalid phone|invalid/i.test(cleanText);
+                const isGeneralError = /error:/i.test(cleanText);
+
+                if (isAuthError) {
+                    const reason = `⚠️ *CallMeBot Authorization Missing!*\n\nCallMeBot needs one-time permission to call \`${cleanUser}\`.\n\n👉 *Click here to authorize:* https://api2.callmebot.com/txt/auth.php\n(Or open @CallMeBot_txtbot in Telegram and send \`/start\`)`;
+                    resolve({ success: false, reason, raw: cleanText });
+                } else if (isInvalidError) {
+                    const reason = `⚠️ *Invalid Telegram Username or Phone*\n\nCallMeBot could not find \`${cleanUser}\`.\nMake sure you have set a public @username in Telegram (Settings > Edit Profile > Username), or use your international phone number with country code (e.g. \`!setcall +919876543210\`).`;
+                    resolve({ success: false, reason, raw: cleanText });
+                } else if (isGeneralError) {
+                    resolve({ success: false, reason: `❌ Call error: ${cleanText}`, raw: cleanText });
+                } else {
+                    resolve({ success: true, data: cleanText });
+                }
             });
         }).on('error', (err) => {
             console.error('[CallMeBot] Call request error:', err.message);
-            resolve({ success: false, reason: err.message });
+            resolve({ success: false, reason: `Connection error: ${err.message}` });
         });
     });
 }
@@ -3907,9 +3924,19 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     await sendTelegram(`📞 Initiating test voice call to *${CALLMEBOT_USER}* via CallMeBot... Ringing now!`, fromChatId);
                     const callRes = await triggerCallMeBotVoiceCall(CALLMEBOT_USER, "This is a test call for your Saveetha Hostel Attendance reminder. Voice reminders are active!");
                     if (callRes.success) {
-                        await sendTelegram(`✅ Call dispatched! Check your Telegram app for an incoming voice call.`, fromChatId);
+                        await sendTelegram(
+                            `✅ Call dispatched to *${CALLMEBOT_USER}*!\n\n` +
+                            `📞 Check your Telegram app for an incoming audio call.\n\n` +
+                            `_💡 If your phone didn't ring, check Telegram:\n` +
+                            `• Settings > Privacy and Security > Calls > set to "Everybody"_`,
+                            fromChatId
+                        );
                     } else {
-                        await sendTelegram(`❌ Call failed: ${callRes.reason || callRes.error}\n_Make sure you opened @CallMeBot_txtbot and pressed /start._`, fromChatId);
+                        await sendTelegram(
+                            `${callRes.reason || '❌ Call failed'}\n\n` +
+                            `_Response details:_ \`${callRes.raw || 'None'}\``,
+                            fromChatId
+                        );
                     }
                     continue;
                 }
