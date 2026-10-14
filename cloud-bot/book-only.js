@@ -3292,12 +3292,11 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                 });
 
                 if (userOtp) {
-                    const ok = await enterAndVerifyOtp(page, userOtp, 'start', slotName, chatId);
-                    if (ok) {
-                        hostelAttendanceState.markedPresent = true;
-                        stopHostelAttendance('OTP submitted and approved');
-                        await sendTelegram(`🎉 *Hostel Attendance Verified!* Calls & scans stopped.`, chatId);
-                    }
+                    await enterAndVerifyOtp(page, userOtp, 'start', slotName, chatId);
+                    hostelAttendanceState.markedPresent = true;
+                    stopHostelAttendance('IN OTP submitted');
+                    await sendTelegram(`🎉 *Hostel Attendance Complete!* IN OTP submitted. All phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
+                    return;
                 }
             }
         } catch (err) {
