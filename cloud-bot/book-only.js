@@ -8,6 +8,7 @@ process.on('uncaughtException', (error) => {
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
 // Fix for Playwright temp dir permission issue
 const localTemp = path.join(__dirname, 'temp');
@@ -49,6 +50,57 @@ function isSuperAdmin(chatId) {
 
 function getNowIST() {
     return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+}
+
+// ─── CallMeBot Voice Call Reminder for Hostel Attendance ─────────────────────
+let CALLMEBOT_USER = process.env.CALLMEBOT_USER || '';
+const CALLMEBOT_CONFIG_FILE = path.join(__dirname, 'call_config.json');
+
+function loadCallConfig() {
+    try {
+        if (fs.existsSync(CALLMEBOT_CONFIG_FILE)) {
+            const data = JSON.parse(fs.readFileSync(CALLMEBOT_CONFIG_FILE, 'utf8'));
+            if (data && data.user) CALLMEBOT_USER = data.user;
+        }
+    } catch (_) {}
+}
+loadCallConfig();
+
+function saveCallConfig(target) {
+    CALLMEBOT_USER = target;
+    try {
+        fs.writeFileSync(CALLMEBOT_CONFIG_FILE, JSON.stringify({ user: target }, null, 2));
+    } catch (_) {}
+    if (typeof syncCallConfigToGist === 'function') {
+        syncCallConfigToGist(target).catch(() => {});
+    }
+}
+
+async function triggerCallMeBotVoiceCall(targetUser, message) {
+    const user = targetUser || CALLMEBOT_USER;
+    if (!user) {
+        console.log('[CallMeBot] No CallMeBot username or phone configured.');
+        return { success: false, reason: 'No CallMeBot user configured. Use !setcall @your_username' };
+    }
+    const cleanUser = user.startsWith('@') || user.startsWith('+') ? user : `@${user}`;
+    const textMsg = message || 'Hostel attendance reminder. Please mark your hostel attendance now.';
+    const encodedText = encodeURIComponent(textMsg);
+    const url = `https://api.callmebot.com/start.php?user=${encodeURIComponent(cleanUser)}&text=${encodedText}&lang=en-US&rpt=2`;
+
+    console.log(`[CallMeBot] Triggering voice call to ${cleanUser}...`);
+    return new Promise((resolve) => {
+        https.get(url, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                console.log(`[CallMeBot] Call response for ${cleanUser}:`, data.substring(0, 150));
+                resolve({ success: true, data });
+            });
+        }).on('error', (err) => {
+            console.error('[CallMeBot] Call request error:', err.message);
+            resolve({ success: false, reason: err.message });
+        });
+    });
 }
 
 // ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
@@ -116,6 +168,46 @@ async function syncBlockedToGist() {
         console.log('[Persist] Synced blocked users to Gist.');
     } catch (e) {
         console.error('[Persist] Failed to sync blocked users:', e.message);
+    }
+}
+
+async function syncCallConfigToGist(target) {
+    if (!GIST_TOKEN || !GIST_ID) return;
+    try {
+        const body = JSON.stringify({
+            files: {
+                'saveetha_call_config.json': {
+                    content: JSON.stringify({ user: target }, null, 2)
+                }
+            }
+        });
+        await new Promise((resolve, reject) => {
+            const req = https.request({
+                hostname: 'api.github.com',
+                path: `/gists/${GIST_ID}`,
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${GIST_TOKEN}`,
+                    'User-Agent': 'saveetha-bot',
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                    'Accept': 'application/vnd.github.v3+json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                }
+            }, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+                    else reject(new Error(`Gist call config save failed: ${res.statusCode}`));
+                });
+            });
+            req.on('error', reject);
+            req.write(body);
+            req.end();
+        });
+        console.log('[Persist] Synced call config to Gist.');
+    } catch (e) {
+        console.error('[Persist] Failed to sync call config to Gist:', e.message);
     }
 }
 
@@ -335,6 +427,15 @@ async function initAccounts() {
                 const gistBlocked = JSON.parse(gist.files['saveetha_blocked.json'].content);
                 gistBlocked.forEach(id => blockedUsers.add(id));
                 console.log('[Bot] Loaded Gist blocked users:', gistBlocked.length);
+            }
+            if (gist.files && gist.files['saveetha_call_config.json'] && gist.files['saveetha_call_config.json'].content) {
+                try {
+                    const gistCall = JSON.parse(gist.files['saveetha_call_config.json'].content);
+                    if (gistCall && gistCall.user) {
+                        CALLMEBOT_USER = gistCall.user;
+                        console.log('[Bot] Loaded Gist call config user:', CALLMEBOT_USER);
+                    }
+                } catch (_) {}
             }
         }
     } catch (e) {
@@ -2854,7 +2955,11 @@ function scheduleSlotReminders(chatId, session, slots) {
     const allowOtp = isSuperAdmin(chatId);
     const nowIST = getNowIST();
 
-    for (const s of slots) {
+    for (let idx = 0; idx < slots.length; idx++) {
+        const s = slots[idx];
+        const isLastSchedule = (idx === slots.length - 1);
+        const isHostel = /hostel|hos\b/i.test(s.slot) || /boyshostel|girlshostel/i.test(s.venue || '') || (isLastSchedule && (s.hour >= 18 || s.hour === 21));
+
         // Class start time today in IST
         const slotStart = getNowIST();
         slotStart.setHours(s.hour, s.minute, 0, 0);
@@ -2893,7 +2998,7 @@ function scheduleSlotReminders(chatId, session, slots) {
 
         // ── 2 & 3: OTP Attendance (SUPER ADMIN ONLY) ──────────────────────────
         if (allowOtp) {
-            // IN OTP: starts 10 min before class start (e.g. 7:50 AM for 8:00 AM class)
+            // IN OTP: starts 10 min before class start (e.g. 7:50 AM for 8:00 AM class, 8:50 PM for 9:00 PM hostel)
             // and stops 5 min after class start (e.g. 8:05 AM)
             const inScanStart = new Date(slotStart.getTime() - 10 * 60 * 1000);
             const inScanStop = new Date(slotStart.getTime() + 5 * 60 * 1000);
@@ -2906,17 +3011,39 @@ function scheduleSlotReminders(chatId, session, slots) {
                 if (activeReminders.has(inKey)) {
                     clearTimeout(activeReminders.get(inKey));
                 }
-                const inTimeoutId = setTimeout(() => {
+                const inTimeoutId = setTimeout(async () => {
                     activeReminders.delete(inKey);
-                    console.log(`[Scheduler] IN OTP 7:50 AM trigger fired for "${s.slot}" — scanning until 8:05 AM (15 min)`);
+                    if (isHostel) {
+                        console.log(`[Scheduler] 📞 Triggering voice call for Hostel Attendance: ${s.slot}`);
+                        await triggerCallMeBotVoiceCall(CALLMEBOT_USER, `Hostel attendance reminder for ${s.slot}. Please mark your hostel attendance now.`);
+                        await sendTelegram(
+                            `📞 *Hostel Attendance Reminder!*\n\n` +
+                            `🏨 *${s.slot}*\n` +
+                            `⏰ *${s.timeStr || '9:00 PM'}*\n` +
+                            `📍 *${s.venue || 'BoysHostel'}*\n\n` +
+                            `_An automated voice call is ringing your Telegram now so you never miss hostel attendance!_`,
+                            chatId
+                        );
+                    }
+                    console.log(`[Scheduler] IN OTP trigger fired for "${s.slot}" — scanning until 8:05 AM/start+5m (15 min)`);
                     handleAttendanceOtp(session, s.slot, 'start', chatId, null, inScanDuration);
                 }, inDelay);
                 activeReminders.set(inKey, inTimeoutId);
                 console.log(`[Scheduler] IN OTP monitor for "${s.slot}" scheduled in ${Math.round(inDelay / 60000)} min (${session.config.name})`);
             } else if (nowIST.getTime() >= inScanStart.getTime() && nowIST.getTime() <= inScanStop.getTime()) {
-                // Class is within the 7:50 AM - 8:05 AM window right now!
+                // Class is within the window right now!
                 const remainingMs = inScanStop.getTime() - nowIST.getTime();
-                console.log(`[Scheduler] Class "${s.slot}" is in 7:50-8:05 window — scanning IN OTP for remaining ${Math.round(remainingMs / 60000)} min`);
+                if (isHostel) {
+                    triggerCallMeBotVoiceCall(CALLMEBOT_USER, `Hostel attendance reminder for ${s.slot}. Please mark your hostel attendance now.`).catch(() => {});
+                    sendTelegram(
+                        `📞 *Hostel Attendance Reminder!*\n\n` +
+                        `🏨 *${s.slot}*\n` +
+                        `⏰ *${s.timeStr || '9:00 PM'}*\n\n` +
+                        `_Calling your Telegram now!_`,
+                        chatId
+                    );
+                }
+                console.log(`[Scheduler] Class "${s.slot}" is in scan window — scanning IN OTP for remaining ${Math.round(remainingMs / 60000)} min`);
                 handleAttendanceOtp(session, s.slot, 'start', chatId, null, remainingMs);
             }
 
@@ -3398,6 +3525,8 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         helpMsg += `\n*🛠️ Super Admin Commands:*\n` +
                             `\`!checkotp [class]\` — Instant attendance status check with screenshot\n` +
                             `\`!otp [class] [in/out]\` — Monitor, detect & submit class OTP\n` +
+                            `\`!setcall <@user / +phone>\` — Configure CallMeBot Telegram voice call\n` +
+                            `\`!testcall\` — Test incoming Telegram voice call\n` +
                             `\`!stopbot\` — Permanently stop GitHub Actions bot\n` +
                             `\`!restartbot\` — Restart GitHub Actions bot\n`;
                     }
@@ -3731,6 +3860,57 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         await sendTelegram(`🔍 Checking & scanning *${phase === 'start' ? 'IN' : 'OUT'} OTP* for *${kw || 'current class'}*...`, fromChatId);
                     }
                     handleAttendanceOtp(session, kw, phase, fromChatId, directOtp);
+                    continue;
+                }
+
+                if (text.startsWith('!setcall')) {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ Voice call reminder settings are restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
+                    const arg = text.replace('!setcall', '').trim();
+                    if (!arg) {
+                        const current = CALLMEBOT_USER || 'Not set';
+                        await sendTelegram(
+                            `📞 *Hostel Voice Call Settings*\n\n` +
+                            `Current Target: \`${current}\`\n\n` +
+                            `*How to set up:*\n` +
+                            `1️⃣ In Telegram, open [@CallMeBot_txtbot](https://t.me/CallMeBot_txtbot)\n` +
+                            `2️⃣ Press */start* to authorize calls.\n` +
+                            `3️⃣ Send command here:\n` +
+                            `\`!setcall @your_telegram_username\`\n` +
+                            `_(or phone number: \`!setcall +91XXXXXXXXXX\`)_\n\n` +
+                            `4️⃣ Run \`!testcall\` to receive a test phone call immediately!`,
+                            fromChatId
+                        );
+                        continue;
+                    }
+                    saveCallConfig(arg);
+                    await sendTelegram(`✅ CallMeBot voice call target configured to \`${CALLMEBOT_USER}\`!\nTest it anytime using \`!testcall\`.`, fromChatId);
+                    continue;
+                }
+
+                if (text === '!testcall' || text === '!testhostelcall') {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ Voice call test is restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
+                    if (!CALLMEBOT_USER) {
+                        await sendTelegram(
+                            `⚠️ No CallMeBot username configured!\n\n` +
+                            `Please set it first using \`!setcall @username\` or \`!setcall +phone\`.\n` +
+                            `Also remember to send \`/start\` to [@CallMeBot_txtbot](https://t.me/CallMeBot_txtbot) once to authorize calls.`,
+                            fromChatId
+                        );
+                        continue;
+                    }
+                    await sendTelegram(`📞 Initiating test voice call to *${CALLMEBOT_USER}* via CallMeBot... Ringing now!`, fromChatId);
+                    const callRes = await triggerCallMeBotVoiceCall(CALLMEBOT_USER, "This is a test call for your Saveetha Hostel Attendance reminder. Voice reminders are active!");
+                    if (callRes.success) {
+                        await sendTelegram(`✅ Call dispatched! Check your Telegram app for an incoming voice call.`, fromChatId);
+                    } else {
+                        await sendTelegram(`❌ Call failed: ${callRes.reason || callRes.error}\n_Make sure you opened @CallMeBot_txtbot and pressed /start._`, fromChatId);
+                    }
                     continue;
                 }
 
