@@ -3123,6 +3123,214 @@ async function sendDailyTimetable(chatId, session) {
 
 const activeReminders = new Map();
 
+// ─── Hostel Attendance Workflow (9:00 PM – 10:00 PM) ──────────────────────────
+let hostelAttendanceState = {
+    active: false,
+    markedPresent: false,
+    reportedAbsent: false,
+    slotName: 'HOS – HOSTEL ATTENDANCE',
+    chatId: null,
+    callTimers: [],
+    scanInterval: null,
+    endTimeout: null
+};
+
+function stopHostelAttendance(reason = 'stopped') {
+    if (!hostelAttendanceState.active) return;
+    console.log(`[Hostel] Stopping hostel attendance workflow (${reason})`);
+    hostelAttendanceState.active = false;
+    if (hostelAttendanceState.scanInterval) {
+        clearInterval(hostelAttendanceState.scanInterval);
+        hostelAttendanceState.scanInterval = null;
+    }
+    if (hostelAttendanceState.endTimeout) {
+        clearTimeout(hostelAttendanceState.endTimeout);
+        hostelAttendanceState.endTimeout = null;
+    }
+    hostelAttendanceState.callTimers.forEach(t => clearTimeout(t));
+    hostelAttendanceState.callTimers = [];
+}
+
+async function startHostelAttendanceWorkflow(session, slot, chatId) {
+    if (hostelAttendanceState.active) {
+        console.log('[Hostel] Workflow already active, skipping duplicate trigger.');
+        return;
+    }
+
+    hostelAttendanceState.active = true;
+    hostelAttendanceState.markedPresent = false;
+    hostelAttendanceState.reportedAbsent = false;
+    hostelAttendanceState.slotName = slot?.slot || 'HOS – HOSTEL ATTENDANCE';
+    hostelAttendanceState.chatId = chatId;
+    hostelAttendanceState.callTimers = [];
+
+    const slotName = hostelAttendanceState.slotName;
+    console.log(`[Hostel] Starting 9:00 PM - 10:00 PM Hostel Attendance workflow for ${slotName}...`);
+
+    await sendTelegram(
+        `🏨 *Hostel Attendance Window Started (9:00 PM – 10:00 PM)*\n\n` +
+        `📚 *${slotName}*\n` +
+        `📞 *Phone Call Reminder:* Ringing every 10 minutes until marked or 10:00 PM\n` +
+        `🔍 *Portal Scanner:* Checking every 5 minutes for OTP entry\n\n` +
+        `_💡 If you are absent tonight, reply_ \`!absent\` _to cancel all calls and scanning immediately._`,
+        chatId
+    );
+
+    // Function to place a reminder call if still uncompleted
+    const doCall = async (callNumber, timeStr) => {
+        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
+            return;
+        }
+        console.log(`[Hostel Call #${callNumber}] Placing phone call reminder at ${timeStr}...`);
+        await triggerHostelCallReminder(`Hostel attendance reminder for ${slotName}. Please mark your hostel attendance now.`);
+        await sendTelegram(
+            `📞 *Hostel Attendance Call Reminder (#${callNumber} — ${timeStr})*\n\n` +
+            `Ringing your phone now! Please submit your attendance OTP.\n\n` +
+            `_👉 Reply with your 6-digit OTP, or reply_ \`!absent\` _if absent tonight._`,
+            chatId
+        );
+    };
+
+    // 1. Initial Call at 9:00 PM sharp
+    await doCall(1, '9:00 PM');
+
+    // 2. Schedule calls every 10 minutes: 9:10, 9:20, 9:30, 9:40, 9:50, 10:00 PM
+    const callTimes = [
+        { mins: 10, label: '9:10 PM', num: 2 },
+        { mins: 20, label: '9:20 PM', num: 3 },
+        { mins: 30, label: '9:30 PM', num: 4 },
+        { mins: 40, label: '9:40 PM', num: 5 },
+        { mins: 50, label: '9:50 PM', num: 6 },
+        { mins: 60, label: '10:00 PM', num: 7 }
+    ];
+
+    callTimes.forEach(c => {
+        const timer = setTimeout(() => {
+            doCall(c.num, c.label);
+        }, c.mins * 60 * 1000);
+        hostelAttendanceState.callTimers.push(timer);
+    });
+
+    // 3. Scan portal function (executed immediately and every 5 minutes)
+    const scanHostelPage = async () => {
+        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
+            return;
+        }
+        console.log('[Hostel Scan] Checking hostel attendance status in portal...');
+        const page = await session.context.newPage();
+        try {
+            await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+            if (page.url().includes('/login')) {
+                await doLogin(page, session.config.user, session.config.pass);
+                await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+            }
+            await page.waitForTimeout(2500);
+
+            const target = await findAttendanceTarget(page, slotName);
+            if (!target || !target.href) {
+                console.log('[Hostel Scan] No target href found yet.');
+                return;
+            }
+
+            const attendanceUrl = target.href.startsWith('http') ? target.href : `https://learner.saveetha.in${target.href}`;
+            await page.goto(attendanceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForTimeout(2000);
+
+            const status = await getPageAttendanceStatus(page);
+
+            // Check if already approved/done
+            if (status.inApproved || (status.inApproved && status.outApproved)) {
+                hostelAttendanceState.markedPresent = true;
+                stopHostelAttendance('Attendance approved on portal');
+                const picPath = path.join(__dirname, `_hostel_done_${Date.now()}.png`);
+                try {
+                    await page.screenshot({ path: picPath });
+                    await sendTelegramPhoto(
+                        picPath,
+                        `🎉 *Hostel Attendance Approved & Complete!* ✅\n\n` +
+                        `📚 *${slotName}*\n` +
+                        `🟢 Status: Marked Present\n\n` +
+                        `All phone calls and scanning have been stopped. Goodnight! 🛌✨`,
+                        chatId
+                    );
+                } catch (_) {
+                    await sendTelegram(`🎉 *Hostel Attendance Marked Present!* All phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
+                }
+                try { fs.unlinkSync(picPath); } catch (_) {}
+                return;
+            }
+
+            // Check if OTP box is open
+            if (status.inOpen) {
+                console.log('[Hostel Scan] 🚨 IN OTP box is OPEN NOW!');
+                const openPic = path.join(__dirname, `_hostel_open_${Date.now()}.png`);
+                try {
+                    await page.screenshot({ path: openPic });
+                    await sendTelegramPhoto(openPic, `🚨 *Hostel Attendance OTP Box is OPEN!*`, chatId);
+                } catch (_) {}
+                try { fs.unlinkSync(openPic); } catch (_) {}
+
+                await sendTelegram(
+                    `🔔 *Hostel Attendance OTP is OPEN!*\n\n` +
+                    `👉 Reply directly with your *6-digit OTP* right now to submit:`,
+                    chatId
+                );
+
+                // Wait for user to reply with 6-digit OTP (up to 4 minutes)
+                const userOtp = await new Promise(resolve => {
+                    const timeout = setTimeout(() => {
+                        if (pendingOtpRequests.has(chatId)) pendingOtpRequests.delete(chatId);
+                        resolve(null);
+                    }, 4 * 60 * 1000);
+
+                    pendingOtpRequests.set(chatId, (code) => {
+                        clearTimeout(timeout);
+                        resolve(code.trim());
+                    });
+                });
+
+                if (userOtp) {
+                    const ok = await enterAndVerifyOtp(page, userOtp, 'start', slotName, chatId);
+                    if (ok) {
+                        hostelAttendanceState.markedPresent = true;
+                        stopHostelAttendance('OTP submitted and approved');
+                        await sendTelegram(`🎉 *Hostel Attendance Verified!* Calls & scans stopped.`, chatId);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('[Hostel Scan] Error:', err.message);
+        } finally {
+            await page.close().catch(() => {});
+        }
+    };
+
+    // First scan right now at 9:00 PM
+    scanHostelPage().catch(() => {});
+
+    // Repeat scan every 5 minutes
+    hostelAttendanceState.scanInterval = setInterval(() => {
+        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
+            if (hostelAttendanceState.scanInterval) clearInterval(hostelAttendanceState.scanInterval);
+            return;
+        }
+        scanHostelPage().catch(() => {});
+    }, 5 * 60 * 1000);
+
+    // End of window at 10:00 PM (60 minutes)
+    hostelAttendanceState.endTimeout = setTimeout(async () => {
+        if (!hostelAttendanceState.active) return;
+        stopHostelAttendance('10:00 PM Window Closed');
+        if (!hostelAttendanceState.markedPresent && !hostelAttendanceState.reportedAbsent) {
+            await sendTelegram(
+                `⏰ *Hostel Attendance Window Closed (10:00 PM)*\n\n` +
+                `The attendance window has ended. All scheduled calls and scans for tonight have ended.`,
+                chatId
+            );
+        }
+    }, 60 * 60 * 1000 + 5000);
+}
+
 function scheduleSlotReminders(chatId, session, slots) {
     if (!slots || !slots.length) return;
     const allowOtp = isSuperAdmin(chatId);
@@ -3133,6 +3341,36 @@ function scheduleSlotReminders(chatId, session, slots) {
         const isLastSchedule = (idx === slots.length - 1);
         const isHostel = /hostel|hos\b/i.test(s.slot) || /boyshostel|girlshostel/i.test(s.venue || '') || (isLastSchedule && (s.hour >= 18 || s.hour === 21));
 
+        // 🏨 1. Dedicated Hostel Attendance Workflow (9:00 PM – 10:00 PM)
+        if (isHostel) {
+            if (!allowOtp) continue;
+
+            const hostelStart = getNowIST();
+            hostelStart.setHours(21, 0, 0, 0);
+
+            const hostelEnd = getNowIST();
+            hostelEnd.setHours(22, 0, 0, 0);
+
+            const delayTo9PM = hostelStart.getTime() - nowIST.getTime();
+            const hostelKey = `hostel_workflow_${chatId}`;
+
+            if (delayTo9PM > 0) {
+                if (activeReminders.has(hostelKey)) {
+                    clearTimeout(activeReminders.get(hostelKey));
+                }
+                const hTimer = setTimeout(() => {
+                    activeReminders.delete(hostelKey);
+                    startHostelAttendanceWorkflow(session, s, chatId);
+                }, delayTo9PM);
+                activeReminders.set(hostelKey, hTimer);
+                console.log(`[Scheduler] 🏨 Hostel Attendance workflow scheduled at 9:00 PM (in ${Math.round(delayTo9PM / 60000)} min)`);
+            } else if (nowIST.getTime() >= hostelStart.getTime() && nowIST.getTime() < hostelEnd.getTime()) {
+                console.log(`[Scheduler] 🏨 Currently within 9:00 PM - 10:00 PM window. Starting Hostel Attendance workflow now!`);
+                startHostelAttendanceWorkflow(session, s, chatId);
+            }
+            continue; // Handled by dedicated hostel workflow
+        }
+
         // Class start time today in IST
         const slotStart = getNowIST();
         slotStart.setHours(s.hour, s.minute, 0, 0);
@@ -3140,7 +3378,7 @@ function scheduleSlotReminders(chatId, session, slots) {
         // Class end time today in IST (default 90 min)
         const slotEnd = new Date(slotStart.getTime() + (s.durationMinutes || 90) * 60 * 1000);
 
-        // ── 1. 15-Minute Class Reminder (All Users) ───────────────────────────
+        // ── Regular Class 15-Minute Reminder ─────────────────────────────────
         const reminderTime = new Date(slotStart.getTime() - 15 * 60 * 1000);
         const reminderDelay = reminderTime.getTime() - nowIST.getTime();
         const reminderKey = `rem_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
@@ -3169,9 +3407,9 @@ function scheduleSlotReminders(chatId, session, slots) {
             console.log(`[Scheduler] 15m reminder for "${s.slot}" in ${Math.round(reminderDelay / 60000)} min (${session.config.name})`);
         }
 
-        // ── 2 & 3: OTP Attendance (SUPER ADMIN ONLY) ──────────────────────────
+        // ── Regular Class OTP Attendance (SUPER ADMIN ONLY) ───────────────────
         if (allowOtp) {
-            // IN OTP: starts 10 min before class start (e.g. 7:50 AM for 8:00 AM class, 8:50 PM for 9:00 PM hostel)
+            // IN OTP: starts 10 min before class start (e.g. 7:50 AM for 8:00 AM class)
             // and stops 5 min after class start (e.g. 8:05 AM)
             const inScanStart = new Date(slotStart.getTime() - 10 * 60 * 1000);
             const inScanStop = new Date(slotStart.getTime() + 5 * 60 * 1000);
@@ -3184,38 +3422,15 @@ function scheduleSlotReminders(chatId, session, slots) {
                 if (activeReminders.has(inKey)) {
                     clearTimeout(activeReminders.get(inKey));
                 }
-                const inTimeoutId = setTimeout(async () => {
+                const inTimeoutId = setTimeout(() => {
                     activeReminders.delete(inKey);
-                    if (isHostel) {
-                        console.log(`[Scheduler] 📞 Triggering voice call for Hostel Attendance: ${s.slot}`);
-                        await triggerHostelCallReminder(`Hostel attendance reminder for ${s.slot}. Please mark your hostel attendance now.`);
-                        await sendTelegram(
-                            `📞 *Hostel Attendance Reminder!*\n\n` +
-                            `🏨 *${s.slot}*\n` +
-                            `⏰ *${s.timeStr || '9:00 PM'}*\n` +
-                            `📍 *${s.venue || 'BoysHostel'}*\n\n` +
-                            `_An automated phone call is ringing your phone now so you never miss hostel attendance!_`,
-                            chatId
-                        );
-                    }
-                    console.log(`[Scheduler] IN OTP trigger fired for "${s.slot}" — scanning until 8:05 AM/start+5m (15 min)`);
+                    console.log(`[Scheduler] IN OTP trigger fired for "${s.slot}" — scanning until 8:05 AM (15 min)`);
                     handleAttendanceOtp(session, s.slot, 'start', chatId, null, inScanDuration);
                 }, inDelay);
                 activeReminders.set(inKey, inTimeoutId);
                 console.log(`[Scheduler] IN OTP monitor for "${s.slot}" scheduled in ${Math.round(inDelay / 60000)} min (${session.config.name})`);
             } else if (nowIST.getTime() >= inScanStart.getTime() && nowIST.getTime() <= inScanStop.getTime()) {
-                // Class is within the window right now!
                 const remainingMs = inScanStop.getTime() - nowIST.getTime();
-                if (isHostel) {
-                    triggerHostelCallReminder(`Hostel attendance reminder for ${s.slot}. Please mark your hostel attendance now.`).catch(() => {});
-                    sendTelegram(
-                        `📞 *Hostel Attendance Reminder!*\n\n` +
-                        `🏨 *${s.slot}*\n` +
-                        `⏰ *${s.timeStr || '9:00 PM'}*\n\n` +
-                        `_Placing automated voice call to your phone now!_`,
-                        chatId
-                    );
-                }
                 console.log(`[Scheduler] Class "${s.slot}" is in scan window — scanning IN OTP for remaining ${Math.round(remainingMs / 60000)} min`);
                 handleAttendanceOtp(session, s.slot, 'start', chatId, null, remainingMs);
             }
@@ -3699,6 +3914,8 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         helpMsg += `\n*🛠️ Super Admin Commands:*\n` +
                             `\`!checkotp [class]\` — Instant attendance status check with screenshot\n` +
                             `\`!otp [class] [in/out]\` — Monitor, detect & submit class OTP\n` +
+                            `\`!absent\` — Report absent for hostel attendance (cancels calls & scans)\n` +
+                            `\`!testhostel\` — Test 9:00 PM hostel attendance workflow immediately\n` +
                             `\`!settwilio <Sid> <Token> <From> [To]\` — Configure Twilio cellular phone calls\n` +
                             `\`!setphone <phone>\` — Set destination phone (e.g. +91XXXXXXXXXX)\n` +
                             `\`!twiliostatus\` — Check Twilio configuration status\n` +
@@ -4173,6 +4390,53 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         `\`!settwilio AC1234567890abcdef myToken +12055550199 +919876543210\``,
                         fromChatId
                     );
+                    continue;
+                }
+
+                if (text === '!absent' || text === '!hostelabsent' || text === 'absent') {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ Reporting absent is restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
+                    if (!hostelAttendanceState.active) {
+                        await sendTelegram(`ℹ️ Hostel attendance is not currently active right now.\n(The automated window runs daily between 9:00 PM and 10:00 PM).`, fromChatId);
+                        continue;
+                    }
+                    hostelAttendanceState.reportedAbsent = true;
+                    stopHostelAttendance('User reported absent via Telegram');
+                    await sendTelegram(
+                        `🛑 *Recorded: You marked yourself ABSENT for tonight!*\n\n` +
+                        `✅ All phone call reminders have been cancelled.\n` +
+                        `✅ 5-minute attendance scanning has been stopped.\n\n` +
+                        `Goodnight! 🛌💤`,
+                        fromChatId
+                    );
+                    continue;
+                }
+
+                if (text === '!testhostel' || text === '!testhostelflow') {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ Restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    await sendTelegram(`🧪 *Starting Test Hostel Attendance Workflow Now...*`, fromChatId);
+                    startHostelAttendanceWorkflow(session, { slot: 'HOS – HOSTEL ATTENDANCE' }, fromChatId);
+                    continue;
+                }
+
+                if (text === '!stophostel') {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ Restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
+                    if (!hostelAttendanceState.active) {
+                        await sendTelegram(`ℹ️ Hostel attendance workflow is not active.`, fromChatId);
+                        continue;
+                    }
+                    stopHostelAttendance('Manual stop by Super Admin');
+                    await sendTelegram(`🛑 *Hostel attendance workflow stopped manually.*`, fromChatId);
                     continue;
                 }
 
