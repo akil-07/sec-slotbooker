@@ -52,7 +52,106 @@ function getNowIST() {
     return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 }
 
-// ─── CallMeBot Voice Call Reminder for Hostel Attendance ─────────────────────
+// ─── Twilio & CallMeBot Voice Call Reminders for Hostel Attendance ────────────
+let TWILIO_CONFIG = {
+    accountSid: process.env.TWILIO_ACCOUNT_SID || '',
+    authToken: process.env.TWILIO_AUTH_TOKEN || '',
+    fromNumber: process.env.TWILIO_FROM_NUMBER || '',
+    toNumber: process.env.TWILIO_TO_NUMBER || ''
+};
+const TWILIO_CONFIG_FILE = path.join(__dirname, 'twilio_config.json');
+
+function loadTwilioConfig() {
+    try {
+        if (fs.existsSync(TWILIO_CONFIG_FILE)) {
+            const data = JSON.parse(fs.readFileSync(TWILIO_CONFIG_FILE, 'utf8'));
+            if (data) TWILIO_CONFIG = { ...TWILIO_CONFIG, ...data };
+        }
+    } catch (_) {}
+}
+loadTwilioConfig();
+
+function saveTwilioConfig(cfg) {
+    TWILIO_CONFIG = { ...TWILIO_CONFIG, ...cfg };
+    try {
+        fs.writeFileSync(TWILIO_CONFIG_FILE, JSON.stringify(TWILIO_CONFIG, null, 2));
+    } catch (_) {}
+    if (typeof syncTwilioConfigToGist === 'function') {
+        syncTwilioConfigToGist(TWILIO_CONFIG).catch(() => {});
+    }
+}
+
+async function triggerTwilioVoiceCall(message, customTo) {
+    const { accountSid, authToken, fromNumber, toNumber } = TWILIO_CONFIG;
+    const destPhone = customTo || toNumber;
+
+    if (!accountSid || !authToken || !fromNumber) {
+        return {
+            success: false,
+            error: 'Twilio is not fully configured (missing Account SID, Auth Token, or From Number).\n\nTo configure, send:\n`!settwilio <AccountSid> <AuthToken> <FromNumber> <ToNumber>`\nor add GitHub Repository Secrets.'
+        };
+    }
+    if (!destPhone) {
+        return {
+            success: false,
+            error: 'No recipient phone number configured. Use `!setphone +91XXXXXXXXXX` to save your number.'
+        };
+    }
+
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+    const speechText = message || 'Attention! This is your Saveetha Hostel Attendance reminder. Please mark your hostel attendance now.';
+    
+    // TwiML payload with clear speech and repetition
+    const twiml = `<Response><Pause length="1"/><Say voice="Polly.Aditi" language="en-IN">${speechText}</Say><Pause length="2"/><Say voice="Polly.Aditi" language="en-IN">Repeating: ${speechText}</Say><Pause length="1"/></Response>`;
+
+    const params = new URLSearchParams();
+    params.append('To', destPhone);
+    params.append('From', fromNumber);
+    params.append('Twiml', twiml);
+
+    const postData = params.toString();
+
+    console.log(`[Twilio] Placing voice call from ${fromNumber} to ${destPhone}...`);
+
+    return new Promise((resolve) => {
+        const req = https.request({
+            hostname: 'api.twilio.com',
+            path: `/2010-04-01/Accounts/${accountSid}/Calls.json`,
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Content-Length': Buffer.byteLength(postData)
+            }
+        }, (res) => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => {
+                try {
+                    const parsed = JSON.parse(body);
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                        console.log(`[Twilio] Call queued successfully: SID=${parsed.sid}, status=${parsed.status}`);
+                        resolve({ success: true, sid: parsed.sid, status: parsed.status, to: destPhone });
+                    } else {
+                        console.error(`[Twilio] Call error (${res.statusCode}):`, parsed.message || body);
+                        resolve({ success: false, error: parsed.message || `HTTP ${res.statusCode}`, code: parsed.code });
+                    }
+                } catch (e) {
+                    resolve({ success: false, error: body.substring(0, 200) });
+                }
+            });
+        });
+
+        req.on('error', (err) => {
+            console.error('[Twilio] Request error:', err.message);
+            resolve({ success: false, error: err.message });
+        });
+
+        req.write(postData);
+        req.end();
+    });
+}
+
 let CALLMEBOT_USER = process.env.CALLMEBOT_USER || '';
 const CALLMEBOT_CONFIG_FILE = path.join(__dirname, 'call_config.json');
 
@@ -79,45 +178,47 @@ function saveCallConfig(target) {
 async function triggerCallMeBotVoiceCall(targetUser, message) {
     const user = targetUser || CALLMEBOT_USER;
     if (!user) {
-        console.log('[CallMeBot] No CallMeBot username or phone configured.');
         return { success: false, reason: 'No CallMeBot user configured. Use `!setcall @your_username`' };
     }
     const cleanUser = user.startsWith('@') || user.startsWith('+') ? user : `@${user}`;
     const textMsg = message || 'Hostel attendance reminder. Please mark your hostel attendance now.';
     const encodedText = encodeURIComponent(textMsg);
-    // Use api2.callmebot.com with standard TTS voice
     const url = `https://api2.callmebot.com/start.php?user=${encodeURIComponent(cleanUser)}&text=${encodedText}&lang=en-US-Standard-B&rpt=2`;
 
-    console.log(`[CallMeBot] Triggering voice call to ${cleanUser}...`);
     return new Promise((resolve) => {
         https.get(url, (res) => {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
                 const cleanText = data.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
-                console.log(`[CallMeBot] Call response for ${cleanUser}:`, cleanText.substring(0, 200));
-
-                const isAuthError = /not authorized|not received|whitelist/i.test(cleanText) && !/is in the whitelist/i.test(cleanText);
-                const isInvalidError = /invalid username|invalid phone|invalid/i.test(cleanText);
-                const isGeneralError = /error:/i.test(cleanText);
-
-                if (isAuthError) {
-                    const reason = `⚠️ *CallMeBot Authorization Missing!*\n\nCallMeBot needs one-time permission to call \`${cleanUser}\`.\n\n👉 *Click here to authorize:* https://api2.callmebot.com/txt/auth.php\n(Or open @CallMeBot_txtbot in Telegram and send \`/start\`)`;
-                    resolve({ success: false, reason, raw: cleanText });
-                } else if (isInvalidError) {
-                    const reason = `⚠️ *Invalid Telegram Username or Phone*\n\nCallMeBot could not find \`${cleanUser}\`.\nMake sure you have set a public @username in Telegram (Settings > Edit Profile > Username), or use your international phone number with country code (e.g. \`!setcall +919876543210\`).`;
-                    resolve({ success: false, reason, raw: cleanText });
-                } else if (isGeneralError) {
-                    resolve({ success: false, reason: `❌ Call error: ${cleanText}`, raw: cleanText });
+                const isError = /error:|invalid|not received|not authorized/i.test(cleanText);
+                if (isError) {
+                    resolve({ success: false, reason: cleanText, raw: cleanText });
                 } else {
                     resolve({ success: true, data: cleanText });
                 }
             });
         }).on('error', (err) => {
-            console.error('[CallMeBot] Call request error:', err.message);
             resolve({ success: false, reason: `Connection error: ${err.message}` });
         });
     });
+}
+
+async function triggerHostelCallReminder(message) {
+    // Prefer Twilio if configured
+    if (TWILIO_CONFIG.accountSid && TWILIO_CONFIG.authToken && TWILIO_CONFIG.fromNumber) {
+        console.log('[Hostel Call] Calling via Twilio...');
+        return await triggerTwilioVoiceCall(message);
+    }
+    // Fall back to CallMeBot if set
+    if (CALLMEBOT_USER) {
+        console.log('[Hostel Call] Calling via CallMeBot...');
+        return await triggerCallMeBotVoiceCall(CALLMEBOT_USER, message);
+    }
+    return {
+        success: false,
+        error: 'No voice service configured. Please configure Twilio using `!settwilio` or set TWILIO secrets.'
+    };
 }
 
 // ─── Persistent Task State (Gist-backed for GitHub Actions survival) ─────────
@@ -225,6 +326,46 @@ async function syncCallConfigToGist(target) {
         console.log('[Persist] Synced call config to Gist.');
     } catch (e) {
         console.error('[Persist] Failed to sync call config to Gist:', e.message);
+    }
+}
+
+async function syncTwilioConfigToGist(cfg) {
+    if (!GIST_TOKEN || !GIST_ID) return;
+    try {
+        const body = JSON.stringify({
+            files: {
+                'saveetha_twilio_config.json': {
+                    content: JSON.stringify(cfg, null, 2)
+                }
+            }
+        });
+        await new Promise((resolve, reject) => {
+            const req = https.request({
+                hostname: 'api.github.com',
+                path: `/gists/${GIST_ID}`,
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${GIST_TOKEN}`,
+                    'User-Agent': 'saveetha-bot',
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                    'Accept': 'application/vnd.github.v3+json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                }
+            }, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+                    else reject(new Error(`Gist twilio config save failed: ${res.statusCode}`));
+                });
+            });
+            req.on('error', reject);
+            req.write(body);
+            req.end();
+        });
+        console.log('[Persist] Synced twilio config to Gist.');
+    } catch (e) {
+        console.error('[Persist] Failed to sync twilio config to Gist:', e.message);
     }
 }
 
@@ -451,6 +592,15 @@ async function initAccounts() {
                     if (gistCall && gistCall.user) {
                         CALLMEBOT_USER = gistCall.user;
                         console.log('[Bot] Loaded Gist call config user:', CALLMEBOT_USER);
+                    }
+                } catch (_) {}
+            }
+            if (gist.files && gist.files['saveetha_twilio_config.json'] && gist.files['saveetha_twilio_config.json'].content) {
+                try {
+                    const gistTwilio = JSON.parse(gist.files['saveetha_twilio_config.json'].content);
+                    if (gistTwilio) {
+                        TWILIO_CONFIG = { ...TWILIO_CONFIG, ...gistTwilio };
+                        console.log('[Bot] Loaded Gist Twilio config. To:', TWILIO_CONFIG.toNumber);
                     }
                 } catch (_) {}
             }
@@ -3032,13 +3182,13 @@ function scheduleSlotReminders(chatId, session, slots) {
                     activeReminders.delete(inKey);
                     if (isHostel) {
                         console.log(`[Scheduler] 📞 Triggering voice call for Hostel Attendance: ${s.slot}`);
-                        await triggerCallMeBotVoiceCall(CALLMEBOT_USER, `Hostel attendance reminder for ${s.slot}. Please mark your hostel attendance now.`);
+                        await triggerHostelCallReminder(`Hostel attendance reminder for ${s.slot}. Please mark your hostel attendance now.`);
                         await sendTelegram(
                             `📞 *Hostel Attendance Reminder!*\n\n` +
                             `🏨 *${s.slot}*\n` +
                             `⏰ *${s.timeStr || '9:00 PM'}*\n` +
                             `📍 *${s.venue || 'BoysHostel'}*\n\n` +
-                            `_An automated voice call is ringing your Telegram now so you never miss hostel attendance!_`,
+                            `_An automated phone call is ringing your phone now so you never miss hostel attendance!_`,
                             chatId
                         );
                     }
@@ -3051,12 +3201,12 @@ function scheduleSlotReminders(chatId, session, slots) {
                 // Class is within the window right now!
                 const remainingMs = inScanStop.getTime() - nowIST.getTime();
                 if (isHostel) {
-                    triggerCallMeBotVoiceCall(CALLMEBOT_USER, `Hostel attendance reminder for ${s.slot}. Please mark your hostel attendance now.`).catch(() => {});
+                    triggerHostelCallReminder(`Hostel attendance reminder for ${s.slot}. Please mark your hostel attendance now.`).catch(() => {});
                     sendTelegram(
                         `📞 *Hostel Attendance Reminder!*\n\n` +
                         `🏨 *${s.slot}*\n` +
                         `⏰ *${s.timeStr || '9:00 PM'}*\n\n` +
-                        `_Calling your Telegram now!_`,
+                        `_Placing automated voice call to your phone now!_`,
                         chatId
                     );
                 }
@@ -3542,8 +3692,10 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         helpMsg += `\n*🛠️ Super Admin Commands:*\n` +
                             `\`!checkotp [class]\` — Instant attendance status check with screenshot\n` +
                             `\`!otp [class] [in/out]\` — Monitor, detect & submit class OTP\n` +
-                            `\`!setcall <@user / +phone>\` — Configure CallMeBot Telegram voice call\n` +
-                            `\`!testcall\` — Test incoming Telegram voice call\n` +
+                            `\`!settwilio <Sid> <Token> <From> [To]\` — Configure Twilio cellular phone calls\n` +
+                            `\`!setphone <phone>\` — Set destination phone (e.g. +91XXXXXXXXXX)\n` +
+                            `\`!twiliostatus\` — Check Twilio configuration status\n` +
+                            `\`!testcall\` — Test phone call reminder immediately\n` +
                             `\`!stopbot\` — Permanently stop GitHub Actions bot\n` +
                             `\`!restartbot\` — Restart GitHub Actions bot\n`;
                     }
@@ -3880,64 +4032,137 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                     continue;
                 }
 
-                if (text.startsWith('!setcall')) {
+                if (text.startsWith('!settwilio')) {
                     if (!isSuperAdmin(fromChatId)) {
-                        await sendTelegram(`⛔ Voice call reminder settings are restricted to Super Admin only.`, fromChatId);
+                        await sendTelegram(`⛔ Twilio call settings are restricted to Super Admin only.`, fromChatId);
                         continue;
                     }
-                    const arg = text.replace('!setcall', '').trim();
-                    if (!arg) {
-                        const current = CALLMEBOT_USER || 'Not set';
+                    const parts = text.split(/\s+/).slice(1);
+                    if (parts.length < 3) {
+                        const mask = (s) => s ? (s.length > 8 ? `${s.substring(0, 4)}...${s.substring(s.length - 4)}` : '••••') : 'Not set';
                         await sendTelegram(
-                            `📞 *Hostel Voice Call Settings*\n\n` +
-                            `Current Target: \`${current}\`\n\n` +
-                            `*How to set up:*\n` +
-                            `1️⃣ In Telegram, open [@CallMeBot_txtbot](https://t.me/CallMeBot_txtbot)\n` +
-                            `2️⃣ Press */start* to authorize calls.\n` +
-                            `3️⃣ Send command here:\n` +
-                            `\`!setcall @your_telegram_username\`\n` +
-                            `_(or phone number: \`!setcall +91XXXXXXXXXX\`)_\n\n` +
-                            `4️⃣ Run \`!testcall\` to receive a test phone call immediately!`,
+                            `📞 *Twilio Cellular Call Settings*\n\n` +
+                            `Current Status:\n` +
+                            `• Account SID: \`${mask(TWILIO_CONFIG.accountSid)}\`\n` +
+                            `• Auth Token: \`${TWILIO_CONFIG.authToken ? '••••••••••••••••' : 'Not set'}\`\n` +
+                            `• From Number: \`${TWILIO_CONFIG.fromNumber || 'Not set'}\`\n` +
+                            `• Destination Phone: \`${TWILIO_CONFIG.toNumber || 'Not set'}\`\n\n` +
+                            `*How to configure Twilio:*\n` +
+                            `\`!settwilio <AccountSid> <AuthToken> <FromNumber> [ToNumber]\`\n\n` +
+                            `*Example:*\n` +
+                            `\`!settwilio ACxxxxxxxxxxxxxx myAuthToken +12055550199 +919876543210\`\n\n` +
+                            `_(You can also set destination number anytime with \`!setphone +91XXXXXXXXXX\`)_`,
                             fromChatId
                         );
                         continue;
                     }
-                    saveCallConfig(arg);
-                    await sendTelegram(`✅ CallMeBot voice call target configured to \`${CALLMEBOT_USER}\`!\nTest it anytime using \`!testcall\`.`, fromChatId);
+                    const [accountSid, authToken, fromNumber, toNumber] = parts;
+                    const updateObj = { accountSid, authToken, fromNumber };
+                    if (toNumber) updateObj.toNumber = toNumber;
+                    saveTwilioConfig(updateObj);
+                    await sendTelegram(
+                        `✅ *Twilio credentials updated & saved to Gist!*\n\n` +
+                        `• SID: \`${accountSid.substring(0, 6)}...\`\n` +
+                        `• From: \`${fromNumber}\`\n` +
+                        `• To: \`${TWILIO_CONFIG.toNumber || 'Not set yet'}\`\n\n` +
+                        `Test it now with \`!testcall\`!`,
+                        fromChatId
+                    );
                     continue;
                 }
 
-                if (text === '!testcall' || text === '!testhostelcall') {
+                if (text.startsWith('!setphone')) {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ Phone settings are restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
+                    const phone = text.replace('!setphone', '').trim();
+                    if (!phone) {
+                        await sendTelegram(
+                            `📞 Current recipient phone: \`${TWILIO_CONFIG.toNumber || 'Not set'}\`\n\n` +
+                            `Usage: \`!setphone +91XXXXXXXXXX\``,
+                            fromChatId
+                        );
+                        continue;
+                    }
+                    saveTwilioConfig({ toNumber: phone });
+                    await sendTelegram(`✅ Destination phone number set to: \`${phone}\`!\nTest it with \`!testcall\`.`, fromChatId);
+                    continue;
+                }
+
+                if (text === '!twiliostatus') {
+                    if (!isSuperAdmin(fromChatId)) {
+                        await sendTelegram(`⛔ Restricted to Super Admin only.`, fromChatId);
+                        continue;
+                    }
+                    const mask = (s) => s ? (s.length > 8 ? `${s.substring(0, 4)}...${s.substring(s.length - 4)}` : '••••') : 'Not set';
+                    await sendTelegram(
+                        `📞 *Twilio Status*\n\n` +
+                        `• Account SID: \`${mask(TWILIO_CONFIG.accountSid)}\`\n` +
+                        `• Auth Token: \`${TWILIO_CONFIG.authToken ? 'Configured ✅' : 'Not set ❌'}\`\n` +
+                        `• From Number: \`${TWILIO_CONFIG.fromNumber || 'Not set ❌'}\`\n` +
+                        `• To Number: \`${TWILIO_CONFIG.toNumber || 'Not set ❌'}\`\n\n` +
+                        `_Ready to place calls?_ ${TWILIO_CONFIG.accountSid && TWILIO_CONFIG.authToken && TWILIO_CONFIG.fromNumber && TWILIO_CONFIG.toNumber ? '🟢 YES' : '🔴 NO (Missing fields)'}`,
+                        fromChatId
+                    );
+                    continue;
+                }
+
+                if (text === '!testcall' || text === '!testtwiliocall' || text === '!testhostelcall') {
                     if (!isSuperAdmin(fromChatId)) {
                         await sendTelegram(`⛔ Voice call test is restricted to Super Admin only.`, fromChatId);
                         continue;
                     }
-                    if (!CALLMEBOT_USER) {
-                        await sendTelegram(
-                            `⚠️ No CallMeBot username configured!\n\n` +
-                            `Please set it first using \`!setcall @username\` or \`!setcall +phone\`.\n` +
-                            `Also remember to send \`/start\` to [@CallMeBot_txtbot](https://t.me/CallMeBot_txtbot) once to authorize calls.`,
-                            fromChatId
-                        );
+
+                    // Check Twilio first
+                    if (TWILIO_CONFIG.accountSid && TWILIO_CONFIG.authToken && TWILIO_CONFIG.fromNumber) {
+                        if (!TWILIO_CONFIG.toNumber) {
+                            await sendTelegram(`⚠️ No destination phone set! Please run: \`!setphone +91XXXXXXXXXX\``, fromChatId);
+                            continue;
+                        }
+                        await sendTelegram(`📞 Placing cellular phone call to *${TWILIO_CONFIG.toNumber}* via Twilio... Ringing now!`, fromChatId);
+                        const callRes = await triggerTwilioVoiceCall("This is a test call for your Saveetha Hostel Attendance reminder. Voice call alerts are active and working!");
+                        if (callRes.success) {
+                            await sendTelegram(
+                                `✅ *Phone call placed successfully!*\n\n` +
+                                `📱 *Ringing:* \`${callRes.to}\`\n` +
+                                `🆔 *Call SID:* \`${callRes.sid}\`\n` +
+                                `📊 *Status:* \`${callRes.status}\`\n\n` +
+                                `Pick up your phone to hear the attendance reminder! 🚀`,
+                                fromChatId
+                            );
+                        } else {
+                            await sendTelegram(
+                                `❌ *Twilio Call Failed:*\n\n${callRes.error}\n\n` +
+                                `_Tip: If using a free Twilio trial account, the destination number (+91...) must be verified under "Verified Caller IDs" in your Twilio Console._`,
+                                fromChatId
+                            );
+                        }
                         continue;
                     }
-                    await sendTelegram(`📞 Initiating test voice call to *${CALLMEBOT_USER}* via CallMeBot... Ringing now!`, fromChatId);
-                    const callRes = await triggerCallMeBotVoiceCall(CALLMEBOT_USER, "This is a test call for your Saveetha Hostel Attendance reminder. Voice reminders are active!");
-                    if (callRes.success) {
-                        await sendTelegram(
-                            `✅ Call dispatched to *${CALLMEBOT_USER}*!\n\n` +
-                            `📞 Check your Telegram app for an incoming audio call.\n\n` +
-                            `_💡 If your phone didn't ring, check Telegram:\n` +
-                            `• Settings > Privacy and Security > Calls > set to "Everybody"_`,
-                            fromChatId
-                        );
-                    } else {
-                        await sendTelegram(
-                            `${callRes.reason || '❌ Call failed'}\n\n` +
-                            `_Response details:_ \`${callRes.raw || 'None'}\``,
-                            fromChatId
-                        );
+
+                    // Fallback to CallMeBot
+                    if (CALLMEBOT_USER) {
+                        await sendTelegram(`📞 Placing call to *${CALLMEBOT_USER}* via CallMeBot...`, fromChatId);
+                        const callRes = await triggerCallMeBotVoiceCall(CALLMEBOT_USER, "This is a test call for your Saveetha Hostel Attendance reminder.");
+                        if (callRes.success) {
+                            await sendTelegram(`✅ Call dispatched to ${CALLMEBOT_USER}!`, fromChatId);
+                        } else {
+                            await sendTelegram(`❌ Call failed: ${callRes.reason || callRes.raw}`, fromChatId);
+                        }
+                        continue;
                     }
+
+                    await sendTelegram(
+                        `⚠️ *No phone service configured yet!*\n\n` +
+                        `To have the bot call your phone via Twilio:\n` +
+                        `1️⃣ Get your Twilio credentials (Account SID, Auth Token, Twilio Phone Number).\n` +
+                        `2️⃣ Send this command here:\n` +
+                        `\`!settwilio <AccountSid> <AuthToken> <FromNumber> <YourPhoneNumber>\`\n\n` +
+                        `Example:\n` +
+                        `\`!settwilio AC1234567890abcdef myToken +12055550199 +919876543210\``,
+                        fromChatId
+                    );
                     continue;
                 }
 
