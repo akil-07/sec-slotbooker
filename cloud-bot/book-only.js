@@ -1954,6 +1954,8 @@ async function getPageAttendanceStatus(page) {
 
         // 1. IN OTP status
         const inApproved = bodyLower.includes('in attendance has been approved') ||
+                           bodyLower.includes('attendance has been approved for this session') ||
+                           bodyLower.includes('your in attendance has been approved') ||
                            bodyLower.includes('in otp approved') ||
                            bodyLower.includes('in otp submitted') ||
                            /in otp[\s\S]{0,100}submitted/i.test(bodyLower);
@@ -3170,9 +3172,9 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
     await sendTelegram(
         `🏨 *Hostel Attendance Window Started (9:00 PM – 10:00 PM)*\n\n` +
         `📚 *${slotName}*\n` +
-        `📞 *Phone Call Reminder:* Ringing every 10 minutes until marked or 10:00 PM\n` +
-        `🔍 *Portal Scanner:* Checking every 5 minutes for OTP entry\n\n` +
-        `_💡 If you are absent tonight, reply_ \`!absent\` _to cancel all calls and scanning immediately._`,
+        `📞 *Phone Call Reminder:* Ringing every 10 minutes until approved or 10:00 PM\n` +
+        `🔍 *Portal Scanner:* Checking every 5 minutes for approval\n\n` +
+        `_💡 Once approved on portal or if you are absent, calls will automatically stop (or reply_ \`!absent\`_)._`,
         chatId
     );
 
@@ -3185,8 +3187,8 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
         await triggerHostelCallReminder(`Hostel attendance reminder for ${slotName}. Please mark your hostel attendance now.`);
         await sendTelegram(
             `📞 *Hostel Attendance Call Reminder (#${callNumber} — ${timeStr})*\n\n` +
-            `Ringing your phone now! Please submit your attendance OTP.\n\n` +
-            `_👉 Reply with your 6-digit OTP, or reply_ \`!absent\` _if absent tonight._`,
+            `Ringing your phone now! Please check or mark your hostel attendance.\n\n` +
+            `_👉 Calls stop automatically once your IN attendance is approved, or reply_ \`!absent\` _if absent tonight._`,
             chatId
         );
     };
@@ -3226,7 +3228,7 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
             }
             await page.waitForTimeout(2500);
 
-            const target = await findAttendanceTarget(page, slotName);
+            const target = await findAttendanceTarget(page, 'hostel') || await findAttendanceTarget(page, slotName);
             if (!target || !target.href) {
                 console.log('[Hostel Scan] No target href found yet.');
                 return;
@@ -3238,8 +3240,8 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
 
             const status = await getPageAttendanceStatus(page);
 
-            // Check if already approved/done
-            if (status.inApproved || (status.inApproved && status.outApproved)) {
+            // Check if already approved/done (e.g. "Your IN attendance has been approved for this session.")
+            if (status.inApproved) {
                 hostelAttendanceState.markedPresent = true;
                 stopHostelAttendance('Attendance approved on portal');
                 const picPath = path.join(__dirname, `_hostel_done_${Date.now()}.png`);
@@ -3247,14 +3249,14 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                     await page.screenshot({ path: picPath });
                     await sendTelegramPhoto(
                         picPath,
-                        `🎉 *Hostel Attendance Approved & Complete!* ✅\n\n` +
+                        `🎉 *Hostel Attendance Approved!* ✅\n\n` +
                         `📚 *${slotName}*\n` +
-                        `🟢 Status: Marked Present\n\n` +
+                        `🟢 *Status:* Your IN attendance has been approved for this session.\n\n` +
                         `All phone calls and scanning have been stopped. Goodnight! 🛌✨`,
                         chatId
                     );
                 } catch (_) {
-                    await sendTelegram(`🎉 *Hostel Attendance Marked Present!* All phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
+                    await sendTelegram(`🎉 *Hostel Attendance Approved!* Your IN attendance has been approved for this session.\nAll phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
                 }
                 try { fs.unlinkSync(picPath); } catch (_) {}
                 return;
