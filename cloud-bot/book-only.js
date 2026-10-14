@@ -72,6 +72,9 @@ function loadTwilioConfig() {
 loadTwilioConfig();
 
 function saveTwilioConfig(cfg) {
+    if (cfg && cfg.accountSid && cfg.accountSid.toLowerCase().startsWith('ac')) {
+        cfg.accountSid = 'AC' + cfg.accountSid.substring(2);
+    }
     TWILIO_CONFIG = { ...TWILIO_CONFIG, ...cfg };
     try {
         fs.writeFileSync(TWILIO_CONFIG_FILE, JSON.stringify(TWILIO_CONFIG, null, 2));
@@ -82,7 +85,10 @@ function saveTwilioConfig(cfg) {
 }
 
 async function triggerTwilioVoiceCall(message, customTo) {
-    const { accountSid, authToken, fromNumber, toNumber } = TWILIO_CONFIG;
+    let { accountSid, authToken, fromNumber, toNumber } = TWILIO_CONFIG;
+    if (accountSid && accountSid.toLowerCase().startsWith('ac')) {
+        accountSid = 'AC' + accountSid.substring(2);
+    }
     const destPhone = customTo || toNumber;
 
     if (!accountSid || !authToken || !fromNumber) {
@@ -3513,7 +3519,8 @@ async function main() {
                     continue;
                 }
 
-                let text = msg.text.trim().toLowerCase();
+                const rawText = msg.text ? msg.text.trim() : '';
+                let text = rawText.toLowerCase();
 
                 // ── OTP Intercept ───────────────────────────────────────────
                 if (pendingOtpRequests.has(fromChatId)) {
@@ -4037,7 +4044,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         await sendTelegram(`⛔ Twilio call settings are restricted to Super Admin only.`, fromChatId);
                         continue;
                     }
-                    const parts = text.split(/\s+/).slice(1);
+                    const parts = rawText.split(/\s+/).slice(1);
                     if (parts.length < 3) {
                         const mask = (s) => s ? (s.length > 8 ? `${s.substring(0, 4)}...${s.substring(s.length - 4)}` : '••••') : 'Not set';
                         await sendTelegram(
@@ -4056,7 +4063,10 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         );
                         continue;
                     }
-                    const [accountSid, authToken, fromNumber, toNumber] = parts;
+                    let [accountSid, authToken, fromNumber, toNumber] = parts;
+                    if (accountSid && accountSid.toLowerCase().startsWith('ac')) {
+                        accountSid = 'AC' + accountSid.substring(2);
+                    }
                     const updateObj = { accountSid, authToken, fromNumber };
                     if (toNumber) updateObj.toNumber = toNumber;
                     saveTwilioConfig(updateObj);
@@ -4076,7 +4086,7 @@ Example: {"action": "reply", "message": "Hello! How can I help?"}`;
                         await sendTelegram(`⛔ Phone settings are restricted to Super Admin only.`, fromChatId);
                         continue;
                     }
-                    const phone = text.replace('!setphone', '').trim();
+                    const phone = rawText.replace(/!setphone/i, '').trim();
                     if (!phone) {
                         await sendTelegram(
                             `📞 Current recipient phone: \`${TWILIO_CONFIG.toNumber || 'Not set'}\`\n\n` +
