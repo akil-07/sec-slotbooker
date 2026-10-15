@@ -829,7 +829,7 @@ function getChatHistory(chatId) {
 
 async function callGemini(contents) {
     if (!aiClient) return null;
-    const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+    const models = ['gemini-2.5-flash', 'gemini-3.5-flash-lite'];
     let lastError = null;
     for (const model of models) {
         try {
@@ -4011,20 +4011,17 @@ Return ONLY a valid JSON object (no markdown code blocks, no backticks):
   "message": "Friendly explanation with emojis"
 }`;
 
-                            const visionResult = await aiClient.models.generateContent({
-                                model: 'gemini-2.5-flash',
-                                contents: [
-                                    {
-                                        role: 'user',
-                                        parts: [
-                                            { inlineData: { mimeType: 'image/png', data: imgBuf.toString('base64') } },
-                                            { text: visionPrompt }
-                                        ]
-                                    }
-                                ]
-                            });
+                            const visionText = await callGemini([
+                                {
+                                    role: 'user',
+                                    parts: [
+                                        { inlineData: { mimeType: 'image/png', data: imgBuf.toString('base64') } },
+                                        { text: visionPrompt }
+                                    ]
+                                }
+                            ]);
 
-                            aiData = parseAiJson(visionResult.text);
+                            aiData = parseAiJson(visionText);
                             if (aiData.message) {
                                 await sendTelegram(`🤖 ${aiData.message}`, fromChatId);
                                 appendChatHistory(fromChatId, 'model', aiData.message);
@@ -4034,6 +4031,8 @@ Return ONLY a valid JSON object (no markdown code blocks, no backticks):
                                 text = `!scan ${aiData.keyword} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
                             } else if (aiData.action === 'book' && aiData.keyword) {
                                 text = `!book ${aiData.keyword} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
+                            } else if (aiData.action === 'unbook') {
+                                text = `!unbook ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''}`.trim();
                             } else if (aiData.action === 'timetable') {
                                 text = '!timetable';
                             } else if (aiData.action === 'attendance') {
@@ -4060,8 +4059,8 @@ Possible Actions:
   Params: keyword (required), time (optional target time), startTime (optional e.g. "06:00 PM"), venue (optional), date (optional).
 - "book": Immediate one-time booking attempt right now. E.g. "book python", "register maths slot at 10 AM".
   Params: keyword (required), time, startTime, venue, date.
-- "unbook": Cancel / drop an already booked slot. E.g. "cancel my maths slot", "unbook physics".
-  Params: keyword (required).
+- "unbook": Cancel / drop an already booked slot. E.g. "cancel my maths slot", "unbook physics", "unbook the slot at 3 pm".
+  Params: keyword (optional if time is given), time (optional target time to cancel e.g. "03:00 PM").
 - "bunk": Calculate how many classes user can skip while maintaining 80% attendance limit. E.g. "can I bunk calculus?", "how many classes can I miss?", "check bunk stats".
   Params: keyword (subject name if specified, else null).
 - "attendance": View full attendance report. E.g. "what's my attendance?", "show attendance table".
@@ -4893,8 +4892,8 @@ JSON Schema:
                 if (modifiers.includes('$')) targetVenue = modifiers.split('$')[1].split(/[@~\#]/)[0].trim().replace(/^(room|hall|lab|venue|in)\s+/i, '').trim();
                 if (modifiers.includes('#')) startTime = modifiers.split('#')[1].split(/[@~$]/)[0].trim();
 
-                if (!keyword) {
-                    await sendTelegram(`⚠️ Please provide a keyword. Example: \`!book CAT\``, fromChatId);
+                if (!keyword && !(isUnbook && targetTime)) {
+                    await sendTelegram(`⚠️ Please provide a keyword or target time. Example: \`!book CAT\` or \`!unbook @ 03:00 PM\``, fromChatId);
                     continue;
                 }
 
