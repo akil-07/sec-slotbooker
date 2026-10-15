@@ -1224,6 +1224,11 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
             }
 
             const fullTextRaw = card ? card.innerText : btn.innerText;
+            // Ignore accidental navbar/sidebar button captures
+            if (/my reward points|circulars|workflow requests/i.test(fullTextRaw) && !/venue|slot|am|pm/i.test(fullTextRaw)) {
+                continue;
+            }
+
             const fullTextNorm = normalize(fullTextRaw);
             const btnText = (btn.innerText || btn.value || '').trim().toLowerCase();
             const isWaitlist = btnText.includes('waitlist');
@@ -1249,7 +1254,8 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
 
             let matchVenue = true;
             if (venueNorm) {
-                matchVenue = fullTextNorm.includes(venueNorm);
+                const cleanV = venueNorm.replace(/^(room|hall|lab|venue|in)\s+/i, '').trim();
+                matchVenue = fullTextNorm.includes(venueNorm) || (cleanV && fullTextNorm.includes(cleanV));
             }
 
             let matchDate = true;
@@ -1329,14 +1335,28 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
             if (openingSoon) {
                 reasonMsg = `\n\n🕒 *Status:* Found the slot, but it says "Opening Soon".`;
             } else {
+                // Check if any available slot matches the keyword at another time/venue!
+                const keywordMatches = availableSlots.filter(s => {
+                    const sLower = s.toLowerCase();
+                    const words = targetKeyword.toLowerCase().split(' ').filter(Boolean);
+                    return words.length > 0 && words.every(w => sLower.includes(w));
+                });
+
+                let suggestionMsg = '';
+                if (keywordMatches.length > 0 && (targetTime || targetVenue)) {
+                    suggestionMsg = `\n\n💡 *Found matching slot at a different time/venue:*\n` +
+                        keywordMatches.map(s => `👉 \`${s}\``).join('\n') +
+                        `\n_Tip: To book it, use the time/room shown above!_\n`;
+                }
+
                 const displayedSlots = availableSlots.slice(0, 15);
                 const moreCount = availableSlots.length - displayedSlots.length;
-                reasonMsg = availableSlots.length > 0
-                    ? `\n\n*Available Slots:*\n` + displayedSlots.map(s => `- ${s}`).join('\n') + (moreCount > 0 ? `\n_...and ${moreCount} more slots_` : '')
-                    : '\n\nNo slots are currently available on the page.';
+                reasonMsg = suggestionMsg + (availableSlots.length > 0
+                    ? `\n*All Available Slots:*\n` + displayedSlots.map(s => `- ${s}`).join('\n') + (moreCount > 0 ? `\n_...and ${moreCount} more slots_` : '')
+                    : '\n\nNo slots are currently available on the page.');
             }
 
-            await sendTelegram(`⚠️ No bookable slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}.${reasonMsg}`, chatId);
+            await sendTelegram(`⚠️ No bookable slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}.${reasonMsg}`, chatId);
         }
         return false;
     }
@@ -4111,10 +4131,12 @@ JSON Schema:
                                 }
                                 continue;
                             } else if (aiData.action === 'scan') {
-                                text = `!scan ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
+                                const cleanV = (aiData.venue || '').replace(/^(room|hall|lab|venue|in)\s+/i, '').trim();
+                                text = `!scan ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${cleanV ? '$ ' + cleanV : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
                                 await sendTelegram(`🎯 *Understood!* Starting slot scan for *${aiData.keyword || 'slot'}*...`, fromChatId);
                             } else if (aiData.action === 'book') {
-                                text = `!book ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
+                                const cleanV = (aiData.venue || '').replace(/^(room|hall|lab|venue|in)\s+/i, '').trim();
+                                text = `!book ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${cleanV ? '$ ' + cleanV : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
                                 await sendTelegram(`⚡ *Understood!* Attempting to book *${aiData.keyword || 'slot'}*...`, fromChatId);
                             } else if (aiData.action === 'unbook') {
                                 text = `!unbook ${aiData.keyword || ''}`.trim();
@@ -4868,7 +4890,7 @@ JSON Schema:
                 let modifiers = rawParams.substring(firstSymbolIndex);
                 if (modifiers.includes('@')) targetTime = modifiers.split('@')[1].split(/[~$\#]/)[0].trim();
                 if (modifiers.includes('~')) targetDate = modifiers.split('~')[1].split(/[@$\#]/)[0].trim();
-                if (modifiers.includes('$')) targetVenue = modifiers.split('$')[1].split(/[@~\#]/)[0].trim();
+                if (modifiers.includes('$')) targetVenue = modifiers.split('$')[1].split(/[@~\#]/)[0].trim().replace(/^(room|hall|lab|venue|in)\s+/i, '').trim();
                 if (modifiers.includes('#')) startTime = modifiers.split('#')[1].split(/[@~$]/)[0].trim();
 
                 if (!keyword) {
