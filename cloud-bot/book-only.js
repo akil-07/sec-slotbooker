@@ -737,8 +737,17 @@ async function sendTelegram(text, chatId = CHAT_ID) {
             data: { chat_id: chatId, text, parse_mode: 'Markdown' }
         });
         const data = await res.json();
-        if (!data.ok) console.error('[Telegram] Error:', data.description);
-        else console.log('[Telegram] Message sent.');
+        if (!data.ok) {
+            console.error('[Telegram] Error:', data.description);
+            // Fallback: Retry sending as plain text if Markdown entity parsing failed
+            if (data.description && data.description.toLowerCase().includes('can\'t parse entities')) {
+                await apiRequest.post(url, {
+                    data: { chat_id: chatId, text }
+                }).catch(() => {});
+            }
+        } else {
+            console.log('[Telegram] Message sent.');
+        }
     } catch (e) {
         console.error('[Telegram] Failed to send:', e.message);
     }
@@ -764,6 +773,117 @@ async function sendTelegramPhoto(photoPath, caption, chatId = CHAT_ID) {
         else console.log('[Telegram] Photo sent.');
     } catch (e) {
         console.error('[Telegram] Failed to send photo:', e.message);
+    }
+}
+
+async function downloadTelegramFile(fileId) {
+    try {
+        const getFileUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`;
+        let resData = null;
+        if (apiRequest) {
+            const res = await apiRequest.get(getFileUrl);
+            resData = await res.json();
+        } else if (typeof fetch !== 'undefined') {
+            const res = await fetch(getFileUrl);
+            resData = await res.json();
+        }
+
+        if (!resData || !resData.ok || !resData.result || !resData.result.file_path) {
+            console.error('[Telegram] Failed to get file path:', resData);
+            return null;
+        }
+
+        const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${resData.result.file_path}`;
+        if (apiRequest) {
+            const fRes = await apiRequest.get(downloadUrl);
+            return await fRes.body();
+        } else if (typeof fetch !== 'undefined') {
+            const fRes = await fetch(downloadUrl);
+            const ab = await fRes.arrayBuffer();
+            return Buffer.from(ab);
+        }
+        return null;
+    } catch (e) {
+        console.error('[Telegram] downloadTelegramFile error:', e.message);
+        return null;
+    }
+}
+
+// ─── Gemini AI Utilities ─────────────────────────────────────────────────────
+const userChatHistories = new Map(); // chatId -> Array<{ role: 'user' | 'model', parts: [{ text: string }] }>
+
+function appendChatHistory(chatId, role, text) {
+    if (!userChatHistories.has(chatId)) {
+        userChatHistories.set(chatId, []);
+    }
+    const history = userChatHistories.get(chatId);
+    history.push({ role, parts: [{ text: String(text).substring(0, 1500) }] });
+    if (history.length > 12) {
+        history.splice(0, history.length - 12);
+    }
+}
+
+function getChatHistory(chatId) {
+    return userChatHistories.get(chatId) || [];
+}
+
+async function callGemini(contents) {
+    if (!aiClient) return null;
+    const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+    let lastError = null;
+    for (const model of models) {
+        try {
+            const result = await aiClient.models.generateContent({
+                model,
+                contents,
+            });
+            if (result && result.text) return result.text;
+        } catch (e) {
+            lastError = e;
+            console.warn(`[Gemini] Model ${model} failed: ${e.message}`);
+        }
+    }
+    throw lastError || new Error('Gemini API call failed');
+}
+
+function parseAiJson(aiRaw) {
+    let clean = (aiRaw || '').trim();
+    if (clean.startsWith('```json')) {
+        clean = clean.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+    } else if (clean.startsWith('```')) {
+        clean = clean.replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+    }
+    const firstBrace = clean.indexOf('{');
+    const lastBrace = clean.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        clean = clean.substring(firstBrace, lastBrace + 1);
+    }
+    return JSON.parse(clean);
+}
+
+async function analyzeAttendanceWithGemini(data, studentName, userQuery) {
+    if (!aiClient) return null;
+    const prompt = `You are a smart academic counselor and advisor for a Saveetha University student named "${studentName}".
+Saveetha University strictly requires a minimum of 80% attendance in each subject to be eligible for exams. Below 80% means detention / repeat.
+
+Here is the student's live attendance data:
+${JSON.stringify(data, null, 2)}
+
+User question: "${userQuery}"
+
+Provide a clear, engaging, and motivating analysis formatted for Telegram Markdown:
+1. 📊 *Overall Status Summary* (Total subjects, overall attendance health).
+2. 🚨 *Attention Needed (< 80%)*: List any subjects under 80%. For each, calculate how many consecutive classes they MUST attend to hit 80%.
+3. 🟢 *Safe Buffer (>= 80%)*: List subjects safely above 80% and how many classes they can bunk/skip without falling below 80%.
+4. 💡 *Proactive Advice*: A short, realistic recommendation for this student.
+
+Keep formatting clean with bullet points and emojis. Do NOT wrap in markdown code blocks.`;
+
+    try {
+        return await callGemini([{ role: 'user', parts: [{ text: prompt }] }]);
+    } catch (e) {
+        console.error('[Gemini] Attendance analysis failed:', e.message);
+        return null;
     }
 }
 
@@ -3718,7 +3838,13 @@ async function main() {
                 if (update.update_id) offset = update.update_id + 1;
 
                 const msg = update.message || update.channel_post;
-                if (!msg || !msg.text) continue;
+                if (!msg) continue;
+
+                // Support both text and photo messages
+                const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
+                const rawCaption = (msg.caption || '').trim();
+                const rawText = msg.text ? msg.text.trim() : rawCaption;
+                if (!rawText && !hasPhoto) continue;
 
                 // Check if user is authorized
                 const fromChatId = String(msg.chat.id);
@@ -3735,7 +3861,6 @@ async function main() {
                     continue;
                 }
 
-                const rawText = msg.text ? msg.text.trim() : '';
                 let text = rawText.toLowerCase();
 
                 // ── OTP Intercept ───────────────────────────────────────────
@@ -3825,78 +3950,234 @@ async function main() {
                     }
                 }
 
-                // ── AI Natural Language Parsing ──────────────────────────────
-                if (!text.startsWith('!')) {
+                // ── AI Natural Language & Multimodal Processing ──────────────
+                if (hasPhoto || (!text.startsWith('!') && !text.startsWith('/'))) {
                     if (!aiClient) {
                         await sendTelegram(`⚠️ Gemini API Key not configured. AI disabled. Use standard ! commands.`, fromChatId);
                         continue;
                     }
+
                     try {
-                        await sendTelegram(`🤖 Thinking...`, fromChatId);
-                        const prompt = `You are an AI assistant for Saveetha University students. The user sent this message: "${msg.text}"
-Determine the intent and return ONLY valid JSON (no markdown).
-Possible actions:
-1. "book": If user wants to book a slot. Extract "keyword" (required), "time" (optional), "date" (optional), "venue" (optional).
-2. "timetable": If user wants to see today's timetable/schedule.
-3. "attendance": If user wants to check their attendance.
-4. "reply": If it's a general question or greeting. Provide a helpful "message".
+                        let aiData = null;
 
-Example: {"action": "book", "keyword": "math", "time": "10:00 AM"}
-Example: {"action": "timetable"}
-Example: {"action": "attendance"}
-Example: {"action": "reply", "message": "Hello! How can I help?"}`;
+                        // Case 1: Screenshot / Image sent by student
+                        if (hasPhoto) {
+                            await sendTelegram(`🔍 *Analyzing screenshot with Gemini Vision...*`, fromChatId);
+                            const photoObj = msg.photo[msg.photo.length - 1];
+                            const imgBuf = await downloadTelegramFile(photoObj.file_id);
+                            if (!imgBuf) {
+                                await sendTelegram(`⚠️ Could not download screenshot from Telegram. Please try again.`, fromChatId);
+                                continue;
+                            }
 
-                        const result = await aiClient.models.generateContent({
-                            model: 'gemini-2.5-flash',
-                            contents: prompt,
-                        });
+                            const visionPrompt = `You are "Saveetha Bot AI", an expert assistant for Saveetha University students.
+The student sent a screenshot. Caption/Request: "${rawCaption || 'Analyze this image'}".
+Current IST Time: ${getNowIST().toLocaleString('en-US')}.
 
-                        let aiResponse = result.text.trim();
-                        if (aiResponse.startsWith('\`\`\`json')) {
-                            aiResponse = aiResponse.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '').trim();
-                        }
-                        const aiData = JSON.parse(aiResponse);
+Analyze the image carefully:
+1. Schedule / Timetable: Identify course names, slots, times, and room numbers. If user asked to book/scan one, set action="book" or "scan".
+2. Attendance Screen: Identify subjects and percentages. Highlight any < 80%.
+3. Error / Portal Dialog: Explain what went wrong (slot full, session timeout, conflict) and what the student should do.
+4. Formulate a friendly, emoji-rich, helpful markdown response for the student.
 
-                        if (aiData.action === 'reply') {
-                            await sendTelegram(`🤖 ${aiData.message}`, fromChatId);
-                            continue;
-                        } else if (aiData.action === 'timetable') {
-                            text = '!timetable';
-                        } else if (aiData.action === 'attendance') {
-                            text = '!attendance';
-                        } else if (aiData.action === 'book') {
-                            text = `!book ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''}`.trim();
+Return ONLY a valid JSON object (no markdown code blocks, no backticks):
+{
+  "action": "reply" | "scan" | "book" | "timetable" | "attendance" | "bunk",
+  "keyword": "subject name or slot code if applicable, else null",
+  "time": "HH:MM AM/PM if applicable, else null",
+  "startTime": "HH:MM AM/PM if applicable, else null",
+  "venue": "room/venue if applicable, else null",
+  "date": "MM/DD/YYYY if applicable, else null",
+  "message": "Friendly explanation with emojis"
+}`;
+
+                            const visionResult = await aiClient.models.generateContent({
+                                model: 'gemini-2.5-flash',
+                                contents: [
+                                    {
+                                        role: 'user',
+                                        parts: [
+                                            { inlineData: { mimeType: 'image/png', data: imgBuf.toString('base64') } },
+                                            { text: visionPrompt }
+                                        ]
+                                    }
+                                ]
+                            });
+
+                            aiData = parseAiJson(visionResult.text);
+                            if (aiData.message) {
+                                await sendTelegram(`🤖 ${aiData.message}`, fromChatId);
+                                appendChatHistory(fromChatId, 'model', aiData.message);
+                            }
+
+                            if (aiData.action === 'scan' && aiData.keyword) {
+                                text = `!scan ${aiData.keyword} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
+                            } else if (aiData.action === 'book' && aiData.keyword) {
+                                text = `!book ${aiData.keyword} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
+                            } else if (aiData.action === 'timetable') {
+                                text = '!timetable';
+                            } else if (aiData.action === 'attendance') {
+                                text = '!attendance';
+                            } else {
+                                continue;
+                            }
                         } else {
-                            await sendTelegram(`🤖 I'm not sure how to handle that action.`, fromChatId);
-                            continue;
+                            // Case 2: Natural Language Text
+                            appendChatHistory(fromChatId, 'user', rawText);
+
+                            const studentName = userConfig ? userConfig.name : 'Student';
+                            const history = getChatHistory(fromChatId);
+
+                            const systemInstructions = `You are "Saveetha Bot AI", an intelligent, proactive assistant for Saveetha University students.
+You understand student life, Saveetha portal (learner.saveetha.in), slot booking rushes, 80% attendance rule, bunk calculations, hostel attendance (9 PM - 10 PM), OTP check-ins, and timetable reminders.
+Student Name: ${studentName}.
+Current IST Time: ${getNowIST().toLocaleString('en-US')}.
+
+Analyze the user's message and context. Return ONLY a valid JSON object (no markdown, no backticks).
+
+Possible Actions:
+- "scan": Continuous search/monitor until slot opens. E.g. "scan physics", "keep searching for maths slot", "look for chem lab".
+  Params: keyword (required), time (optional target time), startTime (optional e.g. "06:00 PM"), venue (optional), date (optional).
+- "book": Immediate one-time booking attempt right now. E.g. "book python", "register maths slot at 10 AM".
+  Params: keyword (required), time, startTime, venue, date.
+- "unbook": Cancel / drop an already booked slot. E.g. "cancel my maths slot", "unbook physics".
+  Params: keyword (required).
+- "bunk": Calculate how many classes user can skip while maintaining 80% attendance limit. E.g. "can I bunk calculus?", "how many classes can I miss?", "check bunk stats".
+  Params: keyword (subject name if specified, else null).
+- "attendance": View full attendance report. E.g. "what's my attendance?", "show attendance table".
+- "analyze_attendance": User wants advice or analysis on their attendance. E.g. "am I in danger of getting detained?", "will I get into trouble for attendance?", "how is my attendance looking?".
+- "timetable": View today's schedule / classes. E.g. "what's my schedule today?", "today classes", "timetable".
+- "workflow": View pending workflow approvals (leave, OD, gate pass). E.g. "is my leave approved?", "check my OD status", "workflow requests".
+  Params: args (optional filter string like "leave" or "od").
+- "progress": View active running background booking/scanning tasks. E.g. "what are you scanning right now?", "active tasks", "show progress".
+- "status": Check if bot is alive and operational. E.g. "are you online?", "status".
+- "stop": Halt one or all active slot search tasks. E.g. "stop scanning", "stop python", "stop all", "cancel everything".
+  Params: keyword ("all" to stop everything, or specific subject name).
+- "otp": Submit or scan attendance OTP for a class. E.g. "submit otp 123456", "in otp for python", "enter otp 654321".
+  Params: keyword, otpCode (6-digit code if given), phase ("in" or "out").
+- "checkotp": Check class attendance verification status with screenshot. E.g. "check if my attendance was marked", "check class otp status".
+  Params: keyword.
+- "help": User asks what the bot can do or wants a command list.
+- "reply": Friendly conversational response, advice, greetings, answering questions, or asking for clarification.
+  Params: message (markdown response with emojis).
+
+JSON Schema:
+{
+  "action": "scan" | "book" | "unbook" | "bunk" | "attendance" | "analyze_attendance" | "timetable" | "workflow" | "progress" | "status" | "stop" | "otp" | "checkotp" | "help" | "reply",
+  "keyword": "string or null",
+  "time": "HH:MM AM/PM or null",
+  "startTime": "HH:MM AM/PM or null",
+  "venue": "string or null",
+  "date": "MM/DD/YYYY or null",
+  "otpCode": "string or null",
+  "phase": "in" | "out" | null,
+  "args": "string or null",
+  "message": "string or null"
+}`;
+
+                            const contents = [
+                                { role: 'user', parts: [{ text: systemInstructions }] },
+                                { role: 'model', parts: [{ text: '{"action":"reply","message":"Ready to help!"}' }] },
+                                ...history
+                            ];
+
+                            const aiText = await callGemini(contents);
+                            aiData = parseAiJson(aiText);
+
+                            if (aiData.action === 'reply') {
+                                const replyMsg = aiData.message || "I'm here to help with your Saveetha slots, timetable, and attendance!";
+                                await sendTelegram(`🤖 ${replyMsg}`, fromChatId);
+                                appendChatHistory(fromChatId, 'model', replyMsg);
+                                continue;
+                            } else if (aiData.action === 'analyze_attendance') {
+                                const session = await getOrSpawnSession(fromChatId, userConfig);
+                                if (!session) continue;
+                                await sendTelegram(`📊 Fetching and analyzing your attendance with Gemini AI...`, fromChatId);
+                                try {
+                                    const data = await fetchAttendance(session.context, session.config);
+                                    if (!data || data.length === 0) {
+                                        await sendTelegram(`⚠️ No attendance records found to analyze.`, fromChatId);
+                                    } else {
+                                        const analysis = await analyzeAttendanceWithGemini(data, session.config.name, rawText);
+                                        if (analysis) {
+                                            await sendTelegram(analysis, fromChatId);
+                                            appendChatHistory(fromChatId, 'model', analysis);
+                                        } else {
+                                            await sendTelegram(formatAttendance(data, session.config.name), fromChatId);
+                                        }
+                                    }
+                                } catch (err) {
+                                    await sendTelegram(`❌ Could not analyze attendance: ${err.message}`, fromChatId);
+                                }
+                                continue;
+                            } else if (aiData.action === 'scan') {
+                                text = `!scan ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
+                                await sendTelegram(`🎯 *Understood!* Starting slot scan for *${aiData.keyword || 'slot'}*...`, fromChatId);
+                            } else if (aiData.action === 'book') {
+                                text = `!book ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''} ${aiData.date ? '~ ' + aiData.date : ''} ${aiData.venue ? '$ ' + aiData.venue : ''} ${aiData.startTime ? '# ' + aiData.startTime : ''}`.trim();
+                                await sendTelegram(`⚡ *Understood!* Attempting to book *${aiData.keyword || 'slot'}*...`, fromChatId);
+                            } else if (aiData.action === 'unbook') {
+                                text = `!unbook ${aiData.keyword || ''}`.trim();
+                            } else if (aiData.action === 'bunk') {
+                                text = aiData.keyword ? `!bunk ${aiData.keyword}` : '!bunk';
+                            } else if (aiData.action === 'attendance') {
+                                text = '!attendance';
+                            } else if (aiData.action === 'timetable') {
+                                text = '!timetable';
+                            } else if (aiData.action === 'workflow') {
+                                text = aiData.args ? `!workflow ${aiData.args}` : '!workflow';
+                            } else if (aiData.action === 'progress') {
+                                text = '!progress';
+                            } else if (aiData.action === 'status') {
+                                text = '!status';
+                            } else if (aiData.action === 'stop') {
+                                text = `!stop ${aiData.keyword || 'all'}`;
+                            } else if (aiData.action === 'otp') {
+                                text = `!otp ${aiData.keyword || ''} ${aiData.phase || 'in'} ${aiData.otpCode || ''}`.trim();
+                            } else if (aiData.action === 'checkotp') {
+                                text = `!checkotp ${aiData.keyword || ''}`.trim();
+                            } else if (aiData.action === 'help') {
+                                text = '!help';
+                            } else {
+                                await sendTelegram(`🤖 I'm not sure how to handle that. Type \`!help\` to see what I can do!`, fromChatId);
+                                continue;
+                            }
                         }
                     } catch (e) {
                         console.error('[AI] Error:', e.message);
-                        await sendTelegram(`❌ AI Error: Could not process request. Try using ! commands.`, fromChatId);
+                        await sendTelegram(`❌ AI Error: ${e.message}. You can also use standard ! commands.`, fromChatId);
                         continue;
                     }
                 }
                 // ── !help ─────────────────────────────────────────────────
                 if (text === '!help' || text === '/start') {
                     let helpMsg =
-                        `📖 *Saveetha Bot Help*\n\n` +
-                        `*Booking Commands:*\n` +
+                        `🤖 *Saveetha AI Copilot Help*\n\n` +
+                        `✨ *Talk to AI Naturally:*\n` +
+                        `• You don't have to memorize commands! Just type:\n` +
+                        `  👉 _"keep scanning for physics at 10 AM"_\n` +
+                        `  👉 _"can I bunk calculus?"_ / _"how many classes can I miss?"_\n` +
+                        `  👉 _"am I in danger of getting detained?"_ (Smart AI attendance analysis)\n` +
+                        `  👉 _"what's my schedule today?"_\n` +
+                        `  👉 _"cancel my maths slot"_\n` +
+                        `• 📸 *Send Screenshots*: Upload portal schedules, errors, or timetable pictures for instant AI analysis & auto-booking!\n\n` +
+                        `*Standard Booking Commands:*\n` +
+                        `\`!scan <keyword>\` — Continuously scan every 30s until a slot opens\n` +
                         `\`!book <keyword>\` — Book immediately\n` +
                         `\`!book <keyword> @ 10:00 AM\` — Target specific time\n` +
                         `\`!book <keyword> $ 5511\` — Target specific room/venue\n` +
                         `\`!book <keyword> ~ 05/22/2026\` — Target specific date\n` +
                         `\`!book <keyword> # 06:00 PM\` — Start scanning at 6 PM IST\n` +
-                        `\`!scan <keyword>\` — Scan every 30s until found\n` +
                         `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
                         `*Timetable & Attendance Commands:*\n` +
-                        `\`!timetable\` or \`!tt\` — Get today's schedule & activate reminders\n` +
+                        `\`!timetable\` or \`!tt\` — Today's schedule & activate class reminders\n` +
+                        `\`!attendance\` or \`!att\` — View attendance percentages\n` +
+                        `\`!bunk [subject]\` — Calculate bunk margin for 80% criteria\n` +
                         `\`!otp <keyword> [in/out]\` — Manually trigger OTP scan\n` +
-                        `\`!attendance\` or \`!att\` — Get your attendance\n` +
-                        `\`!bunk\` — Calculate how many classes you can bunk (80% limit)\n` +
-                        `\`!workflow\` or \`!requests\` — Check workflow approval status\n\n` +
+                        `\`!workflow\` or \`!requests\` — Check workflow/leave approval status\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
-                        `\`!progress\` — View active tasks\n` +
+                        `\`!progress\` — View active background tasks\n` +
                         `\`!stop <keyword>\` — Stop your specific task\n` +
                         `\`!stop all\` — Stop all your tasks\n`;
 

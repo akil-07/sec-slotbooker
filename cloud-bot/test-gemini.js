@@ -5,18 +5,31 @@ async function test() {
     try {
         console.log("Key:", process.env.GEMINI_API_KEY ? "Loaded" : "Missing");
         const aiClient = new GoogleGenAI({ 
-            apiKey: process.env.GEMINI_API_KEY,
-            baseUrl: 'https://wild-sun-525d.akilsudhagar7.workers.dev/gemini'
+            apiKey: process.env.GEMINI_API_KEY
         });
-        const prompt = `Return a JSON object: {"action": "reply", "message": "hello"}`;
-        
-        console.log("Generating...");
+        const fs = require('fs');
+        const imgBuffer = fs.readFileSync('schedule_page.png');
+        console.log("Testing multimodal vision with schedule_page.png...");
         const result = await aiClient.models.generateContent({
-            model: 'gemini-2.0-flash-lite',
-            contents: prompt,
+            model: 'gemini-2.5-flash',
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        {
+                            inlineData: {
+                                mimeType: 'image/png',
+                                data: imgBuffer.toString('base64')
+                            }
+                        },
+                        {
+                            text: 'What is shown in this image? Summarize briefly in 1-2 sentences.'
+                        }
+                    ]
+                }
+            ]
         });
-        
-        console.log("Result:", result.text);
+        console.log("Vision result:", result.text);
     } catch (e) {
         console.error("Error:", e.message);
     }
