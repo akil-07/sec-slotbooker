@@ -22,6 +22,7 @@ const { GoogleGenAI } = require('@google/genai');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const aiClient = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 const CHAT_ID = process.env.CHAT_ID;
@@ -827,6 +828,48 @@ function getChatHistory(chatId) {
     return userChatHistories.get(chatId) || [];
 }
 
+async function callGroq(messages, jsonMode = true) {
+    if (!GROQ_API_KEY) return null;
+    const models = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+    let lastError = null;
+
+    for (const model of models) {
+        try {
+            const body = {
+                model,
+                messages,
+                temperature: 0.1
+            };
+            if (jsonMode) {
+                body.response_format = { type: 'json_object' };
+            }
+
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${GROQ_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body)
+            });
+
+            if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(`Groq HTTP ${res.status}: ${errText}`);
+            }
+
+            const data = await res.json();
+            if (data && data.choices && data.choices[0] && data.choices[0].message) {
+                return data.choices[0].message.content;
+            }
+        } catch (e) {
+            lastError = e;
+            console.warn(`[Groq] Model ${model} failed: ${e.message}`);
+        }
+    }
+    throw lastError || new Error('Groq API calls failed');
+}
+
 async function callGemini(contents) {
     if (!aiClient) return null;
     const models = ['gemini-2.5-flash', 'gemini-3.5-flash-lite'];
@@ -846,6 +889,47 @@ async function callGemini(contents) {
     throw lastError || new Error('Gemini API call failed');
 }
 
+async function callSmartAI(systemPrompt, history = [], userPrompt = '', jsonMode = true) {
+    // 1. Primary Engine: Groq (Ultra-fast ~1s inference)
+    if (GROQ_API_KEY) {
+        try {
+            const groqMessages = [{ role: 'system', content: systemPrompt }];
+            if (Array.isArray(history)) {
+                for (const h of history) {
+                    const role = h.role === 'model' ? 'assistant' : 'user';
+                    const text = h.parts && h.parts[0] ? h.parts[0].text : '';
+                    if (text) groqMessages.push({ role, content: text });
+                }
+            }
+            if (userPrompt) {
+                groqMessages.push({ role: 'user', content: userPrompt });
+            }
+
+            const res = await callGroq(groqMessages, jsonMode);
+            if (res) return res;
+        } catch (err) {
+            console.warn(`[AI] Groq primary engine error, seamlessly falling back to Gemini: ${err.message}`);
+        }
+    }
+
+    // 2. Secondary Engine: Gemini Fallback
+    if (aiClient) {
+        const geminiContents = [
+            { role: 'user', parts: [{ text: systemPrompt }] },
+            { role: 'model', parts: [{ text: '{"action":"reply","message":"Ready to help!"}' }] }
+        ];
+        if (Array.isArray(history)) {
+            geminiContents.push(...history);
+        }
+        if (userPrompt) {
+            geminiContents.push({ role: 'user', parts: [{ text: userPrompt }] });
+        }
+        return await callGemini(geminiContents);
+    }
+
+    throw new Error('No AI provider available (neither Groq nor Gemini)');
+}
+
 function parseAiJson(aiRaw) {
     let clean = (aiRaw || '').trim();
     if (clean.startsWith('```json')) {
@@ -862,7 +946,6 @@ function parseAiJson(aiRaw) {
 }
 
 async function analyzeAttendanceWithGemini(data, studentName, userQuery) {
-    if (!aiClient) return null;
     const prompt = `You are a smart academic counselor and advisor for a Saveetha University student named "${studentName}".
 Saveetha University strictly requires a minimum of 80% attendance in each subject to be eligible for exams. Below 80% means detention / repeat.
 
@@ -880,9 +963,9 @@ Provide a clear, engaging, and motivating analysis formatted for Telegram Markdo
 Keep formatting clean with bullet points and emojis. Do NOT wrap in markdown code blocks.`;
 
     try {
-        return await callGemini([{ role: 'user', parts: [{ text: prompt }] }]);
+        return await callSmartAI(prompt, [], userQuery, false);
     } catch (e) {
-        console.error('[Gemini] Attendance analysis failed:', e.message);
+        console.error('[AI] Attendance analysis failed:', e.message);
         return null;
     }
 }
@@ -3972,8 +4055,8 @@ async function main() {
 
                 // ── AI Natural Language & Multimodal Processing ──────────────
                 if (hasPhoto || (!text.startsWith('!') && !text.startsWith('/'))) {
-                    if (!aiClient) {
-                        await sendTelegram(`⚠️ Gemini API Key not configured. AI disabled. Use standard ! commands.`, fromChatId);
+                    if (!aiClient && !GROQ_API_KEY) {
+                        await sendTelegram(`⚠️ AI not configured (missing Groq and Gemini API keys). Use standard ! commands.`, fromChatId);
                         continue;
                     }
 
@@ -4094,13 +4177,7 @@ JSON Schema:
   "message": "string or null"
 }`;
 
-                            const contents = [
-                                { role: 'user', parts: [{ text: systemInstructions }] },
-                                { role: 'model', parts: [{ text: '{"action":"reply","message":"Ready to help!"}' }] },
-                                ...history
-                            ];
-
-                            const aiText = await callGemini(contents);
+                            const aiText = await callSmartAI(systemInstructions, history, rawText, true);
                             aiData = parseAiJson(aiText);
 
                             if (aiData.action === 'reply') {
