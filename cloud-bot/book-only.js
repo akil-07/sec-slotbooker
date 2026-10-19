@@ -2132,7 +2132,10 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
 // ─── Find Target Class from Schedule ──────────────────────────────────────────
 
 async function findAttendanceTarget(page, kw) {
-    return await page.evaluate((targetKw) => {
+    const nowIST = getNowIST();
+    const currentIstMins = nowIST.getHours() * 60 + nowIST.getMinutes();
+
+    return await page.evaluate(({ targetKw, nowMins }) => {
         const links = Array.from(document.querySelectorAll('a')).filter(a => {
             const h = a.getAttribute('href') || '';
             return h.includes('attendance_process') || h.includes('event_attendance_process');
@@ -2155,10 +2158,39 @@ async function findAttendanceTarget(page, kw) {
             const fullText = getCardText(a);
             const lines = fullText.split('\n').map(l => l.trim()).filter(Boolean);
             const name = lines[0] || 'Class';
+
+            // Parse time range from card text
+            let startMin = null;
+            let endMin = null;
+            const m = fullText.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[-–]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+            if (m) {
+                let sh = parseInt(m[1], 10);
+                let startAmpm = m[3] ? m[3].toUpperCase() : null;
+                let eh = parseInt(m[4], 10);
+                let endAmpm = m[6] ? m[6].toUpperCase() : null;
+
+                if (!startAmpm && endAmpm) {
+                    if (endAmpm === 'AM') {
+                        startAmpm = 'AM';
+                    } else if (endAmpm === 'PM') {
+                        startAmpm = (sh === 12 || (sh >= 8 && sh < 12)) ? 'AM' : 'PM';
+                    }
+                }
+                if (startAmpm === 'PM' && sh < 12) sh += 12;
+                if (startAmpm === 'AM' && sh === 12) sh = 0;
+                startMin = sh * 60 + parseInt(m[2], 10);
+
+                if (endAmpm === 'PM' && eh < 12) eh += 12;
+                if (endAmpm === 'AM' && eh === 12) eh = 0;
+                endMin = eh * 60 + parseInt(m[5], 10);
+            }
+
             return {
                 href: a.getAttribute('href'),
                 name,
-                fullText
+                fullText,
+                startMin,
+                endMin
             };
         });
 
@@ -2172,32 +2204,56 @@ async function findAttendanceTarget(page, kw) {
             }
         }
 
-        // Strategy B: Match active class based on current time
-        const now = new Date();
-        const nowMins = now.getHours() * 60 + now.getMinutes();
+        // Night time check: If between 8:30 PM (1230 mins) and 6:00 AM (360 mins)
+        const isNightTime = (nowMins >= 20 * 60 + 30) || (nowMins <= 6 * 60);
+        if (isNightTime) {
+            const hostelItem = items.find(it => /hostel|hos\b|boyshostel|girlshostel/i.test(it.fullText));
+            if (hostelItem) {
+                return hostelItem;
+            }
+        }
+
+        // Strategy B: Match active class based on current IST time
         for (const item of items) {
-            const m = item.fullText.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[-–]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-            if (m) {
-                let sh = parseInt(m[1], 10);
-                if (m[3]?.toUpperCase() === 'PM' && sh < 12) sh += 12;
-                if (m[3]?.toUpperCase() === 'AM' && sh === 12) sh = 0;
-                const startMin = sh * 60 + parseInt(m[2], 10);
-
-                let eh = parseInt(m[4], 10);
-                if (m[6]?.toUpperCase() === 'PM' && eh < 12) eh += 12;
-                if (m[6]?.toUpperCase() === 'AM' && eh === 12) eh = 0;
-                const endMin = eh * 60 + parseInt(m[5], 10);
-
-                // If currently within or near (15 mins before/after) this class
-                if (nowMins >= startMin - 15 && nowMins <= endMin + 15) {
+            if (item.startMin !== null && item.endMin !== null) {
+                const s = item.startMin;
+                const e = item.endMin;
+                let isActive = false;
+                if (e < s) {
+                    // Overnight class (e.g. 09:00 PM – 05:59 AM)
+                    isActive = (nowMins >= s - 15) || (nowMins <= e + 15);
+                } else {
+                    // Normal daytime class (e.g. 09:45 AM – 11:14 AM)
+                    isActive = (nowMins >= s - 15) && (nowMins <= e + 15);
+                }
+                if (isActive) {
                     return item;
                 }
             }
         }
 
-        // Strategy C: Fallback to the first available link
-        return items[0];
-    }, kw);
+        // Strategy C: Find class with the minimum time delta to nowMins
+        let closestItem = null;
+        let minDiff = Infinity;
+        for (const item of items) {
+            if (item.startMin !== null) {
+                const diff = Math.min(
+                    Math.abs(nowMins - item.startMin),
+                    1440 - Math.abs(nowMins - item.startMin)
+                );
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestItem = item;
+                }
+            }
+        }
+        if (closestItem && minDiff <= 180) {
+            return closestItem;
+        }
+
+        // Strategy D: Fallback to latest item if night, or first available
+        return isNightTime ? (items[items.length - 1] || items[0]) : items[0];
+    }, { targetKw: kw, nowMins: currentIstMins });
 }
 
 // ─── Inspect Real-time Status of Attendance Page ──────────────────────────────
