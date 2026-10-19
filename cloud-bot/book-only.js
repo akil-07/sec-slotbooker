@@ -43,8 +43,8 @@ function isSuperAdmin(chatId) {
     const cid = String(chatId);
     if (cid === String(ADMIN_CHAT_ID)) return true;
     if (cid === String(process.env.CHAT_ID)) return true;
-    if (cid === '8581009274' || cid === '6374825608') return true;
-    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id] && ACCOUNTS[id].user === '25013635');
+    if (cid === '8581009274' || cid === '6374825608' || cid === '8238488776') return true;
+    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id] && (ACCOUNTS[id].user === '25013635' || ACCOUNTS[id].user === '25005710'));
     if (superAdminChatId && cid === String(superAdminChatId)) return true;
     return false;
 }
@@ -60,33 +60,57 @@ let TWILIO_CONFIG = {
     fromNumber: process.env.TWILIO_FROM_NUMBER || '',
     toNumber: process.env.TWILIO_TO_NUMBER || ''
 };
+let TWILIO_ACCOUNTS = {}; // chatId -> { accountSid, authToken, fromNumber, toNumber }
 const TWILIO_CONFIG_FILE = path.join(__dirname, 'twilio_config.json');
+
+function getTwilioConfigForUser(chatId) {
+    const cid = String(chatId || '');
+    if (cid && TWILIO_ACCOUNTS[cid] && TWILIO_ACCOUNTS[cid].accountSid) {
+        return TWILIO_ACCOUNTS[cid];
+    }
+    return TWILIO_CONFIG;
+}
 
 function loadTwilioConfig() {
     try {
         if (fs.existsSync(TWILIO_CONFIG_FILE)) {
             const data = JSON.parse(fs.readFileSync(TWILIO_CONFIG_FILE, 'utf8'));
-            if (data) TWILIO_CONFIG = { ...TWILIO_CONFIG, ...data };
+            if (data) {
+                if (data.accounts) {
+                    TWILIO_ACCOUNTS = { ...TWILIO_ACCOUNTS, ...data.accounts };
+                }
+                TWILIO_CONFIG = { ...TWILIO_CONFIG, ...data };
+            }
         }
     } catch (_) {}
 }
 loadTwilioConfig();
 
-function saveTwilioConfig(cfg) {
+function saveTwilioConfig(cfg, chatId = null) {
     if (cfg && cfg.accountSid && cfg.accountSid.toLowerCase().startsWith('ac')) {
         cfg.accountSid = 'AC' + cfg.accountSid.substring(2);
     }
-    TWILIO_CONFIG = { ...TWILIO_CONFIG, ...cfg };
+    if (chatId) {
+        const cid = String(chatId);
+        TWILIO_ACCOUNTS[cid] = { ...(TWILIO_ACCOUNTS[cid] || {}), ...cfg };
+    } else {
+        TWILIO_CONFIG = { ...TWILIO_CONFIG, ...cfg };
+    }
     try {
-        fs.writeFileSync(TWILIO_CONFIG_FILE, JSON.stringify(TWILIO_CONFIG, null, 2));
+        const payload = {
+            ...TWILIO_CONFIG,
+            accounts: TWILIO_ACCOUNTS
+        };
+        fs.writeFileSync(TWILIO_CONFIG_FILE, JSON.stringify(payload, null, 2));
     } catch (_) {}
     if (typeof syncTwilioConfigToGist === 'function') {
-        syncTwilioConfigToGist(TWILIO_CONFIG).catch(() => {});
+        syncTwilioConfigToGist().catch(() => {});
     }
 }
 
-async function triggerTwilioVoiceCall(message, customTo) {
-    let { accountSid, authToken, fromNumber, toNumber } = TWILIO_CONFIG;
+async function triggerTwilioVoiceCall(message, customTo, chatId = null) {
+    const twilioCfg = getTwilioConfigForUser(chatId);
+    let { accountSid, authToken, fromNumber, toNumber } = twilioCfg;
     if (accountSid && accountSid.toLowerCase().startsWith('ac')) {
         accountSid = 'AC' + accountSid.substring(2);
     }
@@ -211,11 +235,12 @@ async function triggerCallMeBotVoiceCall(targetUser, message) {
     });
 }
 
-async function triggerHostelCallReminder(message) {
+async function triggerHostelCallReminder(message, customTo = null, chatId = null) {
+    const twilioCfg = getTwilioConfigForUser(chatId);
     // Prefer Twilio if configured
-    if (TWILIO_CONFIG.accountSid && TWILIO_CONFIG.authToken && TWILIO_CONFIG.fromNumber) {
-        console.log('[Hostel Call] Calling via Twilio...');
-        return await triggerTwilioVoiceCall(message);
+    if (twilioCfg.accountSid && twilioCfg.authToken && twilioCfg.fromNumber) {
+        console.log(`[Hostel Call] Calling via Twilio for ${chatId || 'default'}...`);
+        return await triggerTwilioVoiceCall(message, customTo, chatId);
     }
     // Fall back to CallMeBot if set
     if (CALLMEBOT_USER) {
@@ -339,10 +364,14 @@ async function syncCallConfigToGist(target) {
 async function syncTwilioConfigToGist(cfg) {
     if (!GIST_TOKEN || !GIST_ID) return;
     try {
+        const payload = cfg || {
+            ...TWILIO_CONFIG,
+            accounts: TWILIO_ACCOUNTS
+        };
         const body = JSON.stringify({
             files: {
                 'saveetha_twilio_config.json': {
-                    content: JSON.stringify(cfg, null, 2)
+                    content: JSON.stringify(payload, null, 2)
                 }
             }
         });
@@ -606,8 +635,11 @@ async function initAccounts() {
                 try {
                     const gistTwilio = JSON.parse(gist.files['saveetha_twilio_config.json'].content);
                     if (gistTwilio) {
+                        if (gistTwilio.accounts) {
+                            TWILIO_ACCOUNTS = { ...TWILIO_ACCOUNTS, ...gistTwilio.accounts };
+                        }
                         TWILIO_CONFIG = { ...TWILIO_CONFIG, ...gistTwilio };
-                        console.log('[Bot] Loaded Gist Twilio config. To:', TWILIO_CONFIG.toNumber);
+                        console.log('[Bot] Loaded Gist Twilio config. Default To:', TWILIO_CONFIG.toNumber, 'Accounts:', Object.keys(TWILIO_ACCOUNTS).join(', '));
                     }
                 } catch (_) {}
             }
@@ -3587,7 +3619,7 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
         }
 
         console.log(`[Hostel Call #${callNumber}] Attendance not yet approved. Placing phone call reminder at ${timeStr}...`);
-        await triggerHostelCallReminder(`Hostel attendance reminder for ${slotName}. Please mark your hostel attendance now.`);
+        await triggerHostelCallReminder(`Hostel attendance reminder for ${slotName}. Please mark your hostel attendance now.`, null, chatId);
         await sendTelegram(
             `📞 *Hostel Attendance Call Reminder (#${callNumber} — ${timeStr})*\n\n` +
             `Ringing your phone now! Please check or mark your hostel attendance.\n\n` +
@@ -4726,15 +4758,16 @@ JSON Schema:
                         continue;
                     }
                     const parts = rawText.split(/\s+/).slice(1);
+                    const userTwilio = getTwilioConfigForUser(fromChatId);
                     if (parts.length < 3) {
                         const mask = (s) => s ? (s.length > 8 ? `${s.substring(0, 4)}...${s.substring(s.length - 4)}` : '••••') : 'Not set';
                         await sendTelegram(
                             `📞 *Twilio Cellular Call Settings*\n\n` +
-                            `Current Status:\n` +
-                            `• Account SID: \`${mask(TWILIO_CONFIG.accountSid)}\`\n` +
-                            `• Auth Token: \`${TWILIO_CONFIG.authToken ? '••••••••••••••••' : 'Not set'}\`\n` +
-                            `• From Number: \`${TWILIO_CONFIG.fromNumber || 'Not set'}\`\n` +
-                            `• Destination Phone: \`${TWILIO_CONFIG.toNumber || 'Not set'}\`\n\n` +
+                            `Current Status for this account:\n` +
+                            `• Account SID: \`${mask(userTwilio.accountSid)}\`\n` +
+                            `• Auth Token: \`${userTwilio.authToken ? '••••••••••••••••' : 'Not set'}\`\n` +
+                            `• From Number: \`${userTwilio.fromNumber || 'Not set'}\`\n` +
+                            `• Destination Phone: \`${userTwilio.toNumber || 'Not set'}\`\n\n` +
                             `*How to configure Twilio:*\n` +
                             `\`!settwilio <AccountSid> <AuthToken> <FromNumber> [ToNumber]\`\n\n` +
                             `*Example:*\n` +
@@ -4750,12 +4783,13 @@ JSON Schema:
                     }
                     const updateObj = { accountSid, authToken, fromNumber };
                     if (toNumber) updateObj.toNumber = toNumber;
-                    saveTwilioConfig(updateObj);
+                    saveTwilioConfig(updateObj, fromChatId);
+                    const updatedUserTwilio = getTwilioConfigForUser(fromChatId);
                     await sendTelegram(
-                        `✅ *Twilio credentials updated & saved to Gist!*\n\n` +
+                        `✅ *Twilio credentials updated & saved for this account!*\n\n` +
                         `• SID: \`${accountSid.substring(0, 6)}...\`\n` +
                         `• From: \`${fromNumber}\`\n` +
-                        `• To: \`${TWILIO_CONFIG.toNumber || 'Not set yet'}\`\n\n` +
+                        `• To: \`${updatedUserTwilio.toNumber || 'Not set yet'}\`\n\n` +
                         `Test it now with \`!testcall\`!`,
                         fromChatId
                     );
@@ -4768,15 +4802,16 @@ JSON Schema:
                         continue;
                     }
                     const phone = rawText.replace(/!setphone/i, '').trim();
+                    const userTwilio = getTwilioConfigForUser(fromChatId);
                     if (!phone) {
                         await sendTelegram(
-                            `📞 Current recipient phone: \`${TWILIO_CONFIG.toNumber || 'Not set'}\`\n\n` +
+                            `📞 Current recipient phone for your account: \`${userTwilio.toNumber || 'Not set'}\`\n\n` +
                             `Usage: \`!setphone +91XXXXXXXXXX\``,
                             fromChatId
                         );
                         continue;
                     }
-                    saveTwilioConfig({ toNumber: phone });
+                    saveTwilioConfig({ toNumber: phone }, fromChatId);
                     await sendTelegram(`✅ Destination phone number set to: \`${phone}\`!\nTest it with \`!testcall\`.`, fromChatId);
                     continue;
                 }
@@ -4786,14 +4821,15 @@ JSON Schema:
                         await sendTelegram(`⛔ Restricted to Super Admin only.`, fromChatId);
                         continue;
                     }
+                    const userTwilio = getTwilioConfigForUser(fromChatId);
                     const mask = (s) => s ? (s.length > 8 ? `${s.substring(0, 4)}...${s.substring(s.length - 4)}` : '••••') : 'Not set';
                     await sendTelegram(
-                        `📞 *Twilio Status*\n\n` +
-                        `• Account SID: \`${mask(TWILIO_CONFIG.accountSid)}\`\n` +
-                        `• Auth Token: \`${TWILIO_CONFIG.authToken ? 'Configured ✅' : 'Not set ❌'}\`\n` +
-                        `• From Number: \`${TWILIO_CONFIG.fromNumber || 'Not set ❌'}\`\n` +
-                        `• To Number: \`${TWILIO_CONFIG.toNumber || 'Not set ❌'}\`\n\n` +
-                        `_Ready to place calls?_ ${TWILIO_CONFIG.accountSid && TWILIO_CONFIG.authToken && TWILIO_CONFIG.fromNumber && TWILIO_CONFIG.toNumber ? '🟢 YES' : '🔴 NO (Missing fields)'}`,
+                        `📞 *Twilio Status (Account: ${fromChatId})*\n\n` +
+                        `• Account SID: \`${mask(userTwilio.accountSid)}\`\n` +
+                        `• Auth Token: \`${userTwilio.authToken ? 'Configured ✅' : 'Not set ❌'}\`\n` +
+                        `• From Number: \`${userTwilio.fromNumber || 'Not set ❌'}\`\n` +
+                        `• To Number: \`${userTwilio.toNumber || 'Not set ❌'}\`\n\n` +
+                        `_Ready to place calls?_ ${userTwilio.accountSid && userTwilio.authToken && userTwilio.fromNumber && userTwilio.toNumber ? '🟢 YES' : '🔴 NO (Missing fields)'}`,
                         fromChatId
                     );
                     continue;
@@ -4805,14 +4841,15 @@ JSON Schema:
                         continue;
                     }
 
+                    const userTwilio = getTwilioConfigForUser(fromChatId);
                     // Check Twilio first
-                    if (TWILIO_CONFIG.accountSid && TWILIO_CONFIG.authToken && TWILIO_CONFIG.fromNumber) {
-                        if (!TWILIO_CONFIG.toNumber) {
+                    if (userTwilio.accountSid && userTwilio.authToken && userTwilio.fromNumber) {
+                        if (!userTwilio.toNumber) {
                             await sendTelegram(`⚠️ No destination phone set! Please run: \`!setphone +91XXXXXXXXXX\``, fromChatId);
                             continue;
                         }
-                        await sendTelegram(`📞 Placing cellular phone call to *${TWILIO_CONFIG.toNumber}* via Twilio... Ringing now!`, fromChatId);
-                        const callRes = await triggerTwilioVoiceCall("This is a test call for your Saveetha Hostel Attendance reminder. Voice call alerts are active and working!");
+                        await sendTelegram(`📞 Placing cellular phone call to *${userTwilio.toNumber}* via Twilio... Ringing now!`, fromChatId);
+                        const callRes = await triggerTwilioVoiceCall("This is a test call for your Saveetha Hostel Attendance reminder. Voice call alerts are active and working!", null, fromChatId);
                         if (callRes.success) {
                             await sendTelegram(
                                 `✅ *Phone call placed successfully!*\n\n` +
@@ -4871,7 +4908,7 @@ JSON Schema:
                     await sendTelegram(
                         `🛑 *Recorded: You marked yourself ABSENT for tonight!*\n\n` +
                         `✅ All phone call reminders have been cancelled.\n` +
-                        `✅ 5-minute attendance scanning has been stopped.\n\n` +
+                        `✅ Attendance scanning has been stopped.\n\n` +
                         `Goodnight! 🛌💤`,
                         fromChatId
                     );
