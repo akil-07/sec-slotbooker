@@ -2175,12 +2175,20 @@ async function getPageAttendanceStatus(page) {
         const text = (document.body.innerText || '');
         const bodyLower = text.toLowerCase();
 
+        const normalized = bodyLower.replace(/\s+/g, ' ');
+
         // 1. IN OTP status
-        const inApproved = bodyLower.includes('in attendance has been approved') ||
-                           bodyLower.includes('attendance has been approved for this session') ||
-                           bodyLower.includes('your in attendance has been approved') ||
-                           bodyLower.includes('in otp approved') ||
-                           bodyLower.includes('in otp submitted') ||
+        const inApproved = normalized.includes('in attendance has been approved') ||
+                           normalized.includes('attendance has been approved for this session') ||
+                           normalized.includes('your in attendance has been approved') ||
+                           normalized.includes('approved for this session') ||
+                           normalized.includes('share your feedback to close the attendance process') ||
+                           normalized.includes('overall rating for today') ||
+                           normalized.includes('in otp approved') ||
+                           normalized.includes('in otp submitted') ||
+                           /in\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
+                           /approved\s+for\s+this\s+session/i.test(bodyLower) ||
+                           /your\s+in\s+attendance/i.test(bodyLower) ||
                            /in otp[\s\S]{0,100}submitted/i.test(bodyLower);
 
         const inForm = document.querySelector('form[data-otp-form][data-otp-type="in"], form[data-otp-type="in"]');
@@ -3357,7 +3365,9 @@ let hostelAttendanceState = {
     chatId: null,
     callTimers: [],
     scanInterval: null,
-    endTimeout: null
+    endTimeout: null,
+    attendanceUrl: null,
+    isScanning: false
 };
 
 function stopHostelAttendance(reason = 'stopped') {
@@ -3388,6 +3398,8 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
     hostelAttendanceState.slotName = slot?.slot || 'HOS – HOSTEL ATTENDANCE';
     hostelAttendanceState.chatId = chatId;
     hostelAttendanceState.callTimers = [];
+    hostelAttendanceState.attendanceUrl = null;
+    hostelAttendanceState.isScanning = false;
 
     const slotName = hostelAttendanceState.slotName;
     console.log(`[Hostel] Starting 9:00 PM - 10:00 PM Hostel Attendance workflow for ${slotName}...`);
@@ -3396,52 +3408,24 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
         `🏨 *Hostel Attendance Window Started (9:00 PM – 10:00 PM)*\n\n` +
         `📚 *${slotName}*\n` +
         `📞 *Phone Call Reminder:* Ringing every 10 minutes until approved or 10:00 PM\n` +
-        `🔍 *Portal Scanner:* Checking every 5 minutes for approval\n\n` +
+        `🔍 *Portal Scanner:* Checking every 30 seconds for approval\n` +
+        `🛡️ *Pre-Call Scan:* Automatically verifies portal before every call to prevent duplicate rings\n\n` +
         `_💡 Once approved on portal or if you are absent, calls will automatically stop (or reply_ \`!absent\`_)._`,
         chatId
     );
 
-    // Function to place a reminder call if still uncompleted
-    const doCall = async (callNumber, timeStr) => {
-        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
-            return;
-        }
-        console.log(`[Hostel Call #${callNumber}] Placing phone call reminder at ${timeStr}...`);
-        await triggerHostelCallReminder(`Hostel attendance reminder for ${slotName}. Please mark your hostel attendance now.`);
-        await sendTelegram(
-            `📞 *Hostel Attendance Call Reminder (#${callNumber} — ${timeStr})*\n\n` +
-            `Ringing your phone now! Please check or mark your hostel attendance.\n\n` +
-            `_👉 Calls stop automatically once your IN attendance is approved, or reply_ \`!absent\` _if absent tonight._`,
-            chatId
-        );
-    };
-
-    // 1. Initial Call at 9:00 PM sharp
-    await doCall(1, '9:00 PM');
-
-    // 2. Schedule calls every 10 minutes: 9:10, 9:20, 9:30, 9:40, 9:50, 10:00 PM
-    const callTimes = [
-        { mins: 10, label: '9:10 PM', num: 2 },
-        { mins: 20, label: '9:20 PM', num: 3 },
-        { mins: 30, label: '9:30 PM', num: 4 },
-        { mins: 40, label: '9:40 PM', num: 5 },
-        { mins: 50, label: '9:50 PM', num: 6 },
-        { mins: 60, label: '10:00 PM', num: 7 }
-    ];
-
-    callTimes.forEach(c => {
-        const timer = setTimeout(() => {
-            doCall(c.num, c.label);
-        }, c.mins * 60 * 1000);
-        hostelAttendanceState.callTimers.push(timer);
-    });
-
-    // 3. Scan portal function (executed immediately and every 5 minutes)
+    // 1. Scan portal function (returns true if attendance is already approved)
     const scanHostelPage = async () => {
         if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
-            return;
+            return hostelAttendanceState.markedPresent;
         }
-        console.log('[Hostel Scan] Checking hostel attendance status in portal...');
+        if (hostelAttendanceState.isScanning) {
+            console.log('[Hostel Scan] Scan already running, waiting for active scan to finish...');
+            return hostelAttendanceState.markedPresent;
+        }
+
+        hostelAttendanceState.isScanning = true;
+        console.log('[Hostel Scan] Checking hostel attendance status in portal (30s interval)...');
         const page = await session.context.newPage();
         try {
             await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -3449,22 +3433,71 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                 await doLogin(page, session.config.user, session.config.pass);
                 await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
             }
-            await page.waitForTimeout(2500);
+            await page.waitForTimeout(2000);
 
-            const target = await findAttendanceTarget(page, 'hostel') || await findAttendanceTarget(page, slotName);
-            if (!target || !target.href) {
-                console.log('[Hostel Scan] No target href found yet.');
-                return;
+            // Step A: Check directly on people_schedule if hostel card already indicates approved/present
+            const scheduleCheck = await page.evaluate(() => {
+                const allEls = Array.from(document.querySelectorAll('div, li, section, article, tr'));
+                const hostelCard = allEls.find(el => {
+                    const txt = (el.innerText || '').toLowerCase();
+                    return txt.includes('hostel') && (txt.includes('slot :') || txt.includes('venue :'));
+                });
+                if (hostelCard) {
+                    const cardTxt = (hostelCard.innerText || '').toLowerCase();
+                    const isDone = cardTxt.includes('approved') || cardTxt.includes('present') || cardTxt.includes('attended') || cardTxt.includes('100%');
+                    return { found: true, isDone, text: cardTxt };
+                }
+                return { found: false, isDone: false };
+            });
+
+            if (scheduleCheck.isDone) {
+                console.log('[Hostel Scan] Attendance already marked on people_schedule card!');
+                hostelAttendanceState.markedPresent = true;
+                stopHostelAttendance('Attendance approved (found on schedule card)');
+                const picPath = path.join(__dirname, `_hostel_done_${Date.now()}.png`);
+                try {
+                    await page.screenshot({ path: picPath });
+                    await sendTelegramPhoto(
+                        picPath,
+                        `🎉 *Hostel Attendance Approved!* ✅\n\n` +
+                        `📚 *${slotName}*\n` +
+                        `🟢 *Status:* Your attendance has been approved on schedule.\n\n` +
+                        `All phone calls and scanning have been stopped. Goodnight! 🛌✨`,
+                        chatId
+                    );
+                } catch (_) {
+                    await sendTelegram(`🎉 *Hostel Attendance Approved!* All phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
+                }
+                try { fs.unlinkSync(picPath); } catch (_) {}
+                return true;
             }
 
-            const attendanceUrl = target.href.startsWith('http') ? target.href : `https://learner.saveetha.in${target.href}`;
+            // Step B: Locate target attendance process link
+            const target = await findAttendanceTarget(page, 'hostel') || await findAttendanceTarget(page, slotName);
+            let attendanceUrl = target && target.href
+                ? (target.href.startsWith('http') ? target.href : `https://learner.saveetha.in${target.href}`)
+                : null;
+
+            if (attendanceUrl) {
+                hostelAttendanceState.attendanceUrl = attendanceUrl;
+            } else if (hostelAttendanceState.attendanceUrl) {
+                attendanceUrl = hostelAttendanceState.attendanceUrl;
+            }
+
+            if (!attendanceUrl) {
+                console.log('[Hostel Scan] No target href found yet.');
+                return false;
+            }
+
+            // Step C: Go to attendance URL and check status
             await page.goto(attendanceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await page.waitForTimeout(2000);
 
             const status = await getPageAttendanceStatus(page);
 
-            // Check if already approved/done (e.g. "Your IN attendance has been approved for this session.")
+            // Step D: Check if already approved/done (e.g. "Your IN attendance has been approved for this session.")
             if (status.inApproved) {
+                console.log('[Hostel Scan] ✅ IN attendance IS APPROVED for this session!');
                 hostelAttendanceState.markedPresent = true;
                 stopHostelAttendance('Attendance approved on portal');
                 const picPath = path.join(__dirname, `_hostel_done_${Date.now()}.png`);
@@ -3482,10 +3515,10 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                     await sendTelegram(`🎉 *Hostel Attendance Approved!* Your IN attendance has been approved for this session.\nAll phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
                 }
                 try { fs.unlinkSync(picPath); } catch (_) {}
-                return;
+                return true;
             }
 
-            // Check if OTP box is open
+            // Step E: Check if OTP box is open
             if (status.inOpen) {
                 console.log('[Hostel Scan] 🚨 IN OTP box is OPEN NOW!');
                 const openPic = path.join(__dirname, `_hostel_open_${Date.now()}.png`);
@@ -3519,29 +3552,80 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                     hostelAttendanceState.markedPresent = true;
                     stopHostelAttendance('IN OTP submitted');
                     await sendTelegram(`🎉 *Hostel Attendance Complete!* IN OTP submitted. All phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
-                    return;
+                    return true;
                 }
             }
+            return false;
         } catch (err) {
             console.error('[Hostel Scan] Error:', err.message);
+            return false;
         } finally {
+            hostelAttendanceState.isScanning = false;
             await page.close().catch(() => {});
         }
     };
 
-    // First scan right now at 9:00 PM
-    scanHostelPage().catch(() => {});
+    // 2. Pre-Call Verification & Voice Call Trigger
+    const doCall = async (callNumber, timeStr) => {
+        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
+            return;
+        }
 
-    // Repeat scan every 5 minutes
-    hostelAttendanceState.scanInterval = setInterval(() => {
+        console.log(`[Hostel Call #${callNumber}] Performing pre-call scan at ${timeStr}...`);
+        try {
+            const alreadyApproved = await scanHostelPage();
+            if (alreadyApproved || hostelAttendanceState.markedPresent || !hostelAttendanceState.active || hostelAttendanceState.reportedAbsent) {
+                console.log(`[Hostel Call #${callNumber}] Attendance already approved! Aborting call at ${timeStr}.`);
+                return;
+            }
+        } catch (e) {
+            console.error(`[Hostel Call #${callNumber}] Pre-call scan error:`, e.message);
+        }
+
+        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
+            return;
+        }
+
+        console.log(`[Hostel Call #${callNumber}] Attendance not yet approved. Placing phone call reminder at ${timeStr}...`);
+        await triggerHostelCallReminder(`Hostel attendance reminder for ${slotName}. Please mark your hostel attendance now.`);
+        await sendTelegram(
+            `📞 *Hostel Attendance Call Reminder (#${callNumber} — ${timeStr})*\n\n` +
+            `Ringing your phone now! Please check or mark your hostel attendance.\n\n` +
+            `_👉 Calls stop automatically once your IN attendance is approved, or reply_ \`!absent\` _if absent tonight._`,
+            chatId
+        );
+    };
+
+    // 3. First Call at 9:00 PM sharp (scans portal first!)
+    await doCall(1, '9:00 PM');
+
+    // 4. Schedule calls every 10 minutes: 9:10, 9:20, 9:30, 9:40, 9:50, 10:00 PM
+    const callTimes = [
+        { mins: 10, label: '9:10 PM', num: 2 },
+        { mins: 20, label: '9:20 PM', num: 3 },
+        { mins: 30, label: '9:30 PM', num: 4 },
+        { mins: 40, label: '9:40 PM', num: 5 },
+        { mins: 50, label: '9:50 PM', num: 6 },
+        { mins: 60, label: '10:00 PM', num: 7 }
+    ];
+
+    callTimes.forEach(c => {
+        const timer = setTimeout(() => {
+            doCall(c.num, c.label);
+        }, c.mins * 60 * 1000);
+        hostelAttendanceState.callTimers.push(timer);
+    });
+
+    // 5. High-frequency 30-second background scanner
+    hostelAttendanceState.scanInterval = setInterval(async () => {
         if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
             if (hostelAttendanceState.scanInterval) clearInterval(hostelAttendanceState.scanInterval);
             return;
         }
-        scanHostelPage().catch(() => {});
-    }, 5 * 60 * 1000);
+        await scanHostelPage();
+    }, 30 * 1000);
 
-    // End of window at 10:00 PM (60 minutes)
+    // 6. End of window at 10:00 PM (60 minutes)
     hostelAttendanceState.endTimeout = setTimeout(async () => {
         if (!hostelAttendanceState.active) return;
         stopHostelAttendance('10:00 PM Window Closed');
