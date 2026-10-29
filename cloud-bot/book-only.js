@@ -1,4 +1,4 @@
-process.on('unhandledRejection', (reason, promise) => {
+﻿process.on('unhandledRejection', (reason, promise) => {
     console.error('UNHANDLED REJECTION:', reason);
 });
 process.on('uncaughtException', (error) => {
@@ -3307,24 +3307,32 @@ function startTimetableSchedulers(userSessions) {
     console.log('[Scheduler] Starting timetable schedulers for all users...');
 
     // Helper: ms until next HH:MM in IST
-    function msUntilIST(targetHour, targetMin) {
-        const now = new Date();
-        // IST offset in ms = +5h30m = 19800000
-        const IST_OFFSET = 5.5 * 60 * 60 * 1000;
-        const nowIST = new Date(now.getTime() + IST_OFFSET);
-        const target = new Date(nowIST);
-        target.setUTCHours(targetHour, targetMin, 0, 0);
-        let diff = target.getTime() - nowIST.getTime();
-        if (diff <= 0) {
-            target.setUTCDate(target.getUTCDate() + 1);
-            diff = target.getTime() - nowIST.getTime();
-        }
-        return diff;
+    // ─── Precision IST Time Helpers ──────────────────────────────────────────────
+// Fixed IST offset = UTC + 5h30m (330 minutes)
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+function getMsUntilTodayIST(targetHour, targetMinute = 0) {
+    const now = Date.now();
+    const nowIST = new Date(now + IST_OFFSET_MS);
+    const curYear = nowIST.getUTCFullYear();
+    const curMonth = nowIST.getUTCMonth();
+    const curDate = nowIST.getUTCDate();
+    const targetEpoch = Date.UTC(curYear, curMonth, curDate, targetHour, targetMinute, 0, 0) - IST_OFFSET_MS;
+    return targetEpoch - now;
+}
+
+function msUntilIST(targetHour, targetMin = 0) {
+    let diff = getMsUntilTodayIST(targetHour, targetMin);
+    if (diff <= 0) {
+        diff += 24 * 60 * 60 * 1000; // Roll over to tomorrow
     }
+    return diff;
+}
 
     // Schedule the 8 AM daily timetable for every user
     for (const [chatId, session] of userSessions.entries()) {
         scheduleDailyTimetable(chatId, session);
+        if (isSuperAdmin(chatId)) scheduleDailyHostelForAdmin(chatId, session);
 
         // --- Immediate Check on Startup ---
         // If the bot starts after 8 AM (e.g. after a restart), 
@@ -3395,6 +3403,7 @@ async function spawnUserSession(browser, chatId, config) {
 
         // Start specific scheduler
         scheduleDailyTimetableForUser(chatId, session);
+        if (isSuperAdmin(chatId)) scheduleDailyHostelForAdmin(chatId, session);
         (async () => {
             try {
                 const slots = await fetchTimetable(session.context, session.config);
@@ -3420,15 +3429,17 @@ function scheduleDailyTimetableForUser(chatId, session) {
 }
 
 function msUntilIST(targetHour, targetMin) {
+    // Correctly compute ms until next targetHour:targetMin in IST (UTC+5:30).
     const now = new Date();
-    const IST_OFFSET = 5.5 * 60 * 60 * 1000;
-    const nowIST = new Date(now.getTime() + IST_OFFSET);
-    const target = new Date(nowIST);
-    target.setUTCHours(targetHour, targetMin, 0, 0);
-    let diff = target.getTime() - nowIST.getTime();
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const nowUTC = now.getTime();
+    const todayMidnightUTC = new Date(now);
+    todayMidnightUTC.setUTCHours(0, 0, 0, 0);
+    // Express target IST time as its UTC epoch ms value
+    const targetUTC = todayMidnightUTC.getTime() + (targetHour * 60 + targetMin) * 60 * 1000 - IST_OFFSET_MS;
+    let diff = targetUTC - nowUTC;
     if (diff <= 0) {
-        target.setUTCDate(target.getUTCDate() + 1);
-        diff = target.getTime() - nowIST.getTime();
+        diff += 24 * 60 * 60 * 1000; // roll to next day
     }
     return diff;
 }
@@ -3442,54 +3453,103 @@ async function sendDailyTimetable(chatId, session) {
     } catch (err) { }
 }
 
+
+function scheduleDailyHostelForAdmin(chatId, session) {
+    if (!isSuperAdmin(chatId)) return; // Strictly for Super Admin only
+
+    const hostelKey = `hostel_daily_${chatId}`;
+    if (activeReminders.has(hostelKey)) {
+        clearTimeout(activeReminders.get(hostelKey));
+    }
+
+    const delayTo9PM = getMsUntilTodayIST(21, 0);
+    const delayTo10PM = getMsUntilTodayIST(22, 0);
+
+    // If currently within 9:00 PM - 10:00 PM IST right now
+    if (delayTo9PM <= 0 && delayTo10PM > 0) {
+        console.log(`[Hostel][${chatId}] Currently within 9:00 PM - 10:00 PM IST window. Starting Hostel Attendance workflow now!`);
+        startHostelAttendanceWorkflow(session, { slot: 'HOS - HOSTEL ATTENDANCE' }, chatId);
+    }
+
+    // Schedule for next 9:00 PM IST
+    const delay = msUntilIST(21, 0);
+    const delayMin = Math.round(delay / 60000);
+    console.log(`[Hostel][${chatId}] Daily 9:00 PM hostel reminder for Admin scheduled in ${delayMin} min (${(delayMin / 60).toFixed(1)} hrs)`);
+
+    const timer = setTimeout(async () => {
+        try {
+            console.log(`[Hostel][${chatId}] 9:00 PM IST trigger fired! Starting hostel attendance workflow for Admin...`);
+            await startHostelAttendanceWorkflow(session, { slot: 'HOS - HOSTEL ATTENDANCE' }, chatId);
+        } catch (err) {
+            console.error(`[Hostel][${chatId}] Error in daily hostel workflow:`, err.message);
+        }
+        // Reschedule for next day
+        scheduleDailyHostelForAdmin(chatId, session);
+    }, delay);
+
+    activeReminders.set(hostelKey, timer);
+}
+
 const activeReminders = new Map();
 
 // ─── Hostel Attendance Workflow (9:00 PM – 10:00 PM) ──────────────────────────
-let hostelAttendanceState = {
-    active: false,
-    markedPresent: false,
-    reportedAbsent: false,
-    slotName: 'HOS – HOSTEL ATTENDANCE',
-    chatId: null,
-    callTimers: [],
-    scanInterval: null,
-    endTimeout: null,
-    attendanceUrl: null,
-    isScanning: false
-};
+// Per-user hostel state map (chatId -> state object).
+// This allows every registered user their own independent hostel workflow.
+const hostelAttendanceStates = new Map();
 
-function stopHostelAttendance(reason = 'stopped') {
-    if (!hostelAttendanceState.active) return;
-    console.log(`[Hostel] Stopping hostel attendance workflow (${reason})`);
-    hostelAttendanceState.active = false;
-    if (hostelAttendanceState.scanInterval) {
-        clearInterval(hostelAttendanceState.scanInterval);
-        hostelAttendanceState.scanInterval = null;
+function getHostelState(chatId) {
+    const cid = String(chatId);
+    if (!hostelAttendanceStates.has(cid)) {
+        hostelAttendanceStates.set(cid, {
+            active: false,
+            markedPresent: false,
+            reportedAbsent: false,
+            slotName: 'HOS - HOSTEL ATTENDANCE',
+            chatId: cid,
+            callTimers: [],
+            scanInterval: null,
+            endTimeout: null,
+            attendanceUrl: null,
+            isScanning: false
+        });
     }
-    if (hostelAttendanceState.endTimeout) {
-        clearTimeout(hostelAttendanceState.endTimeout);
-        hostelAttendanceState.endTimeout = null;
+    return hostelAttendanceStates.get(cid);
+}
+
+function stopHostelAttendance(reason = 'stopped', chatId = null) {
+    const state = getHostelState(chatId);
+    if (!state.active) return;
+    console.log(`[Hostel][${chatId}] Stopping hostel attendance workflow (${reason})`);
+    state.active = false;
+    if (state.scanInterval) {
+        clearInterval(state.scanInterval);
+        state.scanInterval = null;
     }
-    hostelAttendanceState.callTimers.forEach(t => clearTimeout(t));
-    hostelAttendanceState.callTimers = [];
+    if (state.endTimeout) {
+        clearTimeout(state.endTimeout);
+        state.endTimeout = null;
+    }
+    state.callTimers.forEach(t => clearTimeout(t));
+    state.callTimers = [];
 }
 
 async function startHostelAttendanceWorkflow(session, slot, chatId) {
-    if (hostelAttendanceState.active) {
+    const state = getHostelState(chatId); // per-user state
+    if (state.active) {
         console.log('[Hostel] Workflow already active, skipping duplicate trigger.');
         return;
     }
 
-    hostelAttendanceState.active = true;
-    hostelAttendanceState.markedPresent = false;
-    hostelAttendanceState.reportedAbsent = false;
-    hostelAttendanceState.slotName = slot?.slot || 'HOS – HOSTEL ATTENDANCE';
-    hostelAttendanceState.chatId = chatId;
-    hostelAttendanceState.callTimers = [];
-    hostelAttendanceState.attendanceUrl = null;
-    hostelAttendanceState.isScanning = false;
+    state.active = true;
+    state.markedPresent = false;
+    state.reportedAbsent = false;
+    state.slotName = slot?.slot || 'HOS – HOSTEL ATTENDANCE';
+    state.chatId = chatId;
+    state.callTimers = [];
+    state.attendanceUrl = null;
+    state.isScanning = false;
 
-    const slotName = hostelAttendanceState.slotName;
+    const slotName = state.slotName;
     console.log(`[Hostel] Starting 9:00 PM - 10:00 PM Hostel Attendance workflow for ${slotName}...`);
 
     await sendTelegram(
@@ -3504,15 +3564,15 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
 
     // 1. Scan portal function (returns true if attendance is already approved)
     const scanHostelPage = async () => {
-        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
-            return hostelAttendanceState.markedPresent;
+        if (!state.active || state.markedPresent || state.reportedAbsent) {
+            return state.markedPresent;
         }
-        if (hostelAttendanceState.isScanning) {
+        if (state.isScanning) {
             console.log('[Hostel Scan] Scan already running, waiting for active scan to finish...');
-            return hostelAttendanceState.markedPresent;
+            return state.markedPresent;
         }
 
-        hostelAttendanceState.isScanning = true;
+        state.isScanning = true;
         console.log('[Hostel Scan] Checking hostel attendance status in portal (30s interval)...');
         const page = await session.context.newPage();
         try {
@@ -3540,8 +3600,8 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
 
             if (scheduleCheck.isDone) {
                 console.log('[Hostel Scan] Attendance already marked on people_schedule card!');
-                hostelAttendanceState.markedPresent = true;
-                stopHostelAttendance('Attendance approved (found on schedule card)');
+                state.markedPresent = true;
+                stopHostelAttendance('Attendance approved (found on schedule card)', chatId);
                 const picPath = path.join(__dirname, `_hostel_done_${Date.now()}.png`);
                 try {
                     await page.screenshot({ path: picPath });
@@ -3567,9 +3627,9 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                 : null;
 
             if (attendanceUrl) {
-                hostelAttendanceState.attendanceUrl = attendanceUrl;
-            } else if (hostelAttendanceState.attendanceUrl) {
-                attendanceUrl = hostelAttendanceState.attendanceUrl;
+                state.attendanceUrl = attendanceUrl;
+            } else if (state.attendanceUrl) {
+                attendanceUrl = state.attendanceUrl;
             }
 
             if (!attendanceUrl) {
@@ -3586,8 +3646,8 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
             // Step D: Check if already approved/done (e.g. "Your IN attendance has been approved for this session.")
             if (status.inApproved) {
                 console.log('[Hostel Scan] ✅ IN attendance IS APPROVED for this session!');
-                hostelAttendanceState.markedPresent = true;
-                stopHostelAttendance('Attendance approved on portal');
+                state.markedPresent = true;
+                stopHostelAttendance('Attendance approved on portal', chatId);
                 const picPath = path.join(__dirname, `_hostel_done_${Date.now()}.png`);
                 try {
                     await page.screenshot({ path: picPath });
@@ -3637,8 +3697,8 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
 
                 if (userOtp) {
                     await enterAndVerifyOtp(page, userOtp, 'start', slotName, chatId);
-                    hostelAttendanceState.markedPresent = true;
-                    stopHostelAttendance('IN OTP submitted');
+                    state.markedPresent = true;
+                    stopHostelAttendance('IN OTP submitted', chatId);
                     await sendTelegram(`🎉 *Hostel Attendance Complete!* IN OTP submitted. All phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
                     return true;
                 }
@@ -3648,21 +3708,21 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
             console.error('[Hostel Scan] Error:', err.message);
             return false;
         } finally {
-            hostelAttendanceState.isScanning = false;
+            state.isScanning = false;
             await page.close().catch(() => {});
         }
     };
 
     // 2. Pre-Call Verification & Voice Call Trigger
     const doCall = async (callNumber, timeStr) => {
-        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
+        if (!state.active || state.markedPresent || state.reportedAbsent) {
             return;
         }
 
         console.log(`[Hostel Call #${callNumber}] Performing pre-call scan at ${timeStr}...`);
         try {
             const alreadyApproved = await scanHostelPage();
-            if (alreadyApproved || hostelAttendanceState.markedPresent || !hostelAttendanceState.active || hostelAttendanceState.reportedAbsent) {
+            if (alreadyApproved || state.markedPresent || !state.active || state.reportedAbsent) {
                 console.log(`[Hostel Call #${callNumber}] Attendance already approved! Aborting call at ${timeStr}.`);
                 return;
             }
@@ -3670,7 +3730,7 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
             console.error(`[Hostel Call #${callNumber}] Pre-call scan error:`, e.message);
         }
 
-        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
+        if (!state.active || state.markedPresent || state.reportedAbsent) {
             return;
         }
 
@@ -3701,23 +3761,23 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
         const timer = setTimeout(() => {
             doCall(c.num, c.label);
         }, c.mins * 60 * 1000);
-        hostelAttendanceState.callTimers.push(timer);
+        state.callTimers.push(timer);
     });
 
     // 5. High-frequency 30-second background scanner
-    hostelAttendanceState.scanInterval = setInterval(async () => {
-        if (!hostelAttendanceState.active || hostelAttendanceState.markedPresent || hostelAttendanceState.reportedAbsent) {
-            if (hostelAttendanceState.scanInterval) clearInterval(hostelAttendanceState.scanInterval);
+    state.scanInterval = setInterval(async () => {
+        if (!state.active || state.markedPresent || state.reportedAbsent) {
+            if (state.scanInterval) clearInterval(state.scanInterval);
             return;
         }
         await scanHostelPage();
     }, 30 * 1000);
 
     // 6. End of window at 10:00 PM (60 minutes)
-    hostelAttendanceState.endTimeout = setTimeout(async () => {
-        if (!hostelAttendanceState.active) return;
-        stopHostelAttendance('10:00 PM Window Closed');
-        if (!hostelAttendanceState.markedPresent && !hostelAttendanceState.reportedAbsent) {
+    state.endTimeout = setTimeout(async () => {
+        if (!state.active) return;
+        stopHostelAttendance('10:00 PM Window Closed', chatId);
+        if (!state.markedPresent && !state.reportedAbsent) {
             await sendTelegram(
                 `⏰ *Hostel Attendance Window Closed (10:00 PM)*\n\n` +
                 `The attendance window has ended. All scheduled calls and scans for tonight have ended.`,
@@ -3730,7 +3790,6 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
 function scheduleSlotReminders(chatId, session, slots) {
     if (!slots || !slots.length) return;
     const allowOtp = isSuperAdmin(chatId);
-    const nowIST = getNowIST();
 
     for (let idx = 0; idx < slots.length; idx++) {
         const s = slots[idx];
@@ -3738,16 +3797,15 @@ function scheduleSlotReminders(chatId, session, slots) {
         const isHostel = /hostel|hos\b/i.test(s.slot) || /boyshostel|girlshostel/i.test(s.venue || '') || (isLastSchedule && (s.hour >= 18 || s.hour === 21));
 
         // 🏨 1. Dedicated Hostel Attendance Workflow (9:00 PM – 10:00 PM)
+        // ⚠️ STRICTLY FOR SUPER ADMIN ONLY - Non-admins are completely skipped!
         if (isHostel) {
-            if (!allowOtp) continue;
+            if (!isSuperAdmin(chatId)) {
+                // Non-admins never get hostel reminders or calls
+                continue;
+            }
 
-            const hostelStart = getNowIST();
-            hostelStart.setHours(21, 0, 0, 0);
-
-            const hostelEnd = getNowIST();
-            hostelEnd.setHours(22, 0, 0, 0);
-
-            const delayTo9PM = hostelStart.getTime() - nowIST.getTime();
+            const delayTo9PM = getMsUntilTodayIST(21, 0); // ms until 9:00 PM IST
+            const delayTo10PM = getMsUntilTodayIST(22, 0); // ms until 10:00 PM IST
             const hostelKey = `hostel_workflow_${chatId}`;
 
             if (delayTo9PM > 0) {
@@ -3759,24 +3817,20 @@ function scheduleSlotReminders(chatId, session, slots) {
                     startHostelAttendanceWorkflow(session, s, chatId);
                 }, delayTo9PM);
                 activeReminders.set(hostelKey, hTimer);
-                console.log(`[Scheduler] 🏨 Hostel Attendance workflow scheduled at 9:00 PM (in ${Math.round(delayTo9PM / 60000)} min)`);
-            } else if (nowIST.getTime() >= hostelStart.getTime() && nowIST.getTime() < hostelEnd.getTime()) {
-                console.log(`[Scheduler] 🏨 Currently within 9:00 PM - 10:00 PM window. Starting Hostel Attendance workflow now!`);
+                console.log(`[Scheduler] 🏨 Hostel Attendance workflow scheduled at 9:00 PM IST (in ${Math.round(delayTo9PM / 60000)} min)`);
+            } else if (delayTo9PM <= 0 && delayTo10PM > 0) {
+                console.log(`[Scheduler] 🏨 Currently within 9:00 PM - 10:00 PM IST window. Starting Hostel Attendance workflow now!`);
                 startHostelAttendanceWorkflow(session, s, chatId);
             }
             continue; // Handled by dedicated hostel workflow
         }
 
-        // Class start time today in IST
-        const slotStart = getNowIST();
-        slotStart.setHours(s.hour, s.minute, 0, 0);
-
-        // Class end time today in IST (default 90 min)
-        const slotEnd = new Date(slotStart.getTime() + (s.durationMinutes || 90) * 60 * 1000);
+        // ── Regular Class Calculations in IST ─────────────────────────────────
+        // Milliseconds from now until class start in IST
+        const msUntilClassStart = getMsUntilTodayIST(s.hour, s.minute);
 
         // ── Regular Class 15-Minute Reminder ─────────────────────────────────
-        const reminderTime = new Date(slotStart.getTime() - 15 * 60 * 1000);
-        const reminderDelay = reminderTime.getTime() - nowIST.getTime();
+        const reminderDelay = msUntilClassStart - 15 * 60 * 1000;
         const reminderKey = `rem_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
         if (reminderDelay > 0) {
@@ -3805,41 +3859,38 @@ function scheduleSlotReminders(chatId, session, slots) {
 
         // ── Regular Class OTP Attendance (SUPER ADMIN ONLY) ───────────────────
         if (allowOtp) {
-            // IN OTP: starts 10 min before class start (e.g. 7:50 AM for 8:00 AM class)
-            // and stops 5 min after class start (e.g. 8:05 AM)
-            const inScanStart = new Date(slotStart.getTime() - 10 * 60 * 1000);
-            const inScanStop = new Date(slotStart.getTime() + 5 * 60 * 1000);
+            // IN OTP: starts 10 min before class start and stops 5 min after class start
+            const inScanStartDelay = msUntilClassStart - 10 * 60 * 1000;
+            const inScanStopDelay = msUntilClassStart + 5 * 60 * 1000;
             const inScanDuration = 15 * 60 * 1000; // 15 min total
-
-            const inDelay = inScanStart.getTime() - nowIST.getTime();
             const inKey = `in_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
-            if (inDelay > 0) {
+            if (inScanStartDelay > 0) {
                 if (activeReminders.has(inKey)) {
                     clearTimeout(activeReminders.get(inKey));
                 }
                 const inTimeoutId = setTimeout(() => {
                     activeReminders.delete(inKey);
-                    console.log(`[Scheduler] IN OTP trigger fired for "${s.slot}" — scanning until 8:05 AM (15 min)`);
+                    console.log(`[Scheduler] IN OTP trigger fired for "${s.slot}" — scanning (15 min)`);
                     handleAttendanceOtp(session, s.slot, 'start', chatId, null, inScanDuration);
-                }, inDelay);
+                }, inScanStartDelay);
                 activeReminders.set(inKey, inTimeoutId);
-                console.log(`[Scheduler] IN OTP monitor for "${s.slot}" scheduled in ${Math.round(inDelay / 60000)} min (${session.config.name})`);
-            } else if (nowIST.getTime() >= inScanStart.getTime() && nowIST.getTime() <= inScanStop.getTime()) {
-                const remainingMs = inScanStop.getTime() - nowIST.getTime();
+                console.log(`[Scheduler] IN OTP monitor for "${s.slot}" scheduled in ${Math.round(inScanStartDelay / 60000)} min (${session.config.name})`);
+            } else if (inScanStartDelay <= 0 && inScanStopDelay > 0) {
+                const remainingMs = inScanStopDelay;
                 console.log(`[Scheduler] Class "${s.slot}" is in scan window — scanning IN OTP for remaining ${Math.round(remainingMs / 60000)} min`);
                 handleAttendanceOtp(session, s.slot, 'start', chatId, null, remainingMs);
             }
 
             // OUT OTP: starts 10 min before class end and stops 5 min after class end
-            const outScanStart = new Date(slotEnd.getTime() - 10 * 60 * 1000);
-            const outScanStop = new Date(slotEnd.getTime() + 5 * 60 * 1000);
+            const durationMs = (s.durationMinutes || 90) * 60 * 1000;
+            const msUntilClassEnd = msUntilClassStart + durationMs;
+            const outScanStartDelay = msUntilClassEnd - 10 * 60 * 1000;
+            const outScanStopDelay = msUntilClassEnd + 5 * 60 * 1000;
             const outScanDuration = 15 * 60 * 1000;
-
-            const outDelay = outScanStart.getTime() - nowIST.getTime();
             const outKey = `out_otp_${chatId}_${s.slot}_${s.hour}_${s.minute}`;
 
-            if (outDelay > 0) {
+            if (outScanStartDelay > 0) {
                 if (activeReminders.has(outKey)) {
                     clearTimeout(activeReminders.get(outKey));
                 }
@@ -3847,11 +3898,11 @@ function scheduleSlotReminders(chatId, session, slots) {
                     activeReminders.delete(outKey);
                     console.log(`[Scheduler] OUT OTP trigger fired for "${s.slot}" — scanning (15 min)`);
                     handleAttendanceOtp(session, s.slot, 'end', chatId, null, outScanDuration);
-                }, outDelay);
+                }, outScanStartDelay);
                 activeReminders.set(outKey, outTimeoutId);
-                console.log(`[Scheduler] OUT OTP monitor for "${s.slot}" scheduled in ${Math.round(outDelay / 60000)} min (${session.config.name})`);
-            } else if (nowIST.getTime() >= outScanStart.getTime() && nowIST.getTime() <= outScanStop.getTime()) {
-                const remainingMs = outScanStop.getTime() - nowIST.getTime();
+                console.log(`[Scheduler] OUT OTP monitor for "${s.slot}" scheduled in ${Math.round(outScanStartDelay / 60000)} min (${session.config.name})`);
+            } else if (outScanStartDelay <= 0 && outScanStopDelay > 0) {
+                const remainingMs = outScanStopDelay;
                 console.log(`[Scheduler] Class "${s.slot}" is in OUT OTP window — scanning for remaining ${Math.round(remainingMs / 60000)} min`);
                 handleAttendanceOtp(session, s.slot, 'end', chatId, null, remainingMs);
             }
@@ -4955,12 +5006,13 @@ JSON Schema:
                         await sendTelegram(`⛔ Reporting absent is restricted to Super Admin only.`, fromChatId);
                         continue;
                     }
-                    if (!hostelAttendanceState.active) {
+                    if (!getHostelState(fromChatId).active) {
                         await sendTelegram(`ℹ️ Hostel attendance is not currently active right now.\n(The automated window runs daily between 9:00 PM and 10:00 PM).`, fromChatId);
                         continue;
                     }
-                    hostelAttendanceState.reportedAbsent = true;
-                    stopHostelAttendance('User reported absent via Telegram');
+                    const _absentState = getHostelState(fromChatId);
+                    _absentState.reportedAbsent = true;
+                    stopHostelAttendance('User reported absent via Telegram', fromChatId);
                     await sendTelegram(
                         `🛑 *Recorded: You marked yourself ABSENT for tonight!*\n\n` +
                         `✅ All phone call reminders have been cancelled.\n` +
@@ -4988,11 +5040,11 @@ JSON Schema:
                         await sendTelegram(`⛔ Restricted to Super Admin only.`, fromChatId);
                         continue;
                     }
-                    if (!hostelAttendanceState.active) {
+                    if (!getHostelState(fromChatId).active) {
                         await sendTelegram(`ℹ️ Hostel attendance workflow is not active.`, fromChatId);
                         continue;
                     }
-                    stopHostelAttendance('Manual stop by Super Admin');
+                    stopHostelAttendance('Manual stop by Super Admin', fromChatId);
                     await sendTelegram(`🛑 *Hostel attendance workflow stopped manually.*`, fromChatId);
                     continue;
                 }
