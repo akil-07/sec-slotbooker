@@ -1842,88 +1842,93 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
                     return rect.width > 0 && rect.height > 0;
                 }
 
-                const bodyText = (document.body.innerText || '');
-                const bodyLower = bodyText.toLowerCase();
+                const isTargetIn = type === 'in';
+                const feedbackId = isTargetIn ? 'otpFeedbackIn' : 'otpFeedbackOut';
+                const feedbackEl = document.getElementById(feedbackId);
+                const feedbackText = (feedbackEl ? feedbackEl.innerText : '').toLowerCase().trim();
 
-                // 1. Check if already marked (excluding waiting text)
-                const isWaiting = bodyLower.includes('will be available once your faculty generates') ||
-                                  bodyLower.includes('waiting for faculty to generate') ||
-                                  bodyLower.includes('will be enabled after your in otp') ||
-                                  bodyLower.includes('in otp entry will be available');
-
-                if (!isWaiting) {
-                    if (type === 'in') {
-                        if (bodyLower.includes('in attendance has been approved') ||
-                            bodyLower.includes('your in attendance has been approved') ||
-                            bodyLower.includes('in otp approved') ||
-                            bodyLower.includes('in otp submitted') ||
-                            /in\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
-                            /in\s+otp\s+(has\s+been\s+)?approved/i.test(bodyLower)) {
-                            return { status: 'already_marked', reason: 'IN OTP already marked/approved' };
-                        }
-                    } else {
-                        if (bodyLower.includes('out attendance has been approved') ||
-                            bodyLower.includes('your out attendance has been approved') ||
-                            bodyLower.includes('out otp approved') ||
-                            bodyLower.includes('out otp submitted') ||
-                            /out\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
-                            /out\s+otp\s+(has\s+been\s+)?approved/i.test(bodyLower)) {
-                            return { status: 'already_marked', reason: 'OUT OTP already marked/approved' };
-                        }
+                const headerLabel = isTargetIn ? 'IN OTP' : 'OUT OTP';
+                let containerEl = feedbackEl ? feedbackEl.closest('.border, .card, div') : null;
+                if (!containerEl) {
+                    const headerEl = Array.from(document.querySelectorAll('span, div, b, strong, h1, h2, h3, h4, h5, h6'))
+                        .find(el => (el.innerText || '').trim().toUpperCase() === headerLabel);
+                    if (headerEl) {
+                        containerEl = headerEl.closest('.border, .card, div');
                     }
                 }
+                const containerText = (containerEl ? containerEl.innerText : '').toLowerCase().trim();
 
-                // 2. Check form with data-otp-type or data-otp-form
-                const form = document.querySelector(`form[data-otp-form][data-otp-type="${type}" i], form[data-otp-type="${type}" i], form[data-otp-form]`);
+                // 1. Check if already marked / approved for this specific phase
+                const isApproved =
+                    feedbackText.includes('approved') ||
+                    feedbackText.includes('submitted') ||
+                    containerText.includes('submitted') ||
+                    containerText.includes('approved for this session') ||
+                    (isTargetIn && (feedbackText.includes('your in attendance has been approved') || containerText.includes('your in attendance has been approved'))) ||
+                    (!isTargetIn && (feedbackText.includes('out otp approved') || containerText.includes('out otp approved')));
+
+                if (isApproved) {
+                    return { status: 'already_marked', reason: `${headerLabel} already marked/approved` };
+                }
+
+                // 2. Check for active OTP input for this phase
+                let activeInput = null;
+                const form = (containerEl ? containerEl.querySelector('form') : null) ||
+                             document.querySelector(`form[data-otp-type="${type}" i], form[data-otp-form][data-otp-type="${type}" i]`);
                 if (form) {
-                    const input = form.querySelector('input:not([type="hidden"])');
-                    if (input && isVisible(input) && !input.disabled && !input.readOnly) {
-                        return { status: 'open', reason: `Form data-otp-type="${type}" input is active` };
-                    }
-                }
-
-                // 3. Check all inputs by placeholder / name
-                const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
-                for (const inp of allInputs) {
-                    if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
-                    if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
-                    const ph = (inp.placeholder || '').toLowerCase();
-                    const nm = (inp.name || inp.id || '').toLowerCase();
-                    if (type === 'in') {
-                        if (ph.includes('in otp') || nm.includes('in_otp') || nm.includes('inotp') || (ph.includes('otp') && !ph.includes('out') && !nm.includes('out'))) {
-                            return { status: 'open', reason: `Enabled IN OTP input: ${ph || nm}` };
-                        }
-                    } else {
-                        if (ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp')) {
-                            return { status: 'open', reason: `Enabled OUT OTP input: ${ph || nm}` };
-                        }
-                    }
-                }
-
-                // 4. Modal / dialog containers with OTP input
-                const otpContainers = document.querySelectorAll(
-                    '[class*="otp" i], [id*="otp" i], [class*="attendance" i], ' +
-                    '.modal.show, .modal[style*="display: block"], [role="dialog"], .swal2-container, .popup'
-                );
-                for (const c of otpContainers) {
-                    if (!isVisible(c)) continue;
-                    const inp = c.querySelector('input[type="text"], input[type="number"], input[maxlength]');
+                    const inp = form.querySelector('input:not([type="hidden"])');
                     if (inp && isVisible(inp) && !inp.disabled && !inp.readOnly) {
-                        return { status: 'open', reason: `OTP modal container found with active input: ${c.className}` };
+                        activeInput = inp;
                     }
                 }
 
-                // 5. Short OTP-length input fallback
-                for (const inp of allInputs) {
-                    if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
-                    if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
-                    const ph = (inp.placeholder || '').toLowerCase();
-                    if (ph.includes('enter otp') || ph.includes('otp') || inp.maxLength === 6 || inp.maxLength === 4) {
-                        return { status: 'open', reason: `Enabled short OTP input found (maxlength=${inp.maxLength})` };
+                if (!activeInput && containerEl) {
+                    const inps = Array.from(containerEl.querySelectorAll('input:not([type="hidden"])'));
+                    activeInput = inps.find(i => isVisible(i) && !i.disabled && !i.readOnly) || null;
+                }
+
+                if (!activeInput) {
+                    const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
+                    for (const inp of allInputs) {
+                        if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
+                        if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
+                        const ph = (inp.placeholder || '').toLowerCase();
+                        const nm = (inp.name || inp.id || '').toLowerCase();
+                        if (isTargetIn) {
+                            if (ph.includes('in otp') || nm.includes('in_otp') || nm.includes('inotp') || (ph.includes('otp') && !ph.includes('out') && !nm.includes('out'))) {
+                                activeInput = inp;
+                                break;
+                            }
+                        } else {
+                            if (ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp')) {
+                                activeInput = inp;
+                                break;
+                            }
+                        }
                     }
                 }
 
-                return { status: 'waiting', reason: 'Waiting for faculty to generate OTP' };
+                // Modal container fallback
+                if (!activeInput) {
+                    const otpContainers = document.querySelectorAll(
+                        '[class*="otp" i], [id*="otp" i], [class*="attendance" i], ' +
+                        '.modal.show, .modal[style*="display: block"], [role="dialog"], .swal2-container, .popup'
+                    );
+                    for (const c of otpContainers) {
+                        if (!isVisible(c)) continue;
+                        const inp = c.querySelector('input[type="text"], input[type="number"], input[maxlength]');
+                        if (inp && isVisible(inp) && !inp.disabled && !inp.readOnly) {
+                            activeInput = inp;
+                            break;
+                        }
+                    }
+                }
+
+                if (activeInput) {
+                    return { status: 'open', reason: `${headerLabel} input is active and ready` };
+                }
+
+                return { status: 'waiting', reason: `Waiting for faculty to generate ${headerLabel}` };
             }, targetType);
 
             if (check.status === 'already_marked') {
@@ -2395,108 +2400,98 @@ async function getPageAttendanceStatus(page) {
             return rect.width > 0 && rect.height > 0;
         }
 
-        const text = (document.body.innerText || '');
-        const bodyLower = text.toLowerCase();
-        const normalized = bodyLower.replace(/\s+/g, ' ');
+        function inspectPhase(type) {
+            const isTargetIn = type === 'in';
+            const feedbackId = isTargetIn ? 'otpFeedbackIn' : 'otpFeedbackOut';
+            const feedbackEl = document.getElementById(feedbackId);
+            const feedbackText = (feedbackEl ? feedbackEl.innerText : '').toLowerCase().trim();
 
-        // Exclude waiting placeholder text from matching approved
-        const isWaitingIn = bodyLower.includes('will be available once your faculty generates') ||
-                            bodyLower.includes('waiting for faculty to generate') ||
-                            bodyLower.includes('in otp entry will be available');
+            const headerLabel = isTargetIn ? 'IN OTP' : 'OUT OTP';
+            let containerEl = feedbackEl ? feedbackEl.closest('.border, .card, div') : null;
+            if (!containerEl) {
+                const headerEl = Array.from(document.querySelectorAll('span, div, b, strong, h1, h2, h3, h4, h5, h6'))
+                    .find(el => (el.innerText || '').trim().toUpperCase() === headerLabel);
+                if (headerEl) {
+                    containerEl = headerEl.closest('.border, .card, div');
+                }
+            }
+            const containerText = (containerEl ? containerEl.innerText : '').toLowerCase().trim();
 
-        // 1. IN OTP status
-        const inApproved = !isWaitingIn && (
-            normalized.includes('in attendance has been approved') ||
-            normalized.includes('attendance has been approved for this session') ||
-            normalized.includes('your in attendance has been approved') ||
-            normalized.includes('in otp approved') ||
-            normalized.includes('in otp submitted') ||
-            /in\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
-            /in\s+otp\s+(has\s+been\s+)?approved/i.test(bodyLower)
-        );
+            // 1. Is it approved? Checked within its own container/feedback element
+            const isApproved =
+                feedbackText.includes('approved') ||
+                feedbackText.includes('submitted') ||
+                containerText.includes('submitted') ||
+                containerText.includes('approved for this session') ||
+                (isTargetIn && (feedbackText.includes('your in attendance has been approved') || containerText.includes('your in attendance has been approved'))) ||
+                (!isTargetIn && (feedbackText.includes('out otp approved') || containerText.includes('out otp approved')));
 
-        // Helper to find enabled OTP input
-        function findActiveOtpInput(type) {
-            // Priority 1: Check form with data-otp-type
-            const form = document.querySelector(`form[data-otp-form][data-otp-type="${type}" i], form[data-otp-type="${type}" i], form[data-otp-form]`);
+            // 2. Is it open with an active input?
+            let activeInput = null;
+            const form = (containerEl ? containerEl.querySelector('form') : null) ||
+                         document.querySelector(`form[data-otp-type="${type}" i], form[data-otp-form][data-otp-type="${type}" i]`);
             if (form) {
                 const inp = form.querySelector('input:not([type="hidden"])');
-                if (inp && isVisible(inp) && !inp.disabled && !inp.readOnly) return inp;
+                if (inp && isVisible(inp) && !inp.disabled && !inp.readOnly) {
+                    activeInput = inp;
+                }
             }
 
-            // Priority 2: Check inputs by placeholder / name / aria-label
-            const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
-            for (const inp of allInputs) {
-                if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
-                if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
-                const ph = (inp.placeholder || '').toLowerCase();
-                const nm = (inp.name || inp.id || '').toLowerCase();
-                if (type === 'in') {
-                    if (ph.includes('in otp') || nm.includes('in_otp') || nm.includes('inotp') || (ph.includes('otp') && !ph.includes('out') && !nm.includes('out'))) {
-                        return inp;
-                    }
-                } else {
-                    if (ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp')) {
-                        return inp;
+            if (!activeInput && containerEl) {
+                const inps = Array.from(containerEl.querySelectorAll('input:not([type="hidden"])'));
+                activeInput = inps.find(i => isVisible(i) && !i.disabled && !i.readOnly) || null;
+            }
+
+            if (!activeInput) {
+                const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
+                for (const inp of allInputs) {
+                    if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
+                    if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
+                    const ph = (inp.placeholder || '').toLowerCase();
+                    const nm = (inp.name || inp.id || '').toLowerCase();
+                    if (isTargetIn) {
+                        if (ph.includes('in otp') || nm.includes('in_otp') || nm.includes('inotp') || (ph.includes('otp') && !ph.includes('out') && !nm.includes('out'))) {
+                            activeInput = inp;
+                            break;
+                        }
+                    } else {
+                        if (ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp')) {
+                            activeInput = inp;
+                            break;
+                        }
                     }
                 }
             }
 
-            // Priority 3: Fallback for generic OTP inputs if type matches
-            for (const inp of allInputs) {
-                if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
-                if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
-                const ph = (inp.placeholder || '').toLowerCase();
-                if (type === 'in' && (ph.includes('enter otp') || ph.includes('otp') || inp.maxLength === 6 || inp.maxLength === 4)) {
-                    return inp;
-                }
+            const isOpen = !isApproved && !!activeInput;
+
+            // 3. Status text
+            let statusText = isTargetIn ? '⏳ Waiting for faculty to generate' : '⏳ Waiting for faculty to generate OUT OTP';
+            if (isApproved) {
+                const outMatch = (feedbackText + ' ' + containerText).match(/approved on ([^\n\.]+)/i);
+                statusText = outMatch ? `✅ Already done (Approved on ${outMatch[1].trim()})` : '✅ Already done (Approved for this session)';
+            } else if (isOpen) {
+                statusText = '🚨 OPEN NOW for entry!';
+            } else if (containerText.includes('will be enabled after') || feedbackText.includes('will be enabled after')) {
+                statusText = '⏳ Will be enabled after IN OTP entry';
+            } else if (containerText.includes('will be available once') || feedbackText.includes('will be available once')) {
+                statusText = isTargetIn ? '⏳ Waiting for faculty to generate IN OTP' : '⏳ Waiting for faculty to generate OUT OTP';
             }
-            return null;
+
+            return { approved: isApproved, open: isOpen, text: statusText };
         }
 
-        const inInput = findActiveOtpInput('in');
-        const inOpen = !inApproved && !!inInput;
+        const inPhase = inspectPhase('in');
+        const outPhase = inspectPhase('out');
 
-        let inText = '⏳ Waiting for faculty to generate';
-        if (inApproved) {
-            inText = '✅ Already done (Approved for this session)';
-        } else if (inOpen) {
-            inText = '🚨 OPEN NOW for entry!';
-        } else if (text.includes('IN OTP entry will be available once your faculty generates it')) {
-            inText = '⏳ Waiting for faculty to generate IN OTP';
-        }
-
-        // 2. OUT OTP status
-        const isWaitingOut = bodyLower.includes('out otp will be enabled after your in otp') ||
-                             bodyLower.includes('out otp entry will be available once your faculty generates') ||
-                             bodyLower.includes('will be enabled after in otp entry');
-
-        const outMatch = text.match(/OUT OTP approved on ([^\n\.]+)/i);
-        const outApproved = !isWaitingOut && (
-            !!outMatch ||
-            bodyLower.includes('out attendance has been approved') ||
-            bodyLower.includes('your out attendance has been approved') ||
-            bodyLower.includes('out otp approved') ||
-            bodyLower.includes('out otp submitted') ||
-            /out\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
-            /out\s+otp\s+(has\s+been\s+)?approved/i.test(bodyLower)
-        );
-
-        const outInput = findActiveOtpInput('out');
-        const outOpen = !outApproved && !!outInput;
-
-        let outText = '⏳ Waiting for faculty to generate';
-        if (outApproved) {
-            outText = outMatch ? `✅ Already done (Approved on ${outMatch[1].trim()})` : '✅ Already done (Approved for this session)';
-        } else if (outOpen) {
-            outText = '🚨 OPEN NOW for entry!';
-        } else if (text.includes('OUT OTP will be enabled after your IN OTP entry')) {
-            outText = '⏳ Will be enabled after IN OTP entry';
-        } else if (text.includes('OUT OTP entry will be available once your faculty generates it')) {
-            outText = '⏳ Waiting for faculty to generate OUT OTP';
-        }
-
-        return { inApproved, inOpen, inText, outApproved, outOpen, outText };
+        return {
+            inApproved: inPhase.approved,
+            inOpen: inPhase.open,
+            inText: inPhase.text,
+            outApproved: outPhase.approved,
+            outOpen: outPhase.open,
+            outText: outPhase.text
+        };
     });
 }
 
