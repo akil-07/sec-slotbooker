@@ -1834,37 +1834,93 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
     while (Date.now() < deadline) {
         try {
             const check = await page.evaluate((type) => {
-                const bodyText = (document.body.innerText || '').toLowerCase();
+                function isVisible(el) {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                }
 
-                // 1. Check if already approved / marked
-                if (type === 'in') {
-                    if (bodyText.includes('in attendance has been approved') || bodyText.includes('in otp approved') || bodyText.includes('in otp submitted')) {
-                        return { status: 'already_marked', reason: 'IN OTP already marked/approved' };
-                    }
-                } else {
-                    if (bodyText.includes('out otp approved') || bodyText.includes('out attendance has been approved') || bodyText.includes('out otp submitted')) {
-                        return { status: 'already_marked', reason: 'OUT OTP already marked/approved' };
+                const bodyText = (document.body.innerText || '');
+                const bodyLower = bodyText.toLowerCase();
+
+                // 1. Check if already marked (excluding waiting text)
+                const isWaiting = bodyLower.includes('will be available once your faculty generates') ||
+                                  bodyLower.includes('waiting for faculty to generate') ||
+                                  bodyLower.includes('will be enabled after your in otp') ||
+                                  bodyLower.includes('in otp entry will be available');
+
+                if (!isWaiting) {
+                    if (type === 'in') {
+                        if (bodyLower.includes('in attendance has been approved') ||
+                            bodyLower.includes('your in attendance has been approved') ||
+                            bodyLower.includes('in otp approved') ||
+                            bodyLower.includes('in otp submitted') ||
+                            /in\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
+                            /in\s+otp\s+(has\s+been\s+)?approved/i.test(bodyLower)) {
+                            return { status: 'already_marked', reason: 'IN OTP already marked/approved' };
+                        }
+                    } else {
+                        if (bodyLower.includes('out attendance has been approved') ||
+                            bodyLower.includes('your out attendance has been approved') ||
+                            bodyLower.includes('out otp approved') ||
+                            bodyLower.includes('out otp submitted') ||
+                            /out\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
+                            /out\s+otp\s+(has\s+been\s+)?approved/i.test(bodyLower)) {
+                            return { status: 'already_marked', reason: 'OUT OTP already marked/approved' };
+                        }
                     }
                 }
 
-                // 2. Check Saveetha exact form: form[data-otp-form][data-otp-type="in" or "out"]
-                const otpForms = Array.from(document.querySelectorAll('form[data-otp-form], form'));
-                for (const form of otpForms) {
-                    const fType = (form.getAttribute('data-otp-type') || '').toLowerCase();
-                    if (fType && fType !== type) continue; // Skip other phase form
+                // 2. Check form with data-otp-type or data-otp-form
+                const form = document.querySelector(`form[data-otp-form][data-otp-type="${type}" i], form[data-otp-type="${type}" i], form[data-otp-form]`);
+                if (form) {
                     const input = form.querySelector('input:not([type="hidden"])');
-                    if (input && !input.disabled && input.offsetParent !== null) {
-                        return { status: 'open', reason: `Saveetha form[data-otp-type="${fType || type}"] is open and active` };
+                    if (input && isVisible(input) && !input.disabled && !input.readOnly) {
+                        return { status: 'open', reason: `Form data-otp-type="${type}" input is active` };
                     }
                 }
 
-                // 3. Fallback: check any visible text/number input on the page
+                // 3. Check all inputs by placeholder / name
                 const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
                 for (const inp of allInputs) {
-                    if (inp.offsetParent === null || inp.disabled || inp.readOnly) continue;
-                    // Ignore search or feedback inputs
+                    if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
                     if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
-                    return { status: 'open', reason: `Enabled input found: placeholder="${inp.placeholder}", name="${inp.name}"` };
+                    const ph = (inp.placeholder || '').toLowerCase();
+                    const nm = (inp.name || inp.id || '').toLowerCase();
+                    if (type === 'in') {
+                        if (ph.includes('in otp') || nm.includes('in_otp') || nm.includes('inotp') || (ph.includes('otp') && !ph.includes('out') && !nm.includes('out'))) {
+                            return { status: 'open', reason: `Enabled IN OTP input: ${ph || nm}` };
+                        }
+                    } else {
+                        if (ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp')) {
+                            return { status: 'open', reason: `Enabled OUT OTP input: ${ph || nm}` };
+                        }
+                    }
+                }
+
+                // 4. Modal / dialog containers with OTP input
+                const otpContainers = document.querySelectorAll(
+                    '[class*="otp" i], [id*="otp" i], [class*="attendance" i], ' +
+                    '.modal.show, .modal[style*="display: block"], [role="dialog"], .swal2-container, .popup'
+                );
+                for (const c of otpContainers) {
+                    if (!isVisible(c)) continue;
+                    const inp = c.querySelector('input[type="text"], input[type="number"], input[maxlength]');
+                    if (inp && isVisible(inp) && !inp.disabled && !inp.readOnly) {
+                        return { status: 'open', reason: `OTP modal container found with active input: ${c.className}` };
+                    }
+                }
+
+                // 5. Short OTP-length input fallback
+                for (const inp of allInputs) {
+                    if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
+                    if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
+                    const ph = (inp.placeholder || '').toLowerCase();
+                    if (ph.includes('enter otp') || ph.includes('otp') || inp.maxLength === 6 || inp.maxLength === 4) {
+                        return { status: 'open', reason: `Enabled short OTP input found (maxlength=${inp.maxLength})` };
+                    }
                 }
 
                 return { status: 'waiting', reason: 'Waiting for faculty to generate OTP' };
@@ -1884,7 +1940,7 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
             console.log(`[OTP] ${otpLabel} not yet open (${secsLeft}s left). Reloading page in 5s...`);
             await page.waitForTimeout(5000);
 
-            // CRITICAL: Reload page so Django server-rendered HTML reflects when faculty generates OTP!
+            // Reload page so Django server-rendered HTML reflects when faculty generates OTP
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
 
         } catch (e) {
@@ -1899,42 +1955,96 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
 
 async function enterOtpOnPage(page, otp, phase = 'start') {
     const targetType = phase === 'start' ? 'in' : 'out';
-    console.log(`[OTP] Entering ${targetType.toUpperCase()} OTP: ${otp}`);
+    const otpLabel = phase === 'start' ? 'IN' : 'OUT';
+    console.log(`[OTP] Entering ${otpLabel} OTP: ${otp}`);
 
-    // Try finding the specific Saveetha OTP form first
-    const formLocator = page.locator(`form[data-otp-form][data-otp-type="${targetType}" i]`).first();
-    let input = null;
-    let submitBtn = null;
+    const phaseSelectors = phase === 'start'
+        ? [
+            'input[placeholder*="Enter IN OTP" i]',
+            'input[placeholder*="IN OTP" i]',
+            'input[name*="in_otp" i]',
+            'input[name*="inotp" i]',
+            `form[data-otp-type="in" i] input:not([type="hidden"])`,
+            `form[data-otp-form][data-otp-type="in" i] input:not([type="hidden"])`
+          ]
+        : [
+            'input[placeholder*="Enter OUT OTP" i]',
+            'input[placeholder*="OUT OTP" i]',
+            'input[name*="out_otp" i]',
+            'input[name*="outotp" i]',
+            `form[data-otp-type="out" i] input:not([type="hidden"])`,
+            `form[data-otp-form][data-otp-type="out" i] input:not([type="hidden"])`
+          ];
 
-    if (await formLocator.count() > 0) {
-        input = formLocator.locator('input:not([type="hidden"])').first();
-        submitBtn = formLocator.locator('button[type="submit"], button').first();
+    const otpInputSelectors = [
+        ...phaseSelectors,
+        `form[data-otp-form][data-otp-type="${targetType}" i] input:not([type="hidden"])`,
+        'form[data-otp-form] input:not([type="hidden"])',
+        'input[placeholder*="Enter OTP" i]',
+        'input[placeholder*="OTP" i]',
+        'input[name*="otp" i]',
+        'input[maxlength="6"]',
+        'input[maxlength="4"]',
+        '[class*="otp" i] input:not([type="hidden"])',
+        '[id*="otp" i] input:not([type="hidden"])',
+        '.modal input[type="text"]',
+        '.modal input[type="number"]',
+        '[role="dialog"] input[type="text"]',
+        '[role="dialog"] input[type="number"]',
+        '.swal2-container input',
+        'input[type="text"]:visible',
+        'input[type="number"]:visible'
+    ];
+
+    let inputLocator = null;
+    for (const sel of otpInputSelectors) {
+        const loc = page.locator(sel).first();
+        if (await loc.count() > 0) {
+            const isVis = await loc.isVisible().catch(() => false);
+            if (isVis) {
+                inputLocator = loc;
+                console.log(`[OTP] Found input with selector: ${sel}`);
+                break;
+            }
+        }
     }
 
-    // Fallback: any visible input
-    if (!input || !(await input.count())) {
-        input = page.locator('form[data-otp-form] input:not([type="hidden"]), input[type="text"]:visible, input[type="number"]:visible').first();
-        submitBtn = page.locator('form[data-otp-form] button[type="submit"], button:has-text("Submit"):visible, button[type="submit"]:visible').first();
-    }
-
-    if (!input || !(await input.count())) {
+    if (!inputLocator) {
         console.log('[OTP] Could not find OTP input field on page.');
         return { success: false, reason: 'OTP input field not found on page' };
     }
 
-    await input.click();
-    await input.fill('');
-    await input.fill(otp);
+    await inputLocator.click();
+    await inputLocator.fill('');
+    await inputLocator.fill(otp);
     await new Promise(r => setTimeout(r, 500));
 
-    if (submitBtn && (await submitBtn.count())) {
-        await submitBtn.click();
-        console.log('[OTP] Clicked submit button.');
-    } else {
-        await input.press('Enter');
-        console.log('[OTP] Pressed Enter.');
+    // Submit button selectors
+    const submitSelectors = [
+        `form[data-otp-type="${targetType}" i] button[type="submit"]`,
+        `form[data-otp-type="${targetType}" i] button`,
+        'form[data-otp-form] button[type="submit"]',
+        'form[data-otp-form] button',
+        'button:has-text("Submit")',
+        'button:has-text("Confirm")',
+        'button:has-text("Verify")',
+        'button:has-text("OK")',
+        '.swal2-confirm',
+        'button[type="submit"]',
+        'input[type="submit"]'
+    ];
+
+    for (const sel of submitSelectors) {
+        const loc = page.locator(sel).first();
+        if (await loc.count() > 0 && await loc.isVisible().catch(() => false)) {
+            await loc.click();
+            console.log(`[OTP] Clicked submit button: ${sel}`);
+            return { success: true };
+        }
     }
 
+    await inputLocator.press('Enter');
+    console.log('[OTP] Pressed Enter.');
     return { success: true };
 }
 
@@ -2136,33 +2246,39 @@ async function findAttendanceTarget(page, kw) {
     const currentIstMins = nowIST.getHours() * 60 + nowIST.getMinutes();
 
     return await page.evaluate(({ targetKw, nowMins }) => {
-        const links = Array.from(document.querySelectorAll('a')).filter(a => {
-            const h = a.getAttribute('href') || '';
-            return h.includes('attendance_process') || h.includes('event_attendance_process');
+        const clickable = Array.from(document.querySelectorAll('a, button, input[type="button"]')).filter(el => {
+            const h = (el.getAttribute('href') || '').toLowerCase();
+            const t = (el.innerText || el.value || '').trim().toLowerCase();
+            return h.includes('attendance_process') ||
+                   h.includes('event_attendance_process') ||
+                   (t.includes('view') && t.includes('attendance')) ||
+                   t === 'view attendance' ||
+                   t === 'view event';
         });
-        if (!links.length) return null;
 
-        function getCardText(a) {
-            let el = a.parentElement;
-            while (el && el !== document.body) {
-                if (/\d{1,2}:\d{2}\s*(?:AM|PM)/i.test(el.innerText)) {
-                    return el.innerText;
+        if (!clickable.length) return null;
+
+        function getCardText(el) {
+            let curr = el.parentElement;
+            while (curr && curr !== document.body) {
+                if (/\d{1,2}:\d{2}\s*(?:AM|PM)/i.test(curr.innerText)) {
+                    return curr.innerText;
                 }
-                el = el.parentElement;
+                curr = curr.parentElement;
             }
-            const fallback = a.closest('tr, .card') || a.parentElement;
+            const fallback = el.closest('tr, .card, div') || el.parentElement;
             return fallback ? fallback.innerText : '';
         }
 
-        const items = links.map(a => {
-            const fullText = getCardText(a);
+        const items = clickable.map(el => {
+            const fullText = getCardText(el);
             const lines = fullText.split('\n').map(l => l.trim()).filter(Boolean);
             const name = lines[0] || 'Class';
 
             // Parse time range from card text
             let startMin = null;
             let endMin = null;
-            const m = fullText.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[-–]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+            const m = fullText.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[-–—]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
             if (m) {
                 let sh = parseInt(m[1], 10);
                 let startAmpm = m[3] ? m[3].toUpperCase() : null;
@@ -2186,13 +2302,15 @@ async function findAttendanceTarget(page, kw) {
             }
 
             return {
-                href: a.getAttribute('href'),
+                href: el.getAttribute('href') || (el.tagName === 'A' ? el.href : null),
                 name,
                 fullText,
                 startMin,
                 endMin
             };
-        });
+        }).filter(item => !!item.href);
+
+        if (!items.length) return null;
 
         // Strategy A: Match by keyword/subject in card text
         if (targetKw) {
@@ -2200,6 +2318,17 @@ async function findAttendanceTarget(page, kw) {
             for (const item of items) {
                 if (item.fullText.toLowerCase().includes(kwLow)) {
                     return item;
+                }
+            }
+            // Fuzzy word match
+            const words = kwLow.split(/[^a-z0-9]/).filter(w => w.length > 2);
+            if (words.length > 0) {
+                for (const item of items) {
+                    const itemLow = item.fullText.toLowerCase();
+                    const matchCount = words.filter(w => itemLow.includes(w)).length;
+                    if (matchCount >= Math.ceil(words.length * 0.5)) {
+                        return item;
+                    }
                 }
             }
         }
@@ -2256,32 +2385,77 @@ async function findAttendanceTarget(page, kw) {
     }, { targetKw: kw, nowMins: currentIstMins });
 }
 
-// ─── Inspect Real-time Status of Attendance Page ──────────────────────────────
-
 async function getPageAttendanceStatus(page) {
     return await page.evaluate(() => {
+        function isVisible(el) {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+        }
+
         const text = (document.body.innerText || '');
         const bodyLower = text.toLowerCase();
-
         const normalized = bodyLower.replace(/\s+/g, ' ');
 
-        // 1. IN OTP status
-        const inApproved = normalized.includes('in attendance has been approved') ||
-                           normalized.includes('attendance has been approved for this session') ||
-                           normalized.includes('your in attendance has been approved') ||
-                           normalized.includes('approved for this session') ||
-                           normalized.includes('share your feedback to close the attendance process') ||
-                           normalized.includes('overall rating for today') ||
-                           normalized.includes('in otp approved') ||
-                           normalized.includes('in otp submitted') ||
-                           /in\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
-                           /approved\s+for\s+this\s+session/i.test(bodyLower) ||
-                           /your\s+in\s+attendance/i.test(bodyLower) ||
-                           /in otp[\s\S]{0,100}submitted/i.test(bodyLower);
+        // Exclude waiting placeholder text from matching approved
+        const isWaitingIn = bodyLower.includes('will be available once your faculty generates') ||
+                            bodyLower.includes('waiting for faculty to generate') ||
+                            bodyLower.includes('in otp entry will be available');
 
-        const inForm = document.querySelector('form[data-otp-form][data-otp-type="in"], form[data-otp-type="in"]');
-        const inInput = inForm ? inForm.querySelector('input:not([type="hidden"])') : null;
-        const inOpen = !!(inInput && !inInput.disabled && inInput.offsetParent !== null);
+        // 1. IN OTP status
+        const inApproved = !isWaitingIn && (
+            normalized.includes('in attendance has been approved') ||
+            normalized.includes('attendance has been approved for this session') ||
+            normalized.includes('your in attendance has been approved') ||
+            normalized.includes('in otp approved') ||
+            normalized.includes('in otp submitted') ||
+            /in\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
+            /in\s+otp\s+(has\s+been\s+)?approved/i.test(bodyLower)
+        );
+
+        // Helper to find enabled OTP input
+        function findActiveOtpInput(type) {
+            // Priority 1: Check form with data-otp-type
+            const form = document.querySelector(`form[data-otp-form][data-otp-type="${type}" i], form[data-otp-type="${type}" i], form[data-otp-form]`);
+            if (form) {
+                const inp = form.querySelector('input:not([type="hidden"])');
+                if (inp && isVisible(inp) && !inp.disabled && !inp.readOnly) return inp;
+            }
+
+            // Priority 2: Check inputs by placeholder / name / aria-label
+            const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
+            for (const inp of allInputs) {
+                if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
+                if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
+                const ph = (inp.placeholder || '').toLowerCase();
+                const nm = (inp.name || inp.id || '').toLowerCase();
+                if (type === 'in') {
+                    if (ph.includes('in otp') || nm.includes('in_otp') || nm.includes('inotp') || (ph.includes('otp') && !ph.includes('out') && !nm.includes('out'))) {
+                        return inp;
+                    }
+                } else {
+                    if (ph.includes('out otp') || nm.includes('out_otp') || nm.includes('outotp')) {
+                        return inp;
+                    }
+                }
+            }
+
+            // Priority 3: Fallback for generic OTP inputs if type matches
+            for (const inp of allInputs) {
+                if (!isVisible(inp) || inp.disabled || inp.readOnly) continue;
+                if (inp.id === 'feedbackRating' || inp.name === 'comments' || (inp.placeholder || '').toLowerCase().includes('search')) continue;
+                const ph = (inp.placeholder || '').toLowerCase();
+                if (type === 'in' && (ph.includes('enter otp') || ph.includes('otp') || inp.maxLength === 6 || inp.maxLength === 4)) {
+                    return inp;
+                }
+            }
+            return null;
+        }
+
+        const inInput = findActiveOtpInput('in');
+        const inOpen = !inApproved && !!inInput;
 
         let inText = '⏳ Waiting for faculty to generate';
         if (inApproved) {
@@ -2293,16 +2467,23 @@ async function getPageAttendanceStatus(page) {
         }
 
         // 2. OUT OTP status
-        const outMatch = text.match(/OUT OTP approved on ([^\n\.]+)/i);
-        const outApproved = !!outMatch ||
-                            bodyLower.includes('out attendance has been approved') ||
-                            bodyLower.includes('out otp approved') ||
-                            bodyLower.includes('out otp submitted') ||
-                            /out otp[\s\S]{0,100}submitted/i.test(bodyLower);
+        const isWaitingOut = bodyLower.includes('out otp will be enabled after your in otp') ||
+                             bodyLower.includes('out otp entry will be available once your faculty generates') ||
+                             bodyLower.includes('will be enabled after in otp entry');
 
-        const outForm = document.querySelector('form[data-otp-form][data-otp-type="out"], form[data-otp-type="out"]');
-        const outInput = outForm ? outForm.querySelector('input:not([type="hidden"])') : null;
-        const outOpen = !!(outInput && !outInput.disabled && outInput.offsetParent !== null);
+        const outMatch = text.match(/OUT OTP approved on ([^\n\.]+)/i);
+        const outApproved = !isWaitingOut && (
+            !!outMatch ||
+            bodyLower.includes('out attendance has been approved') ||
+            bodyLower.includes('your out attendance has been approved') ||
+            bodyLower.includes('out otp approved') ||
+            bodyLower.includes('out otp submitted') ||
+            /out\s+attendance\s+(has\s+been\s+)?approved/i.test(bodyLower) ||
+            /out\s+otp\s+(has\s+been\s+)?approved/i.test(bodyLower)
+        );
+
+        const outInput = findActiveOtpInput('out');
+        const outOpen = !outApproved && !!outInput;
 
         let outText = '⏳ Waiting for faculty to generate';
         if (outApproved) {
@@ -2318,8 +2499,6 @@ async function getPageAttendanceStatus(page) {
         return { inApproved, inOpen, inText, outApproved, outOpen, outText };
     });
 }
-
-// ─── Instant Attendance Status Snapshot ───────────────────────────────────────
 
 async function checkAttendanceStatus(session, targetKeyword, chatId = CHAT_ID) {
     if (!isSuperAdmin(chatId)) {
