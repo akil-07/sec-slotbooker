@@ -1,4 +1,4 @@
-﻿process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason, promise) => {
     console.error('UNHANDLED REJECTION:', reason);
 });
 process.on('uncaughtException', (error) => {
@@ -1843,48 +1843,96 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
                 }
 
                 const isTargetIn = type === 'in';
-                const feedbackId = isTargetIn ? 'otpFeedbackIn' : 'otpFeedbackOut';
-                const feedbackEl = document.getElementById(feedbackId);
-                const feedbackText = (feedbackEl ? feedbackEl.innerText : '').toLowerCase().trim();
-
                 const headerLabel = isTargetIn ? 'IN OTP' : 'OUT OTP';
-                let containerEl = feedbackEl ? feedbackEl.closest('.border, .card, div') : null;
-                if (!containerEl) {
-                    const headerEl = Array.from(document.querySelectorAll('span, div, b, strong, h1, h2, h3, h4, h5, h6'))
-                        .find(el => (el.innerText || '').trim().toUpperCase() === headerLabel);
-                    if (headerEl) {
-                        containerEl = headerEl.closest('.border, .card, div');
+                const otherLabel = isTargetIn ? 'OUT OTP' : 'IN OTP';
+
+                // 1. Text-range slicing across document.body.innerText
+                const bodyText = (document.body ? document.body.innerText : '') || '';
+                const inRegex = /\bIN\s+OTP\b/i;
+                const outRegex = /\bOUT\s+OTP\b/i;
+                const feedbackRegex = /\bClass\s+Feedback\b|\bFeedback\b/i;
+
+                const inMatch = inRegex.exec(bodyText);
+                const outMatch = outRegex.exec(bodyText);
+                const feedbackMatch = feedbackRegex.exec(bodyText);
+
+                const inPos = inMatch ? inMatch.index : -1;
+                const outPos = outMatch ? outMatch.index : -1;
+                const feedbackPos = feedbackMatch ? feedbackMatch.index : -1;
+
+                let sliceText = '';
+                if (isTargetIn) {
+                    if (inPos !== -1) {
+                        const endPos = (outPos > inPos) ? outPos : (feedbackPos > inPos ? feedbackPos : inPos + 1500);
+                        sliceText = bodyText.substring(inPos, endPos);
+                    }
+                } else {
+                    if (outPos !== -1) {
+                        const endPos = (feedbackPos > outPos) ? feedbackPos : outPos + 1500;
+                        sliceText = bodyText.substring(outPos, endPos);
                     }
                 }
-                const containerText = (containerEl ? containerEl.innerText : '').toLowerCase().trim();
 
-                // 1. Check if already marked / approved for this specific phase
+                // 2. DOM-based container isolation: walk up until parent contains the other phase
+                const allEls = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, b, strong, span, div, p, label'));
+                const headerEl = allEls.find(el => {
+                    const t = (el.innerText || '').trim().toUpperCase();
+                    return t === headerLabel || t.startsWith(headerLabel + '\n');
+                });
+
+                let containerEl = null;
+                if (headerEl) {
+                    let curr = headerEl;
+                    while (curr && curr.parentElement && curr.parentElement !== document.body && curr.parentElement !== document.documentElement) {
+                        const pText = (curr.parentElement.innerText || '').toUpperCase();
+                        if (pText.includes(otherLabel)) {
+                            containerEl = curr;
+                            break;
+                        }
+                        curr = curr.parentElement;
+                        containerEl = curr;
+                    }
+                }
+
+                const containerText = (containerEl ? containerEl.innerText : '');
+                const combinedText = (containerText + '\n' + sliceText).toLowerCase();
+
+                // 3. Check if already marked / approved for this specific phase
                 const isApproved =
-                    feedbackText.includes('approved') ||
-                    feedbackText.includes('submitted') ||
-                    containerText.includes('submitted') ||
-                    containerText.includes('approved for this session') ||
-                    (isTargetIn && (feedbackText.includes('your in attendance has been approved') || containerText.includes('your in attendance has been approved'))) ||
-                    (!isTargetIn && (feedbackText.includes('out otp approved') || containerText.includes('out otp approved')));
+                    combinedText.includes('your in attendance has been approved') ||
+                    combinedText.includes('your out attendance has been approved') ||
+                    combinedText.includes('approved for this session') ||
+                    combinedText.includes('attendance has been approved') ||
+                    (isTargetIn && (
+                        combinedText.includes('in attendance has been approved') ||
+                        combinedText.includes('in otp approved') ||
+                        combinedText.includes('in otp submitted') ||
+                        combinedText.includes('in approved')
+                    )) ||
+                    (!isTargetIn && (
+                        combinedText.includes('out attendance has been approved') ||
+                        combinedText.includes('out otp approved') ||
+                        combinedText.includes('out otp submitted') ||
+                        combinedText.includes('out approved')
+                    ));
 
                 if (isApproved) {
                     return { status: 'already_marked', reason: `${headerLabel} already marked/approved` };
                 }
 
-                // 2. Check for active OTP input for this phase
+                // 4. Check for active OTP input for this phase
                 let activeInput = null;
-                const form = (containerEl ? containerEl.querySelector('form') : null) ||
-                             document.querySelector(`form[data-otp-type="${type}" i], form[data-otp-form][data-otp-type="${type}" i]`);
-                if (form) {
-                    const inp = form.querySelector('input:not([type="hidden"])');
-                    if (inp && isVisible(inp) && !inp.disabled && !inp.readOnly) {
-                        activeInput = inp;
-                    }
+                if (containerEl) {
+                    const inps = Array.from(containerEl.querySelectorAll('input:not([type="hidden"])'));
+                    activeInput = inps.find(i => isVisible(i) && !i.disabled && !i.readOnly && i.id !== 'feedbackRating' && i.name !== 'comments') || null;
                 }
 
-                if (!activeInput && containerEl) {
-                    const inps = Array.from(containerEl.querySelectorAll('input:not([type="hidden"])'));
-                    activeInput = inps.find(i => isVisible(i) && !i.disabled && !i.readOnly) || null;
+                if (!activeInput) {
+                    const form = document.querySelector(`form[data-otp-type="${type}" i], form[data-otp-form][data-otp-type="${type}" i]`);
+                    if (form) {
+                        const inps = Array.from(form.querySelectorAll('input:not([type="hidden"])'));
+                        activeInput = inps.find(i => isVisible(i) && !i.disabled && !i.readOnly) || null;
+                    }
                 }
 
                 if (!activeInput) {
@@ -1905,6 +1953,21 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
                                 break;
                             }
                         }
+                    }
+                }
+
+                // 5. Fallback: single visible candidate input on page
+                if (!activeInput) {
+                    const candidateInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])')).filter(inp => {
+                        if (!isVisible(inp) || inp.disabled || inp.readOnly) return false;
+                        if (inp.id === 'feedbackRating' || inp.name === 'comments') return false;
+                        const card = inp.closest('form, div');
+                        const cText = (card ? card.innerText : '').toLowerCase();
+                        if (cText.includes('class feedback') || cText.includes('overall rating')) return false;
+                        return true;
+                    });
+                    if (candidateInputs.length === 1) {
+                        activeInput = candidateInputs[0];
                     }
                 }
 
@@ -2402,44 +2465,92 @@ async function getPageAttendanceStatus(page) {
 
         function inspectPhase(type) {
             const isTargetIn = type === 'in';
-            const feedbackId = isTargetIn ? 'otpFeedbackIn' : 'otpFeedbackOut';
-            const feedbackEl = document.getElementById(feedbackId);
-            const feedbackText = (feedbackEl ? feedbackEl.innerText : '').toLowerCase().trim();
-
             const headerLabel = isTargetIn ? 'IN OTP' : 'OUT OTP';
-            let containerEl = feedbackEl ? feedbackEl.closest('.border, .card, div') : null;
-            if (!containerEl) {
-                const headerEl = Array.from(document.querySelectorAll('span, div, b, strong, h1, h2, h3, h4, h5, h6'))
-                    .find(el => (el.innerText || '').trim().toUpperCase() === headerLabel);
-                if (headerEl) {
-                    containerEl = headerEl.closest('.border, .card, div');
+            const otherLabel = isTargetIn ? 'OUT OTP' : 'IN OTP';
+
+            // 1. Text-range slicing across document.body.innerText
+            const bodyText = (document.body ? document.body.innerText : '') || '';
+            const inRegex = /\bIN\s+OTP\b/i;
+            const outRegex = /\bOUT\s+OTP\b/i;
+            const feedbackRegex = /\bClass\s+Feedback\b|\bFeedback\b/i;
+
+            const inMatch = inRegex.exec(bodyText);
+            const outMatch = outRegex.exec(bodyText);
+            const feedbackMatch = feedbackRegex.exec(bodyText);
+
+            const inPos = inMatch ? inMatch.index : -1;
+            const outPos = outMatch ? outMatch.index : -1;
+            const feedbackPos = feedbackMatch ? feedbackMatch.index : -1;
+
+            let sliceText = '';
+            if (isTargetIn) {
+                if (inPos !== -1) {
+                    const endPos = (outPos > inPos) ? outPos : (feedbackPos > inPos ? feedbackPos : inPos + 1500);
+                    sliceText = bodyText.substring(inPos, endPos);
+                }
+            } else {
+                if (outPos !== -1) {
+                    const endPos = (feedbackPos > outPos) ? feedbackPos : outPos + 1500;
+                    sliceText = bodyText.substring(outPos, endPos);
                 }
             }
-            const containerText = (containerEl ? containerEl.innerText : '').toLowerCase().trim();
 
-            // 1. Is it approved? Checked within its own container/feedback element
+            // 2. DOM-based container isolation: walk up until parent contains the other phase
+            const allEls = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, b, strong, span, div, p, label'));
+            const headerEl = allEls.find(el => {
+                const t = (el.innerText || '').trim().toUpperCase();
+                return t === headerLabel || t.startsWith(headerLabel + '\n');
+            });
+
+            let containerEl = null;
+            if (headerEl) {
+                let curr = headerEl;
+                while (curr && curr.parentElement && curr.parentElement !== document.body && curr.parentElement !== document.documentElement) {
+                    const pText = (curr.parentElement.innerText || '').toUpperCase();
+                    if (pText.includes(otherLabel)) {
+                        containerEl = curr;
+                        break;
+                    }
+                    curr = curr.parentElement;
+                    containerEl = curr;
+                }
+            }
+
+            const containerText = (containerEl ? containerEl.innerText : '');
+            const combinedText = (containerText + '\n' + sliceText).toLowerCase();
+
+            // 3. Is it approved?
             const isApproved =
-                feedbackText.includes('approved') ||
-                feedbackText.includes('submitted') ||
-                containerText.includes('submitted') ||
-                containerText.includes('approved for this session') ||
-                (isTargetIn && (feedbackText.includes('your in attendance has been approved') || containerText.includes('your in attendance has been approved'))) ||
-                (!isTargetIn && (feedbackText.includes('out otp approved') || containerText.includes('out otp approved')));
+                combinedText.includes('your in attendance has been approved') ||
+                combinedText.includes('your out attendance has been approved') ||
+                combinedText.includes('approved for this session') ||
+                combinedText.includes('attendance has been approved') ||
+                (isTargetIn && (
+                    combinedText.includes('in attendance has been approved') ||
+                    combinedText.includes('in otp approved') ||
+                    combinedText.includes('in otp submitted') ||
+                    combinedText.includes('in approved')
+                )) ||
+                (!isTargetIn && (
+                    combinedText.includes('out attendance has been approved') ||
+                    combinedText.includes('out otp approved') ||
+                    combinedText.includes('out otp submitted') ||
+                    combinedText.includes('out approved')
+                ));
 
-            // 2. Is it open with an active input?
+            // 4. Is it open with an active input?
             let activeInput = null;
-            const form = (containerEl ? containerEl.querySelector('form') : null) ||
-                         document.querySelector(`form[data-otp-type="${type}" i], form[data-otp-form][data-otp-type="${type}" i]`);
-            if (form) {
-                const inp = form.querySelector('input:not([type="hidden"])');
-                if (inp && isVisible(inp) && !inp.disabled && !inp.readOnly) {
-                    activeInput = inp;
-                }
+            if (containerEl) {
+                const inps = Array.from(containerEl.querySelectorAll('input:not([type="hidden"])'));
+                activeInput = inps.find(i => isVisible(i) && !i.disabled && !i.readOnly && i.id !== 'feedbackRating' && i.name !== 'comments') || null;
             }
 
-            if (!activeInput && containerEl) {
-                const inps = Array.from(containerEl.querySelectorAll('input:not([type="hidden"])'));
-                activeInput = inps.find(i => isVisible(i) && !i.disabled && !i.readOnly) || null;
+            if (!activeInput) {
+                const form = document.querySelector(`form[data-otp-type="${type}" i], form[data-otp-form][data-otp-type="${type}" i]`);
+                if (form) {
+                    const inps = Array.from(form.querySelectorAll('input:not([type="hidden"])'));
+                    activeInput = inps.find(i => isVisible(i) && !i.disabled && !i.readOnly) || null;
+                }
             }
 
             if (!activeInput) {
@@ -2463,18 +2574,33 @@ async function getPageAttendanceStatus(page) {
                 }
             }
 
+            // 5. Fallback: single visible candidate input on page
+            if (!activeInput) {
+                const candidateInputs = Array.from(document.querySelectorAll('input:not([type="hidden"])')).filter(inp => {
+                    if (!isVisible(inp) || inp.disabled || inp.readOnly) return false;
+                    if (inp.id === 'feedbackRating' || inp.name === 'comments') return false;
+                    const card = inp.closest('form, div');
+                    const cText = (card ? card.innerText : '').toLowerCase();
+                    if (cText.includes('class feedback') || cText.includes('overall rating')) return false;
+                    return true;
+                });
+                if (candidateInputs.length === 1) {
+                    activeInput = candidateInputs[0];
+                }
+            }
+
             const isOpen = !isApproved && !!activeInput;
 
-            // 3. Status text
+            // 6. Status text
             let statusText = isTargetIn ? '⏳ Waiting for faculty to generate' : '⏳ Waiting for faculty to generate OUT OTP';
             if (isApproved) {
-                const outMatch = (feedbackText + ' ' + containerText).match(/approved on ([^\n\.]+)/i);
-                statusText = outMatch ? `✅ Already done (Approved on ${outMatch[1].trim()})` : '✅ Already done (Approved for this session)';
+                const approvedMatch = combinedText.match(/approved on ([^\n\.]+)/i);
+                statusText = approvedMatch ? `✅ Already done (Approved on ${approvedMatch[1].trim()})` : '✅ Already done (Approved for this session)';
             } else if (isOpen) {
                 statusText = '🚨 OPEN NOW for entry!';
-            } else if (containerText.includes('will be enabled after') || feedbackText.includes('will be enabled after')) {
+            } else if (combinedText.includes('will be enabled after') || combinedText.includes('after your in otp')) {
                 statusText = '⏳ Will be enabled after IN OTP entry';
-            } else if (containerText.includes('will be available once') || feedbackText.includes('will be available once')) {
+            } else if (combinedText.includes('will be available once') || combinedText.includes('once your faculty generates it')) {
                 statusText = isTargetIn ? '⏳ Waiting for faculty to generate IN OTP' : '⏳ Waiting for faculty to generate OUT OTP';
             }
 
@@ -4069,6 +4195,230 @@ function scheduleSlotReminders(chatId, session, slots) {
     }
 }
 
+// ─── Selective Class Call Reminder Engine (30-min Before, 5-min Interval) ─────
+// Map<chatId, { timerId, intervalId, callCount, className, classTime, venue, classStartMs, active }>
+const activeClassCallReminders = new Map();
+
+async function triggerClassVoiceCall(message, chatId) {
+    const twilioCfg = getTwilioConfigForUser(chatId);
+    if (twilioCfg.accountSid && twilioCfg.authToken && twilioCfg.fromNumber && (twilioCfg.toNumber || customTo)) {
+        console.log(`[Class Call Reminder] Calling user via Twilio for ${chatId}...`);
+        return await triggerTwilioVoiceCall(message, null, chatId);
+    }
+    if (CALLMEBOT_USER) {
+        console.log(`[Class Call Reminder] Calling user via CallMeBot...`);
+        return await triggerCallMeBotVoiceCall(CALLMEBOT_USER, message);
+    }
+    return { success: false, reason: 'No phone call provider configured (use !settwilio or !setphone).' };
+}
+
+function stopClassCallReminder(chatId, reason = 'User requested') {
+    const cid = String(chatId);
+    const rem = activeClassCallReminders.get(cid);
+    if (!rem) return false;
+
+    if (rem.timerId) {
+        clearTimeout(rem.timerId);
+        rem.timerId = null;
+    }
+    if (rem.intervalId) {
+        clearInterval(rem.intervalId);
+        rem.intervalId = null;
+    }
+    rem.active = false;
+    activeClassCallReminders.delete(cid);
+    console.log(`[Class Call Reminder] Stopped for ${cid} (${reason})`);
+    return true;
+}
+
+async function startClassCallLoop(chatId) {
+    const cid = String(chatId);
+    const reminder = activeClassCallReminders.get(cid);
+    if (!reminder || !reminder.active) return;
+
+    reminder.callCount = 1;
+
+    const speech = `Attention! Class reminder for ${reminder.className}. Your class starts at ${reminder.classTime}. This phone call will repeat every 5 minutes until you stop it in Telegram.`;
+    const callResult = await triggerClassVoiceCall(speech, cid);
+
+    let callNotice = `📞 *Class Call Reminder Ringing!* (Call #1)\n\n` +
+                     `📚 *Class:* *${reminder.className}*\n` +
+                     `⏰ *Starts at:* *${reminder.classTime}*\n` +
+                     `${reminder.venue && reminder.venue !== 'N/A' ? `📍 *Venue:* *${reminder.venue}*\n` : ''}\n` +
+                     `🔄 *Calling your phone repeatedly every 5 minutes* until you tell me to stop!\n\n` +
+                     `👉 *To silence & stop:* Reply with *stop*, *awake*, or send \`!stopcall\`.`;
+    if (!callResult.success && callResult.reason) {
+        callNotice += `\n\n⚠️ _Call warning: ${callResult.reason}_`;
+    }
+    await sendTelegram(callNotice, cid);
+
+    reminder.intervalId = setInterval(async () => {
+        const rem = activeClassCallReminders.get(cid);
+        if (!rem || !rem.active) {
+            if (reminder.intervalId) clearInterval(reminder.intervalId);
+            return;
+        }
+
+        rem.callCount++;
+
+        // Auto-stop after 10 calls (50 min) or 30 mins after class has started
+        const now = Date.now();
+        if (rem.callCount > 10 || (rem.classStartMs && (now - rem.classStartMs > 30 * 60 * 1000))) {
+            stopClassCallReminder(cid, 'Auto-stopped after max calls/class started');
+            await sendTelegram(
+                `🛑 *Class Call Reminder Auto-Stopped*\n\n` +
+                `Calls for *${rem.className}* have ended (reached maximum reminders or class is already in progress).\n` +
+                `Hope you made it to class! 🎓`,
+                cid
+            );
+            return;
+        }
+
+        const repeatSpeech = `Class reminder! Your class ${rem.className} starts at ${rem.classTime}. Reply stop in Telegram to silence remaining calls.`;
+        await triggerClassVoiceCall(repeatSpeech, cid);
+
+        await sendTelegram(
+            `📞 *Class Call Reminder Ringing!* (Call #${rem.callCount})\n\n` +
+            `📚 *${rem.className}* at *${rem.classTime}*\n` +
+            `👉 Reply *stop* or \`!stopcall\` to silence.`,
+            cid
+        );
+    }, 5 * 60 * 1000);
+}
+
+async function scheduleClassCallReminder(chatId, session, query = '') {
+    const cid = String(chatId);
+    await sendTelegram(`⏳ Checking timetable to schedule your class call reminder...`, cid);
+
+    let slots = [];
+    try {
+        slots = await fetchTimetable(session.context, session.config);
+    } catch (err) {
+        console.error(`[Call Remind] Timetable error for ${cid}:`, err.message);
+    }
+
+    const istNow = getNowIST();
+    const currentMins = istNow.getHours() * 60 + istNow.getMinutes();
+    let targetSlot = null;
+
+    if (query && query.trim()) {
+        const q = query.trim().toLowerCase();
+
+        // Check if query is a time e.g. "10:00 AM", "1:15 PM", "14:00"
+        const timeMatch = q.match(/(\d{1,2})[:.](\d{2})\s*(am|pm)?/i) || q.match(/(\d{1,2})\s*(am|pm)/i);
+        if (timeMatch) {
+            let h = parseInt(timeMatch[1], 10);
+            const m = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+            const period = (timeMatch[3] || '').toLowerCase();
+            if (period === 'pm' && h < 12) h += 12;
+            if (period === 'am' && h === 12) h = 0;
+            const qMins = h * 60 + m;
+
+            // Find matching slot in timetable if available
+            if (slots && slots.length > 0) {
+                targetSlot = slots.find(s => {
+                    const sMins = s.hour * 60 + s.minute;
+                    return Math.abs(sMins - qMins) <= 30;
+                });
+            }
+
+            if (!targetSlot) {
+                targetSlot = {
+                    slot: `Class at ${query.trim()}`,
+                    hour: h,
+                    minute: m,
+                    timeStr: query.trim(),
+                    venue: 'Portal'
+                };
+            }
+        } else if (slots && slots.length > 0) {
+            targetSlot = slots.find(s => s.slot.toLowerCase().includes(q));
+        }
+    }
+
+    // Default to the next upcoming class today
+    if (!targetSlot && slots && slots.length > 0) {
+        const upcoming = slots.filter(s => (s.hour * 60 + s.minute) > (currentMins - 15));
+        if (upcoming.length > 0) {
+            targetSlot = upcoming[0];
+        }
+    }
+
+    if (!targetSlot) {
+        await sendTelegram(
+            `⚠️ Could not find a matching upcoming class for today.\n\n` +
+            `You can set a reminder for a specific time like:\n` +
+            `\`!callremind 10:00 AM\`\n` +
+            `\`!callremind 01:15 PM\``,
+            cid
+        );
+        return;
+    }
+
+    // Calculate delay until 30 minutes before class start
+    const msUntilClass = getMsUntilTodayIST(targetSlot.hour, targetSlot.minute);
+    const msUntilStartCalling = msUntilClass - (30 * 60 * 1000);
+
+    // Cancel any previous active reminder for this user
+    stopClassCallReminder(cid, 'Replaced by new request');
+
+    const classStartEpoch = Date.now() + msUntilClass;
+    const reminder = {
+        timerId: null,
+        intervalId: null,
+        callCount: 0,
+        className: targetSlot.slot,
+        classTime: targetSlot.timeStr || `${String(targetSlot.hour).padStart(2, '0')}:${String(targetSlot.minute).padStart(2, '0')}`,
+        venue: targetSlot.venue || 'N/A',
+        classStartMs: classStartEpoch,
+        active: true
+    };
+
+    activeClassCallReminders.set(cid, reminder);
+
+    // Check Twilio/CallMeBot config warning
+    const twilioCfg = getTwilioConfigForUser(cid);
+    const hasPhoneConfig = (twilioCfg.accountSid && twilioCfg.authToken && twilioCfg.fromNumber && twilioCfg.toNumber) || CALLMEBOT_USER;
+    const phoneWarn = !hasPhoneConfig ? `\n\n⚠️ *Warning:* No phone service configured yet! Send \`!settwilio\` or \`!setphone\` so calls reach your cellular phone.` : '';
+
+    if (msUntilStartCalling <= 0) {
+        // Less than 30 minutes until class: start calling immediately!
+        await sendTelegram(
+            `📞 *Class Call Reminder Starting Immediately!*\n\n` +
+            `📚 *Class:* *${reminder.className}*\n` +
+            `⏰ *Starts at:* *${reminder.classTime}*\n` +
+            `${reminder.venue !== 'N/A' ? `📍 *Venue:* *${reminder.venue}*\n` : ''}\n` +
+            `You are within 30 minutes of class start. Phone calls will start right now and repeat every 5 minutes until you reply *stop* in Telegram!${phoneWarn}`,
+            cid
+        );
+        await startClassCallLoop(cid);
+    } else {
+        // Schedule timer to start calling 30 minutes before class
+        const delayMins = Math.round(msUntilStartCalling / 60000);
+        const hours = Math.floor(delayMins / 60);
+        const mins = delayMins % 60;
+        const delayStr = hours > 0 ? `${hours}h ${mins}m` : `${mins} minutes`;
+
+        const callStartTime = new Date(Date.now() + msUntilStartCalling);
+        const callStartTimeStr = callStartTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+
+        reminder.timerId = setTimeout(() => {
+            startClassCallLoop(cid);
+        }, msUntilStartCalling);
+
+        await sendTelegram(
+            `⏰ *Class Call Reminder Scheduled!* ✅\n\n` +
+            `📚 *Class:* *${reminder.className}*\n` +
+            `⏰ *Class Starts:* *${reminder.classTime}*\n` +
+            `${reminder.venue !== 'N/A' ? `📍 *Venue:* *${reminder.venue}*\n` : ''}\n` +
+            `📞 *Calls begin at:* *${callStartTimeStr}* (exactly 30 min before class, in ~${delayStr})\n` +
+            `🔄 Once started, it will *call you every 5 minutes* until you reply *stop* in Telegram.${phoneWarn}\n\n` +
+            `_👉 To cancel anytime:_ send \`!stopcall\``,
+            cid
+        );
+    }
+}
+
 // ─── Main: Persistent Bot Loop ────────────────────────────────────────────────
 
 async function main() {
@@ -4356,6 +4706,28 @@ async function main() {
                     continue;
                 }
 
+                // ── Active Class Call Reminder Intercept (Silencing / Stop) ─
+                const cleanLower = rawText.trim().toLowerCase();
+                const isStopCallWord = [
+                    'stop', 'stopcall', 'stop call', 'stopcall', 'stop calling',
+                    'awake', 'im awake', "i'm awake", 'i am awake', 'attended',
+                    'cancel call', 'cancelcall', 'dismiss', 'got it', 'ok', 'silence', 'turn off',
+                    '!stopcall', '!stopcalls', '!stopremind'
+                ].includes(cleanLower) || cleanLower.startsWith('stop call') || cleanLower.startsWith('stop the call');
+
+                if (isStopCallWord && activeClassCallReminders.has(fromChatId)) {
+                    const rem = activeClassCallReminders.get(fromChatId);
+                    const className = rem.className;
+                    stopClassCallReminder(fromChatId, 'User stopped via Telegram');
+                    await sendTelegram(
+                        `🛑 *Class Call Reminder Stopped!*\n\n` +
+                        `✅ All repeating phone calls for *${className}* have been silenced.\n` +
+                        `Have a great class! 🎓✨`,
+                        fromChatId
+                    );
+                    continue;
+                }
+
                 // ── Direct 6-Digit OTP message from Super Admin ─────────────
                 if (isSuperAdmin(fromChatId) && /^\d{6}$/.test(msg.text.trim())) {
                     const code = msg.text.trim();
@@ -4541,13 +4913,16 @@ Possible Actions:
   Params: keyword, otpCode (6-digit code if given), phase ("in" or "out").
 - "checkotp": Check class attendance verification status with screenshot. E.g. "check if my attendance was marked", "check class otp status".
   Params: keyword.
+- "callremind": Set up a 30-min repeating phone call reminder for a class. E.g. "call me before python class", "remind me with a call for my next class", "set call reminder for 1:15 pm".
+  Params: keyword (subject name, time, or null for next class).
+- "stopcall": Stop active class phone call reminder. E.g. "stop calling me", "i am awake stop the call", "silence class calls".
 - "help": User asks what the bot can do or wants a command list.
 - "reply": Friendly conversational response, advice, greetings, answering questions, or asking for clarification.
   Params: message (markdown response with emojis).
 
 JSON Schema:
 {
-  "action": "scan" | "book" | "unbook" | "bunk" | "attendance" | "analyze_attendance" | "timetable" | "workflow" | "progress" | "status" | "stop" | "otp" | "checkotp" | "help" | "reply",
+  "action": "scan" | "book" | "unbook" | "bunk" | "attendance" | "analyze_attendance" | "timetable" | "workflow" | "progress" | "status" | "stop" | "otp" | "checkotp" | "callremind" | "stopcall" | "help" | "reply",
   "keyword": "string or null",
   "time": "HH:MM AM/PM or null",
   "startTime": "HH:MM AM/PM or null",
@@ -4616,6 +4991,10 @@ JSON Schema:
                                 text = `!otp ${aiData.keyword || ''} ${aiData.phase || 'in'} ${aiData.otpCode || ''}`.trim();
                             } else if (aiData.action === 'checkotp') {
                                 text = `!checkotp ${aiData.keyword || ''}`.trim();
+                            } else if (aiData.action === 'callremind') {
+                                text = aiData.keyword ? `!callremind ${aiData.keyword}` : '!callremind';
+                            } else if (aiData.action === 'stopcall') {
+                                text = '!stopcall';
                             } else if (aiData.action === 'help') {
                                 text = '!help';
                             } else {
@@ -4655,6 +5034,9 @@ JSON Schema:
                         `\`!bunk [subject]\` — Calculate bunk margin for 80% criteria\n` +
                         `\`!otp <keyword> [in/out]\` — Manually trigger OTP scan\n` +
                         `\`!workflow\` or \`!requests\` — Check workflow/leave approval status\n\n` +
+                        `\`!callremind [class/time]\` — Call 30 min before class, repeating every 5 min until stopped\n` +
+                        `\`!stopcall\` — Silence & stop class phone calls\n` +
+                        `\`!callreminders\` — View active class call reminder\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
                         `\`!progress\` — View active background tasks\n` +
@@ -5157,6 +5539,46 @@ JSON Schema:
                         `\`!settwilio AC1234567890abcdef myToken +12055550199 +919876543210\``,
                         fromChatId
                     );
+                    continue;
+                }
+
+                // ── Class Call Reminder Commands ──────────────────────────
+                if (text.startsWith('!callremind') || text.startsWith('!remindcall') || text.startsWith('!classcall')) {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    const query = text.replace(/^!(callremind|remindcall|classcall)\s*/i, '').trim();
+                    await scheduleClassCallReminder(fromChatId, session, query);
+                    continue;
+                }
+
+                if (text === '!stopcall' || text === '!stopcalls' || text === '!stopremind') {
+                    if (activeClassCallReminders.has(fromChatId)) {
+                        const rem = activeClassCallReminders.get(fromChatId);
+                        const className = rem.className;
+                        stopClassCallReminder(fromChatId, 'Manual stop via command');
+                        await sendTelegram(`🛑 *Class Call Reminder Stopped!*\n\nAll calls for *${className}* have been silenced.`, fromChatId);
+                    } else {
+                        await sendTelegram(`ℹ️ You don't have any active class call reminders running right now.\n\nTo set one, send: \`!callremind [class or time]\``, fromChatId);
+                    }
+                    continue;
+                }
+
+                if (text === '!callreminders' || text === '!activecalls') {
+                    if (activeClassCallReminders.has(fromChatId)) {
+                        const rem = activeClassCallReminders.get(fromChatId);
+                        const isRinging = rem.intervalId !== null;
+                        await sendTelegram(
+                            `📞 *Active Class Call Reminder*\n\n` +
+                            `📚 *Class:* *${rem.className}*\n` +
+                            `⏰ *Class Starts:* *${rem.classTime}*\n` +
+                            `📍 *Venue:* *${rem.venue}*\n` +
+                            `⚡ *Status:* ${isRinging ? `🔔 Ringing now (Call #${rem.callCount}, every 5 min)` : `⏳ Scheduled (Calls begin 30 min before class)`}\n\n` +
+                            `_👉 To stop calls:_ send \`!stopcall\` or reply *stop*`,
+                            fromChatId
+                        );
+                    } else {
+                        await sendTelegram(`ℹ️ No active class call reminders right now.\nSet one with: \`!callremind\``, fromChatId);
+                    }
                     continue;
                 }
 
