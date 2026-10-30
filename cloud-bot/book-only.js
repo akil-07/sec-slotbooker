@@ -3296,18 +3296,7 @@ function formatBunkStats(data, userName) {
 
 // ─── Timetable Scheduler ─────────────────────────────────────────────────────
 
-/**
- * Starts per-user timetable schedulers:
- *   1. Daily 8:00 AM → send full timetable
- *   2. 15 min before each slot → send reminder
- *
- * Uses India Standard Time (IST = UTC+5:30).
- */
-function startTimetableSchedulers(userSessions) {
-    console.log('[Scheduler] Starting timetable schedulers for all users...');
-
-    // Helper: ms until next HH:MM in IST
-    // ─── Precision IST Time Helpers ──────────────────────────────────────────────
+// ─── Precision IST Time Helpers (Global Scope) ──────────────────────────────
 // Fixed IST offset = UTC + 5h30m (330 minutes)
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
@@ -3328,6 +3317,16 @@ function msUntilIST(targetHour, targetMin = 0) {
     }
     return diff;
 }
+
+/**
+ * Starts per-user timetable schedulers:
+ *   1. Daily 8:00 AM → send full timetable
+ *   2. 15 min before each slot → send reminder
+ *
+ * Uses India Standard Time (IST = UTC+5:30).
+ */
+function startTimetableSchedulers(userSessions) {
+    console.log('[Scheduler] Starting timetable schedulers for all users...');
 
     // Schedule the 8 AM daily timetable for every user
     for (const [chatId, session] of userSessions.entries()) {
@@ -3428,21 +3427,7 @@ function scheduleDailyTimetableForUser(chatId, session) {
     }, delay);
 }
 
-function msUntilIST(targetHour, targetMin) {
-    // Correctly compute ms until next targetHour:targetMin in IST (UTC+5:30).
-    const now = new Date();
-    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const nowUTC = now.getTime();
-    const todayMidnightUTC = new Date(now);
-    todayMidnightUTC.setUTCHours(0, 0, 0, 0);
-    // Express target IST time as its UTC epoch ms value
-    const targetUTC = todayMidnightUTC.getTime() + (targetHour * 60 + targetMin) * 60 * 1000 - IST_OFFSET_MS;
-    let diff = targetUTC - nowUTC;
-    if (diff <= 0) {
-        diff += 24 * 60 * 60 * 1000; // roll to next day
-    }
-    return diff;
-}
+
 
 async function sendDailyTimetable(chatId, session) {
     try {
