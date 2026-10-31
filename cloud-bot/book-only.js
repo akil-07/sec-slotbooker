@@ -2798,14 +2798,315 @@ async function doLogin(page, user, pass) {
 
 // ─── Timetable Scraper ───────────────────────────────────────────────────────
 
+// ─── Target Date / Weekday Parser & Calendar Navigation ───────────────────────
+
+function parseTargetDate(inputStr) {
+    const nowIST = getNowIST();
+    if (!inputStr || !inputStr.trim()) {
+        return buildDateInfo(nowIST, true, 'Today');
+    }
+
+    const clean = inputStr.trim().toLowerCase();
+
+    // 1. Relative keywords
+    if (clean === 'today') {
+        return buildDateInfo(nowIST, true, 'Today');
+    }
+    if (clean === 'tomorrow' || clean === 'tmrw' || clean === 'tommorow') {
+        const d = new Date(nowIST);
+        d.setDate(d.getDate() + 1);
+        return buildDateInfo(d, false, 'Tomorrow');
+    }
+    if (clean === 'yesterday') {
+        const d = new Date(nowIST);
+        d.setDate(d.getDate() - 1);
+        return buildDateInfo(d, false, 'Yesterday');
+    }
+
+    // 2. Weekdays
+    const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const shortWeekdays = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+    const isNext = clean.startsWith('next ') || clean.includes(' next');
+    const isThis = clean.startsWith('this ') || clean.includes(' this');
+    const isLast = clean.startsWith('last ') || clean.startsWith('prev ');
+
+    const stripped = clean.replace(/^(next|this|last|prev)\s+/i, '').trim();
+
+    let targetDayIndex = -1;
+    for (let i = 0; i < 7; i++) {
+        if (stripped === weekdays[i] || stripped === shortWeekdays[i]) {
+            targetDayIndex = i;
+            break;
+        }
+    }
+
+    if (targetDayIndex !== -1) {
+        const currentDayIndex = nowIST.getDay();
+        let diff = targetDayIndex - currentDayIndex;
+
+        if (isNext) {
+            diff = diff <= 0 ? diff + 7 : diff + 7;
+        } else if (isLast) {
+            diff = diff >= 0 ? diff - 7 : diff;
+        } else if (isThis) {
+            diff = targetDayIndex - currentDayIndex;
+        } else {
+            if (diff < 0) {
+                if ((currentDayIndex === 6 || currentDayIndex === 0) && targetDayIndex >= 1 && targetDayIndex <= 5) {
+                    diff += 7;
+                } else if (diff < -2) {
+                    diff += 7;
+                }
+            }
+        }
+
+        const d = new Date(nowIST);
+        d.setDate(d.getDate() + diff);
+        const label = diff === 0 ? 'Today' : (diff === 1 ? 'Tomorrow' : (diff === -1 ? 'Yesterday' : ''));
+        return buildDateInfo(d, diff === 0, label);
+    }
+
+    // 3. DD/MM/YYYY or DD-MM-YYYY or DD/MM or DD-MM
+    const dmyMatch = clean.match(/^(\d{1,2})[\/\-\.](\d{1,2})(?:[\/\-\.](\d{4}|\d{2}))?$/);
+    if (dmyMatch) {
+        let day = parseInt(dmyMatch[1], 10);
+        let month = parseInt(dmyMatch[2], 10) - 1;
+        let year = dmyMatch[3] ? parseInt(dmyMatch[3], 10) : nowIST.getFullYear();
+        if (year < 100) year += 2000;
+        const d = new Date(year, month, day, 12, 0, 0);
+        return buildDateInfo(d, isSameDay(d, nowIST));
+    }
+
+    // 4. YYYY-MM-DD
+    const ymdMatch = clean.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+    if (ymdMatch) {
+        let year = parseInt(ymdMatch[1], 10);
+        let month = parseInt(ymdMatch[2], 10) - 1;
+        let day = parseInt(ymdMatch[3], 10);
+        const d = new Date(year, month, day, 12, 0, 0);
+        return buildDateInfo(d, isSameDay(d, nowIST));
+    }
+
+    // 5. Month names: "2 nov", "nov 2", "2nd november", "november 2"
+    const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const mNameMatch = clean.match(/(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3,9})(?:\s+(\d{4}))?/) ||
+                       clean.match(/([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?/);
+    if (mNameMatch) {
+        let dayStr = mNameMatch[1].match(/^\d+$/) ? mNameMatch[1] : mNameMatch[2];
+        let monthStr = mNameMatch[1].match(/^\d+$/) ? mNameMatch[2] : mNameMatch[1];
+        let yearStr = mNameMatch[3];
+
+        let mIdx = monthNames.findIndex(m => monthStr.startsWith(m));
+        if (mIdx !== -1) {
+            let day = parseInt(dayStr, 10);
+            let year = yearStr ? parseInt(yearStr, 10) : nowIST.getFullYear();
+            const d = new Date(year, mIdx, day, 12, 0, 0);
+            return buildDateInfo(d, isSameDay(d, nowIST));
+        }
+    }
+
+    // 6. Just a day number: "14", "2"
+    if (/^\d{1,2}$/.test(clean)) {
+        const day = parseInt(clean, 10);
+        if (day >= 1 && day <= 31) {
+            const d = new Date(nowIST.getFullYear(), nowIST.getMonth(), day, 12, 0, 0);
+            return buildDateInfo(d, isSameDay(d, nowIST));
+        }
+    }
+
+    return null;
+}
+
+function isSameDay(d1, d2) {
+    return d1.getFullYear() === d2.getFullYear() &&
+           d1.getMonth() === d2.getMonth() &&
+           d1.getDate() === d2.getDate();
+}
+
+function buildDateInfo(d, isToday = false, extraLabel = '') {
+    const daysShort = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+    const daysFull = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const monthsShort = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const monthsFull = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+    const dayNumber = d.getDate();
+    const dayNameShort = daysShort[d.getDay()];
+    const dayNameFull = daysFull[d.getDay()];
+    const monthNameShort = monthsShort[d.getMonth()];
+    const monthNameFull = monthsFull[d.getMonth()];
+    const year = d.getFullYear();
+
+    const displayDate = `${dayNameFull}, ${dayNumber} ${monthNameFull} ${year}`;
+
+    return {
+        date: d,
+        dayNumber,
+        dayNameShort,
+        dayNameFull,
+        monthNameShort,
+        monthNameFull,
+        year,
+        isToday,
+        extraLabel,
+        displayDate
+    };
+}
+
+async function selectDateOnSchedulePage(page, targetDateInfo) {
+    if (!targetDateInfo || targetDateInfo.isToday) return true;
+
+    const { dayNumber, dayNameShort, monthNameShort, year } = targetDateInfo;
+    console.log(`[Schedule] Selecting target date: ${dayNumber} ${dayNameShort} (${monthNameShort} ${year})...`);
+
+    // Step 1: Check and match month header if needed
+    for (let monthAttempt = 0; monthAttempt < 12; monthAttempt++) {
+        const headerText = await page.evaluate(() => {
+            const all = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, span, b, strong'));
+            const header = all.find(el => {
+                const t = (el.innerText || '').trim().toUpperCase();
+                return /(JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s+\d{4}/.test(t);
+            });
+            return header ? header.innerText.trim().toUpperCase() : '';
+        });
+
+        if (headerText) {
+            const mMatch = headerText.match(/(JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s+(\d{4})/);
+            if (mMatch) {
+                const curMonthStr = mMatch[1];
+                const curYear = parseInt(mMatch[2], 10);
+                const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+                const curMonthIdx = monthNames.indexOf(curMonthStr);
+                const targetMonthIdx = targetDateInfo.date.getMonth();
+                const targetYear = targetDateInfo.date.getFullYear();
+
+                const totalCurMonths = curYear * 12 + curMonthIdx;
+                const totalTargetMonths = targetYear * 12 + targetMonthIdx;
+                const monthDiff = totalTargetMonths - totalCurMonths;
+
+                if (monthDiff !== 0) {
+                    await page.evaluate((dir) => {
+                        const all = Array.from(document.querySelectorAll('button, a, div, span, i'));
+                        const monthHeader = all.find(el => /(JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s+\d{4}/.test((el.innerText || '').trim().toUpperCase()));
+                        if (!monthHeader) return false;
+                        const container = monthHeader.closest('div, header, section') || monthHeader.parentElement;
+                        if (!container) return false;
+                        const chevrons = Array.from(container.querySelectorAll('button, a, span, i')).filter(el => {
+                            const t = (el.innerText || '').trim();
+                            const c = (el.className || '').toLowerCase();
+                            return t === '<' || t === '>' || t === '‹' || t === '›' || /chevron|angle|prev|next/i.test(c);
+                        });
+                        if (dir === 'next' && chevrons.length > 0) {
+                            chevrons[chevrons.length - 1].click();
+                            return true;
+                        } else if (dir === 'prev' && chevrons.length > 0) {
+                            chevrons[0].click();
+                            return true;
+                        }
+                        return false;
+                    }, monthDiff > 0 ? 'next' : 'prev');
+                    await page.waitForTimeout(1500);
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+
+    // Step 2: In the current month, find the day cell in the strip or scroll carousel
+    for (let attempt = 0; attempt < 8; attempt++) {
+        const clickResult = await page.evaluate(({ dNum, dName }) => {
+            function isVisible(el) {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            }
+
+            const all = Array.from(document.querySelectorAll('div, a, button, li, span'));
+            const candidates = all.filter(el => {
+                if (!isVisible(el)) return false;
+                const txt = (el.innerText || '').trim().toUpperCase();
+                if (txt.length > 35) return false;
+                const tokens = txt.split(/[\s\n\r]+/).filter(Boolean);
+                const hasNum = tokens.includes(String(dNum));
+                const hasName = tokens.some(t => t.startsWith(dName) || t === dName);
+                return hasNum && hasName;
+            });
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+                const target = candidates[0];
+                target.click();
+                return { clicked: true, text: target.innerText.replace(/\n/g, ' ') };
+            }
+            return { clicked: false };
+        }, { dNum: dayNumber, dName: dayNameShort });
+
+        if (clickResult && clickResult.clicked) {
+            console.log(`[Schedule] Clicked date cell: "${clickResult.text}"`);
+            await page.waitForTimeout(2500);
+            return true;
+        }
+
+        // Scroll carousel if day cell is not in currently visible 7 days
+        const scrolled = await page.evaluate(({ dNum }) => {
+            const all = Array.from(document.querySelectorAll('div, a, button, li, span'));
+            const stripNums = [];
+            all.forEach(el => {
+                const txt = (el.innerText || '').trim().toUpperCase();
+                if (txt.length < 30 && /(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(txt)) {
+                    const m = txt.match(/\b\d{1,2}\b/);
+                    if (m) stripNums.push(parseInt(m[0], 10));
+                }
+            });
+
+            const rightChevrons = all.filter(el => {
+                const t = (el.innerText || '').trim();
+                const c = (el.className || '').toLowerCase();
+                return (t === '>' || t === '›' || /chevron-right|angle-right|next/i.test(c)) && el.offsetParent !== null;
+            });
+            const leftChevrons = all.filter(el => {
+                const t = (el.innerText || '').trim();
+                const c = (el.className || '').toLowerCase();
+                return (t === '<' || t === '‹' || /chevron-left|angle-left|prev/i.test(c)) && el.offsetParent !== null;
+            });
+
+            let goRight = true;
+            if (stripNums.length > 0) {
+                const min = Math.min(...stripNums);
+                if (dNum < min) goRight = false;
+            }
+
+            if (goRight && rightChevrons.length > 0) {
+                rightChevrons[rightChevrons.length - 1].click();
+                return { ok: true, dir: 'right' };
+            } else if (!goRight && leftChevrons.length > 0) {
+                leftChevrons[leftChevrons.length - 1].click();
+                return { ok: true, dir: 'left' };
+            }
+            return { ok: false };
+        }, { dNum: dayNumber });
+
+        if (scrolled && scrolled.ok) {
+            console.log(`[Schedule] Scrolled carousel ${scrolled.dir}...`);
+            await page.waitForTimeout(1500);
+        } else {
+            break;
+        }
+    }
+
+    return false;
+}
+
 /**
- * Scrapes today's schedule from people_schedule page.
+ * Scrapes schedule from people_schedule page for today or a specific target date.
  * Returns an array of { slot, venue, timeStr, hour, minute } sorted by time.
+ * If wantScreenshot=true, returns { slots, screenshotPath }.
  */
-async function fetchTimetable(context, config) {
+async function fetchTimetable(context, config, targetDateInfo = null, wantScreenshot = false) {
     const page = await context.newPage();
     try {
-        console.log(`[Timetable] Fetching schedule for ${config.name}...`);
+        console.log(`[Timetable] Fetching schedule for ${config.name}${targetDateInfo ? ` (${targetDateInfo.displayDate})` : ''}...`);
         await page.goto('https://learner.saveetha.in/academics/people_schedule/', {
             waitUntil: 'domcontentloaded',
             timeout: 60000
@@ -2824,15 +3125,20 @@ async function fetchTimetable(context, config) {
         // Wait for table/schedule content
         await page.waitForTimeout(3000);
 
-        const slots = await page.evaluate(() => {
+        // If target date is specified and not today, select it on the calendar strip
+        if (targetDateInfo && !targetDateInfo.isToday) {
+            await selectDateOnSchedulePage(page, targetDateInfo);
+        }
+
+        const slots = await page.evaluate((targetDayParam) => {
             const results = [];
             const today = new Date();
-            const todayStr = today.toLocaleDateString('en-IN', { weekday: 'long' }).toLowerCase();
-            const todayDate = today.toISOString().split('T')[0]; // YYYY-MM-DD
+            const todayStr = targetDayParam ? targetDayParam.dayNameFull.toLowerCase() : today.toLocaleDateString('en-IN', { weekday: 'long' }).toLowerCase();
+            const todayDate = targetDayParam ? targetDayParam.dateStr : today.toISOString().split('T')[0];
+            const todayDayNum = targetDayParam ? targetDayParam.dayNumber : today.getDate();
 
             function parseTime(timeText) {
                 if (!timeText) return null;
-                // Match patterns like "9:00 AM", "09:00", "9.00AM"
                 const m = timeText.match(/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i);
                 if (!m) return null;
                 let h = parseInt(m[1], 10);
@@ -2844,8 +3150,6 @@ async function fetchTimetable(context, config) {
             }
 
             // ── Strategy 0: Saveetha people_schedule labeled-card format (PRIMARY) ──
-            // Find all elements that contain BOTH "SLOT :" and "VENUE :" labels.
-            // Sort smallest-first so we get the most granular card element.
             const allEls = Array.from(document.querySelectorAll('div, li, section, article, tr'));
             const cardEls = allEls
                 .filter(el => {
@@ -2854,7 +3158,6 @@ async function fetchTimetable(context, config) {
                 })
                 .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
 
-            // De-duplicate: skip elements that contain a previously selected card
             const selectedCards = [];
             for (const el of cardEls) {
                 if (!selectedCards.some(prev => el.contains(prev))) {
@@ -2865,7 +3168,6 @@ async function fetchTimetable(context, config) {
             for (const card of selectedCards) {
                 let lines = (card.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
 
-                // Recover missing header if we matched an inner element (like a card-body)
                 if (lines.length > 0 && (/^SLOT\s*:/i.test(lines[0]) || /^VENUE\s*:/i.test(lines[0]) || /^Lesson\s*:/i.test(lines[0]))) {
                     let curr = card;
                     for (let i = 0; i < 3; i++) {
@@ -2907,6 +3209,7 @@ async function fetchTimetable(context, config) {
                     results.push({
                         slot: subject || 'Class',
                         venue: venue || 'N/A',
+                        slotCode: slotCode || '',
                         ...timeInfo,
                         hasToday: true
                     });
@@ -2918,7 +3221,6 @@ async function fetchTimetable(context, config) {
             for (const table of tables) {
                 const rows = table.querySelectorAll('tr');
 
-                // First pass: detect which column index is the venue column from headers
                 let venueColIndex = -1;
                 let slotColIndex = -1;
                 let timeColIndex = -1;
@@ -2938,18 +3240,15 @@ async function fetchTimetable(context, config) {
                     if (cells.length < 2) continue;
                     const rowText = cells.join(' ').toLowerCase();
 
-                    // Skip header rows
                     if (row.querySelectorAll('th').length === cells.length) continue;
 
-                    // Check if this row relates to today (day name or date)
-                    const hasToday = rowText.includes(todayStr) || rowText.includes(todayDate) ||
-                        rowText.includes(today.getDate() + '/');
+                    const hasTargetDate = rowText.includes(todayStr) || rowText.includes(todayDate) ||
+                        rowText.includes(todayDayNum + '/');
 
                     let timeInfo = null;
                     let slot = '';
                     let venue = '';
 
-                    // Use detected column indices if available
                     if (venueColIndex >= 0 && venueColIndex < cells.length) {
                         venue = cells[venueColIndex];
                     }
@@ -2960,19 +3259,16 @@ async function fetchTimetable(context, config) {
                         timeInfo = parseTime(cells[timeColIndex]);
                     }
 
-                    // Fallback: scan all cells for time, slot, venue heuristically
                     if (!timeInfo || !slot) {
                         for (let i = 0; i < cells.length; i++) {
                             const t = parseTime(cells[i]);
                             if (t && !timeInfo) { timeInfo = t; continue; }
-                            // Broadened venue keywords: also catch names like AB1, MB Block, IT Dept, B1, etc.
                             if (!venue && /hall|room|lab|block|floor|dept|building|wing|annex|\bab\b|\bmb\b|\bit\b|\b[a-z]?\d{1,4}\b/i.test(cells[i]) && cells[i].length < 60) {
                                 venue = cells[i];
                             } else if (!slot && cells[i].length > 3 && cells[i].length < 120 && i > 0) {
                                 slot = cells[i];
                             }
                         }
-                        // Last resort: if still no venue, grab the last unused cell
                         if (!venue && cells.length >= 3) {
                             for (let i = cells.length - 1; i >= 0; i--) {
                                 const c = cells[i];
@@ -2985,33 +3281,8 @@ async function fetchTimetable(context, config) {
                     }
 
                     if (timeInfo && slot) {
-                        results.push({ slot, venue: venue || 'N/A', ...timeInfo, hasToday });
+                        results.push({ slot, venue: venue || 'N/A', ...timeInfo, hasToday: hasTargetDate });
                     }
-                }
-            }
-
-            // ── Strategy 2: Generic class/schedule divs (last resort) ─────────────
-            if (results.length === 0) {
-                const cards = document.querySelectorAll(
-                    '[class*="schedule"], [class*="timetable"], [class*="slot"], [class*="class"], [class*="period"], [class*="event"]'
-                );
-                for (const card of cards) {
-                    const text = card.innerText || '';
-                    const timeMatch = text.match(/(\d{1,2})[.:] ?(\d{2})\s*(AM|PM)/i);
-                    if (!timeMatch) continue;
-                    const t = parseTime(timeMatch[0]);
-                    if (!t) continue;
-                    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-                    // Prefer labeled fields if present
-                    const vLabel = lines.find(l => /^VENUE\s*:/i.test(l));
-                    const sLabel = lines.find(l => /^SLOT\s*:/i.test(l));
-                    const venue = vLabel
-                        ? vLabel.replace(/^VENUE\s*:\s*/i, '').trim()
-                        : (lines.find(l => /hall|room|lab|block|floor|dept/i.test(l) && l !== lines[0]) || 'N/A');
-                    const slot = sLabel
-                        ? sLabel.replace(/^SLOT\s*:\s*/i, '').trim()
-                        : (lines.find(l => l.length > 5 && !/(AM|PM)/i.test(l)) || 'Class');
-                    results.push({ slot, venue, ...t, hasToday: true });
                 }
             }
 
@@ -3025,12 +3296,29 @@ async function fetchTimetable(context, config) {
             });
 
             return deduped.sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute));
-        });
+        }, targetDateInfo ? {
+            dayNameFull: targetDateInfo.dayNameFull,
+            dateStr: targetDateInfo.date.toISOString().split('T')[0],
+            dayNumber: targetDateInfo.dayNumber
+        } : null);
 
         console.log(`[Timetable] Found ${slots.length} slots for ${config.name}`);
+
+        let screenshotPath = null;
+        if (wantScreenshot) {
+            screenshotPath = path.join(__dirname, `_tt_${Date.now()}.png`);
+            try {
+                await page.screenshot({ path: screenshotPath });
+            } catch (e) {
+                screenshotPath = null;
+            }
+            return { slots, screenshotPath };
+        }
+
         return slots;
     } catch (err) {
         console.error(`[Timetable] Error fetching for ${config.name}:`, err.message);
+        if (wantScreenshot) return { slots: [], screenshotPath: null };
         return [];
     } finally {
         await page.close().catch(() => { });
@@ -3040,14 +3328,17 @@ async function fetchTimetable(context, config) {
 /**
  * Format timetable slots into a readable Telegram message.
  */
-function formatTimetable(slots, name) {
-    const today = new Date().toLocaleDateString('en-IN', {
+function formatTimetable(slots, name, targetDateInfo = null) {
+    const dateStr = targetDateInfo ? targetDateInfo.displayDate : new Date().toLocaleDateString('en-IN', {
         weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
     });
+    const extra = targetDateInfo && targetDateInfo.extraLabel ? ` (${targetDateInfo.extraLabel})` : '';
+
     if (!slots || slots.length === 0) {
-        return `📅 *Good Morning ${name}!*\n\n*Today's Timetable (${today})*\n\n✅ No classes scheduled today. Enjoy your day! 🎉`;
+        return `📅 *Timetable for ${name}*\n🗓️ *${dateStr}*${extra}\n\n✅ No classes scheduled for this day. Enjoy your day! 🎉`;
     }
-    let msg = `📅 *Good Morning ${name}!*\n\n*Today's Timetable — ${today}*\n${'─'.repeat(30)}\n\n`;
+
+    let msg = `📅 *Timetable for ${name}*\n🗓️ *${dateStr}*${extra}\n${'─'.repeat(30)}\n\n`;
     for (const s of slots) {
         const h = s.hour % 12 || 12;
         const period = s.hour < 12 ? 'AM' : 'PM';
@@ -4871,7 +5162,7 @@ Return ONLY a valid JSON object (no markdown code blocks, no backticks):
                             } else if (aiData.action === 'unbook') {
                                 text = `!unbook ${aiData.keyword || ''} ${aiData.time ? '@ ' + aiData.time : ''}`.trim();
                             } else if (aiData.action === 'timetable') {
-                                text = '!timetable';
+                                text = aiData.args ? `!timetable ${aiData.args}` : (aiData.keyword ? `!timetable ${aiData.keyword}` : '!timetable');
                             } else if (aiData.action === 'attendance') {
                                 text = '!attendance';
                             } else {
@@ -4902,7 +5193,8 @@ Possible Actions:
   Params: keyword (subject name if specified, else null).
 - "attendance": View full attendance report. E.g. "what's my attendance?", "show attendance table".
 - "analyze_attendance": User wants advice or analysis on their attendance. E.g. "am I in danger of getting detained?", "will I get into trouble for attendance?", "how is my attendance looking?".
-- "timetable": View today's schedule / classes. E.g. "what's my schedule today?", "today classes", "timetable".
+- "timetable": View schedule / classes for today, a specific day of the week, or date. E.g. "what's my schedule today?", "timetable for monday", "classes on friday", "schedule for tomorrow", "show timetable on 2nd nov".
+  Params: args (the requested day or date string if mentioned, e.g. "monday", "tomorrow", "02/11/2026", else null for today).
 - "workflow": View pending workflow approvals (leave, OD, gate pass). E.g. "is my leave approved?", "check my OD status", "workflow requests".
   Params: args (optional filter string like "leave" or "od").
 - "progress": View active running background booking/scanning tasks. E.g. "what are you scanning right now?", "active tasks", "show progress".
@@ -5030,6 +5322,7 @@ JSON Schema:
                         `\`!unbook <keyword>\` — Cancel a booked slot\n\n` +
                         `*Timetable & Attendance Commands:*\n` +
                         `\`!timetable\` or \`!tt\` — Today's schedule & activate class reminders\n` +
+                        `\`!timetable [day/date]\` or \`!tt [day/date]\` — View schedule for any day (e.g. \`!tt mon\`, \`!tt tomorrow\`, \`!tt 02/11\`)\n` +
                         `\`!attendance\` or \`!att\` — View attendance percentages\n` +
                         `\`!bunk [subject]\` — Calculate bunk margin for 80% criteria\n` +
                         `\`!otp <keyword> [in/out]\` — Manually trigger OTP scan\n` +
@@ -5350,17 +5643,49 @@ JSON Schema:
                         continue;
                     }
                 }
-                if (text === '!timetable' || text === '!tt') {
+                if (text.startsWith('!timetable') || text.startsWith('!tt')) {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
-                    await sendTelegram(`⏳ Fetching your timetable, please wait...`, fromChatId);
+                    
+                    const query = text.replace(/^!(timetable|tt)\s*/i, '').trim();
+                    let targetDateInfo = null;
+                    if (query) {
+                        targetDateInfo = parseTargetDate(query);
+                        if (!targetDateInfo) {
+                            await sendTelegram(
+                                `⚠️ Could not understand the requested date or day: "*${query}*"\n\n` +
+                                `👉 *Examples of valid formats:*\n` +
+                                `• \`!tt mon\` or \`!timetable friday\`\n` +
+                                `• \`!tt tomorrow\` or \`!tt yesterday\`\n` +
+                                `• \`!tt 02/11/2026\` or \`!tt 2 nov\`\n` +
+                                `• \`!tt 14\` (day of current month)`,
+                                fromChatId
+                            );
+                            continue;
+                        }
+                    }
+
+                    const targetLabel = targetDateInfo ? `for *${targetDateInfo.displayDate}*` : 'for today';
+                    await sendTelegram(`⏳ Fetching your timetable ${targetLabel}, please wait...`, fromChatId);
                     try {
-                        const slots = await fetchTimetable(session.context, session.config);
-                        const msg = formatTimetable(slots, session.config.name);
-                        await sendTelegram(msg, fromChatId);
-                        scheduleSlotReminders(fromChatId, session, slots);
-                        // SYNC to GIST for the Pod to read silently
-                        syncFileToGist('saveetha_timetable.txt', msg);
+                        const { slots, screenshotPath } = await fetchTimetable(session.context, session.config, targetDateInfo, true);
+                        const msg = formatTimetable(slots, session.config.name, targetDateInfo);
+                        if (screenshotPath) {
+                            try {
+                                await sendTelegramPhoto(screenshotPath, msg, fromChatId);
+                            } catch (_) {
+                                await sendTelegram(msg, fromChatId);
+                            }
+                            try { fs.unlinkSync(screenshotPath); } catch (_) {}
+                        } else {
+                            await sendTelegram(msg, fromChatId);
+                        }
+
+                        // Only schedule reminders for TODAY's schedule
+                        if (!targetDateInfo || targetDateInfo.isToday) {
+                            scheduleSlotReminders(fromChatId, session, slots);
+                            syncFileToGist('saveetha_timetable.txt', msg);
+                        }
                     } catch (err) {
                         await sendTelegram(`❌ Failed to fetch timetable: ${err.message}`, fromChatId);
                     }
