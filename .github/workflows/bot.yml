@@ -16,7 +16,7 @@ jobs:
   # ── Unified Bot Job (Slot Booking + Schedule + OTP Attendance) ─────────────
   bot:
     name: Saveetha Unified Bot
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
 
     steps:
@@ -61,7 +61,7 @@ jobs:
   # ── Self-restart ───────────────────────────────────────────────────────────
   restart:
     name: Trigger Next Run
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [bot]
     if: always()
 
