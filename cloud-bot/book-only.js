@@ -184,22 +184,37 @@ async function triggerTwilioVoiceCall(message, customTo, chatId = null) {
 }
 
 let CALLMEBOT_USER = process.env.CALLMEBOT_USER || '';
+let CALLMEBOT_ACCOUNTS = {};
 const CALLMEBOT_CONFIG_FILE = path.join(__dirname, 'call_config.json');
+
+function getCallMeBotUserForChat(chatId) {
+    const cid = String(chatId || '');
+    if (cid && CALLMEBOT_ACCOUNTS[cid]) {
+        return CALLMEBOT_ACCOUNTS[cid];
+    }
+    return CALLMEBOT_USER;
+}
 
 function loadCallConfig() {
     try {
         if (fs.existsSync(CALLMEBOT_CONFIG_FILE)) {
             const data = JSON.parse(fs.readFileSync(CALLMEBOT_CONFIG_FILE, 'utf8'));
-            if (data && data.user) CALLMEBOT_USER = data.user;
+            if (data) {
+                if (data.user) CALLMEBOT_USER = data.user;
+                if (data.accounts) CALLMEBOT_ACCOUNTS = { ...CALLMEBOT_ACCOUNTS, ...data.accounts };
+            }
         }
     } catch (_) {}
 }
 loadCallConfig();
 
-function saveCallConfig(target) {
+function saveCallConfig(target, chatId = null) {
     CALLMEBOT_USER = target;
+    if (chatId) {
+        CALLMEBOT_ACCOUNTS[String(chatId)] = target;
+    }
     try {
-        fs.writeFileSync(CALLMEBOT_CONFIG_FILE, JSON.stringify({ user: target }, null, 2));
+        fs.writeFileSync(CALLMEBOT_CONFIG_FILE, JSON.stringify({ user: target, accounts: CALLMEBOT_ACCOUNTS }, null, 2));
     } catch (_) {}
     if (typeof syncCallConfigToGist === 'function') {
         syncCallConfigToGist(target).catch(() => {});
@@ -268,9 +283,10 @@ async function triggerHostelCallReminder(message, customTo = null, chatId = null
         return await triggerTwilioVoiceCall(message, customTo, chatId);
     }
     // Fall back to CallMeBot if set
-    if (CALLMEBOT_USER) {
-        console.log('[Hostel Call] Calling via CallMeBot...');
-        return await triggerCallMeBotVoiceCall(CALLMEBOT_USER, message);
+    const callUser = getCallMeBotUserForChat(chatId);
+    if (callUser) {
+        console.log(`[Hostel Call] Calling via CallMeBot for ${callUser}...`);
+        return await triggerCallMeBotVoiceCall(callUser, message);
     }
     return {
         success: false,
@@ -4521,9 +4537,10 @@ async function triggerClassVoiceCall(message, chatId) {
         console.log(`[Class Call Reminder] Calling user via Twilio for ${chatId}...`);
         return await triggerTwilioVoiceCall(message, null, chatId);
     }
-    if (CALLMEBOT_USER) {
-        console.log(`[Class Call Reminder] Calling user via CallMeBot...`);
-        return await triggerCallMeBotVoiceCall(CALLMEBOT_USER, message);
+    const callUser = getCallMeBotUserForChat(chatId);
+    if (callUser) {
+        console.log(`[Class Call Reminder] Calling user via CallMeBot for ${callUser}...`);
+        return await triggerCallMeBotVoiceCall(callUser, message);
     }
     return { success: false, reason: 'No phone call provider configured (use !settwilio or !setphone).' };
 }
@@ -4694,8 +4711,9 @@ async function scheduleClassCallReminder(chatId, session, query = '') {
 
     // Check Twilio/CallMeBot config warning
     const twilioCfg = getTwilioConfigForUser(cid);
-    const hasPhoneConfig = (twilioCfg.accountSid && twilioCfg.authToken && twilioCfg.fromNumber && twilioCfg.toNumber) || CALLMEBOT_USER;
-    const phoneWarn = !hasPhoneConfig ? `\n\n⚠️ *Warning:* No phone service configured yet! Send \`!settwilio\` or \`!setphone\` so calls reach your cellular phone.` : '';
+    const callMeBotTarget = getCallMeBotUserForChat(cid);
+    const hasPhoneConfig = (twilioCfg.accountSid && twilioCfg.authToken && twilioCfg.fromNumber && twilioCfg.toNumber) || callMeBotTarget;
+    const phoneWarn = !hasPhoneConfig ? `\n\n⚠️ *Warning:* No call recipient configured yet! Send \`!setcall @your_telegram_username\` (or \`setcall @username\`) to receive free Telegram voice calls.` : '';
 
     if (msUntilStartCalling <= 0) {
         // Less than 30 minutes until class: start calling immediately!
@@ -5121,6 +5139,61 @@ async function main() {
                         }
                         continue;
                     }
+                }
+
+                // ── Direct Command Handling for Call Setup & Test (Flexible Prefix & Typo-Tolerant) ──
+                if (/^[!\/]?s(et|e)call(\s|$)/i.test(text)) {
+                    const target = rawText.replace(/^[!\/]?s(et|e)call\s*/i, '').trim();
+                    const currentTarget = getCallMeBotUserForChat(fromChatId);
+                    if (!target) {
+                        await sendTelegram(
+                            `📞 *CallMeBot Voice Settings*\n\n` +
+                            `Current CallMeBot User: \`${currentTarget || 'Not configured ❌'}\`\n\n` +
+                            `*How to set your Telegram account for free voice calls:*\n` +
+                            `\`!setcall @your_telegram_username\` (or simply \`setcall @your_username\`)\n\n` +
+                            `⚠️ *IMPORTANT ONE-TIME SETUP:* Telegram requires you to authorize CallMeBot once:\n` +
+                            `1️⃣ Open Telegram and search for: *@CallMeBot_txtbot*\n` +
+                            `   (or tap: https://t.me/CallMeBot_txtbot)\n` +
+                            `2️⃣ Press *START* or send */start*\n` +
+                            `3️⃣ Send \`!testcallmebot\` to test your voice call!`,
+                            fromChatId
+                        );
+                        continue;
+                    }
+
+                    const cleanTarget = target.startsWith('@') || target.startsWith('+') ? target : `@${target}`;
+                    saveCallConfig(cleanTarget, fromChatId);
+                    await sendTelegram(
+                        `✅ *CallMeBot username saved:* \`${cleanTarget}\`\n\n` +
+                        `⚠️ *ONE-TIME SETUP REQUIRED:* Telegram requires you to authorize CallMeBot once so it can ring you:\n` +
+                        `1️⃣ Open: https://t.me/CallMeBot_txtbot\n` +
+                        `2️⃣ Click *START* or send \`/start\`\n\n` +
+                        `👉 Once authorized, test your voice call immediately by sending:\n` +
+                        `\`!testcallmebot\` (or \`testcall\`)`,
+                        fromChatId
+                    );
+                    continue;
+                }
+
+                if (/^[!\/]?test(callmebot|telegramcall|call)$/i.test(text)) {
+                    const userCallTarget = getCallMeBotUserForChat(fromChatId);
+                    if (!userCallTarget) {
+                        await sendTelegram(
+                            `⚠️ No CallMeBot user configured yet!\n\n` +
+                            `Set your Telegram username with:\n` +
+                            `\`!setcall @your_telegram_username\` (or \`setcall @your_username\`)`,
+                            fromChatId
+                        );
+                        continue;
+                    }
+                    await sendTelegram(`📞 Placing test voice call to *${userCallTarget}* via CallMeBot... Ringing now!`, fromChatId);
+                    const callRes = await triggerCallMeBotVoiceCall(userCallTarget, "This is a test call for your Saveetha Attendance reminder. Voice call alerts are active and working!");
+                    if (callRes.success) {
+                        await sendTelegram(`✅ *Voice call dispatched to ${userCallTarget}!* Check your Telegram app for the incoming call.`, fromChatId);
+                    } else {
+                        await sendTelegram(`❌ *CallMeBot Call Failed:*\n\n${callRes.reason}`, fromChatId);
+                    }
+                    continue;
                 }
 
                 // ── AI Natural Language & Multimodal Processing ──────────────
@@ -5817,15 +5890,12 @@ JSON Schema:
                 }
 
                 if (text.startsWith('!setcall')) {
-                    if (!isSuperAdmin(fromChatId)) {
-                        await sendTelegram(`⛔ Call settings are restricted to Super Admin only.`, fromChatId);
-                        continue;
-                    }
                     const target = rawText.replace(/!setcall/i, '').trim();
+                    const currentTarget = getCallMeBotUserForChat(fromChatId);
                     if (!target) {
                         await sendTelegram(
                             `📞 *CallMeBot Voice Settings*\n\n` +
-                            `Current CallMeBot User: \`${CALLMEBOT_USER || 'Not configured ❌'}\`\n\n` +
+                            `Current CallMeBot User: \`${currentTarget || 'Not configured ❌'}\`\n\n` +
                             `*How to set your Telegram account for free voice calls:*\n` +
                             `\`!setcall @your_telegram_username\`\n\n` +
                             `⚠️ *IMPORTANT ONE-TIME SETUP:* Telegram requires you to authorize CallMeBot once:\n` +
@@ -5839,7 +5909,7 @@ JSON Schema:
                     }
 
                     const cleanTarget = target.startsWith('@') || target.startsWith('+') ? target : `@${target}`;
-                    saveCallConfig(cleanTarget);
+                    saveCallConfig(cleanTarget, fromChatId);
                     await sendTelegram(
                         `✅ *CallMeBot username saved:* \`${cleanTarget}\`\n\n` +
                         `⚠️ *ONE-TIME SETUP REQUIRED:* Telegram requires you to authorize CallMeBot once so it can ring you:\n` +
@@ -5853,11 +5923,8 @@ JSON Schema:
                 }
 
                 if (text === '!testcallmebot' || text === '!testtelegramcall') {
-                    if (!isSuperAdmin(fromChatId)) {
-                        await sendTelegram(`⛔ Voice call test is restricted to Super Admin only.`, fromChatId);
-                        continue;
-                    }
-                    if (!CALLMEBOT_USER) {
+                    const userCallTarget = getCallMeBotUserForChat(fromChatId);
+                    if (!userCallTarget) {
                         await sendTelegram(
                             `⚠️ No CallMeBot user configured yet!\n\n` +
                             `Set your Telegram username with:\n` +
