@@ -183,7 +183,7 @@ async function triggerTwilioVoiceCall(message, customTo, chatId = null) {
     });
 }
 
-let CALLMEBOT_USER = process.env.CALLMEBOT_USER || '';
+let CALLMEBOT_USER = process.env.CALLMEBOT_USER || '@akil.404';
 let CALLMEBOT_ACCOUNTS = {};
 const CALLMEBOT_CONFIG_FILE = path.join(__dirname, 'call_config.json');
 
@@ -5933,10 +5933,10 @@ JSON Schema:
                         );
                         continue;
                     }
-                    await sendTelegram(`📞 Placing test voice call to *${CALLMEBOT_USER}* via CallMeBot... Ringing now!`, fromChatId);
-                    const callRes = await triggerCallMeBotVoiceCall(CALLMEBOT_USER, "This is a test call for your Saveetha Attendance reminder. Voice call alerts are active and working!");
+                    await sendTelegram(`📞 Placing test voice call to *${userCallTarget}* via CallMeBot... Ringing now!`, fromChatId);
+                    const callRes = await triggerCallMeBotVoiceCall(userCallTarget, "This is a test call for your Saveetha Attendance reminder. Voice call alerts are active and working!");
                     if (callRes.success) {
-                        await sendTelegram(`✅ *Voice call dispatched to ${CALLMEBOT_USER}!* Check your Telegram app for the incoming call.`, fromChatId);
+                        await sendTelegram(`✅ *Voice call dispatched to ${userCallTarget}!* Check your Telegram app for the incoming call.`, fromChatId);
                     } else {
                         await sendTelegram(`❌ *CallMeBot Call Failed:*\n\n${callRes.reason}`, fromChatId);
                     }
@@ -5997,11 +5997,12 @@ JSON Schema:
                     }
 
                     // Fallback to CallMeBot
-                    if (CALLMEBOT_USER) {
-                        await sendTelegram(`📞 Placing call to *${CALLMEBOT_USER}* via CallMeBot...`, fromChatId);
-                        const callRes = await triggerCallMeBotVoiceCall(CALLMEBOT_USER, "This is a test call for your Saveetha Hostel Attendance reminder.");
+                    const userCallFallback = getCallMeBotUserForChat(fromChatId);
+                    if (userCallFallback) {
+                        await sendTelegram(`📞 Placing call to *${userCallFallback}* via CallMeBot...`, fromChatId);
+                        const callRes = await triggerCallMeBotVoiceCall(userCallFallback, "This is a test call for your Saveetha Hostel Attendance reminder.");
                         if (callRes.success) {
-                            await sendTelegram(`✅ Call dispatched to ${CALLMEBOT_USER}!`, fromChatId);
+                            await sendTelegram(`✅ Call dispatched to ${userCallFallback}!`, fromChatId);
                         } else {
                             await sendTelegram(`❌ Call failed: ${callRes.reason || callRes.raw}`, fromChatId);
                         }
