@@ -472,68 +472,59 @@ function formatAttendanceImpactMessage(impact, fromStr = '', toStr = '') {
     }
 
     const { criticalDropCount, semCriticalDropCount, items } = impact;
-    let msg = `📊 *80% Attendance & Whole Semester Impact Analysis:*\n`;
-
     const impactedItems = items.filter(it => it.missedCount > 0);
     const untouchedCount = items.length - impactedItems.length;
 
     if (impactedItems.length === 0) {
-        msg += `✅ *Safe to Leave:* No scheduled classes fall into this leave window. Your attendance percentage is completely unaffected.\n`;
-        return msg;
+        return `✅ *Safe to Leave:* No classes fall into this leave window. Your attendance is completely unaffected.`;
     }
 
+    let msg = `📊 *80% Attendance Impact Analysis*\n`;
+
+    // High level verdict banner
     if (semCriticalDropCount > 0) {
-        msg += `🚨 *SEMESTER WARNING: ${semCriticalDropCount} subject(s) will drop below 80% on the WHOLE SEMESTER* even if you attend every remaining class! Review carefully.\n\n`;
+        msg += `🎯 *Verdict:* 🚨 *Permanent Shortage in ${semCriticalDropCount} subject(s)!*\n`;
     } else if (criticalDropCount > 0) {
-        msg += `⚠️ *TEMPORARY DIP: ${criticalDropCount} subject(s) drop below 80% right after leave, but are SAFE on the whole semester* if you attend remaining classes.\n\n`;
+        msg += `🎯 *Verdict:* ⚠️ *Temporary Dip, but Safe on Whole Sem!* (Recoverable)\n`;
     } else {
-        msg += `✅ *ALL SUBJECTS SAFE!* Attendance stays ≥ 80% immediately and through the end of the semester.\n\n`;
+        msg += `🎯 *Verdict:* ✅ *Safe to take leave!* All subjects stay ≥80% through semester end.\n`;
     }
+    msg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-    // List affected subjects
+    // Clean, crisp per-subject breakdown (3 concise lines per subject)
     for (const it of impactedItems) {
-        const subDisplay = it.subject.replace(/([_*`\[])/g, '');
+        const subDisplay = it.subject.replace(/([_*`\[\]])/g, '').replace(/\s+/g, ' ').trim();
         const dropSign = it.pctDiff < 0 ? `${it.pctDiff}%` : `0.0%`;
 
+        let icon = '✅';
         if (it.willDropBelow80WholeSem) {
-            msg += `🚨 *${subDisplay}* — [PERMANENT SEMESTER SHORTAGE RISK]\n`;
+            icon = '🚨';
         } else if (it.isProjectedBelow80) {
-            msg += `⚠️ *${subDisplay}* — [TEMPORARY SHORTAGE, RECOVERABLE]\n`;
-        } else {
-            msg += `✅ *${subDisplay}* — [SAFE]\n`;
+            icon = '⚠️';
         }
 
-        msg += `   • *Current Attendance:* ${it.currentPercent}% (${it.currentAttended}/${it.currentTotal})\n`;
-        msg += `   • *Immediately After Leave:* ${it.projectedPercent}% (${it.currentAttended}/${it.projectedTotal}) 🔻 [${dropSign}]\n`;
-        
-        if (it.isProjectedBelow80) {
-            msg += `   • ⚠️ Misses *${it.missedCount} class(es)*! Needs *${it.recoveryClassesNeeded} consecutive classes* to recover immediately to 80%.\n`;
-        } else {
-            msg += `   • Immediate Buffer: can miss *${it.bufferRemaining} more class(es)* right now.\n`;
-        }
+        msg += `${icon} *${subDisplay}*\n`;
+        msg += `• *Classes Missed:* ${it.missedCount}\n`;
+        msg += `• *Attendance:* ${it.currentPercent}% ➔ *${it.projectedPercent}%* 🔻 [${dropSign}]\n`;
 
-        // Whole Semester Outlook
-        msg += `   🎓 *End-of-Semester Outlook (if you attend all remaining classes):*\n`;
         if (it.willDropBelow80WholeSem) {
-            msg += `   • 🚨 *WILL DROP BELOW 80% ON WHOLE SEMESTER:* Even if you attend 100% of all ${it.remainingSemClasses} remaining classes, your final semester attendance will peak at *${it.endOfSemMaxPercent}%* (< 80%). (Total missed: ${it.totalMissedWithLeave} vs max allowed ${it.maxAllowedSemAbsences}).\n\n`;
+            msg += `• *Sem Outlook:* Max *${it.endOfSemMaxPercent}%* (Permanent Shortage 🚨)\n`;
+            msg += `• ⚠️ Exceeds semester limit (${it.totalMissedWithLeave}/${it.maxAllowedSemAbsences} missed). Cannot reach 80% even with 100% future attendance.\n\n`;
+        } else if (it.isProjectedBelow80) {
+            msg += `• *Sem Outlook:* Up to *${it.endOfSemMaxPercent}%* (Safe ✅)\n`;
+            msg += `• *Cushion:* Can still miss *${it.semBunkCushion} more class(es)* this sem (Needs ${it.recoveryClassesNeeded} classes to recover immediately).\n\n`;
         } else {
-            msg += `   • ✅ *SAFE ON WHOLE SEMESTER:* If you attend remaining classes, your end-of-semester attendance will reach *${it.endOfSemMaxPercent}%* (Safe ≥ 80%).\n`;
-            msg += `   • ℹ️ Must attend at least *${it.minRequiredToAttendTillSemEnd}* of ${it.remainingSemClasses} upcoming classes (Cushion: *${it.semBunkCushion} more bunks* allowed till sem end).\n\n`;
+            msg += `• *Sem Outlook:* Up to *${it.endOfSemMaxPercent}%* (Safe ✅)\n`;
+            msg += `• *Bunk Cushion:* Can still miss *${it.semBunkCushion} more class(es)* this semester.\n\n`;
         }
     }
 
+    msg += `━━━━━━━━━━━━━━━━━━━━\n`;
     if (untouchedCount > 0) {
-        msg += `ℹ️ _${untouchedCount} other subject(s) have no classes scheduled during this leave._\n`;
+        msg += `ℹ️ _${untouchedCount} other subject(s) have no classes during this leave._\n`;
     }
 
-    // Final Summary Verdict
-    if (semCriticalDropCount === 0) {
-        msg += `\n🎯 *Whole Semester Verdict:* Taking this leave will *NOT* pull your attendance below 80% by the end of the semester, provided you attend remaining classes!`;
-    } else {
-        msg += `\n⚠️ *Whole Semester Verdict:* Taking this leave puts *${semCriticalDropCount} subject(s)* past the point of no return (< 80% final semester attendance).`;
-    }
-
-    return msg;
+    return msg.trim();
 }
 
 /**
@@ -1071,21 +1062,9 @@ async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, 
         const impact = calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses);
         const report = formatAttendanceImpactMessage(impact, fromStr, toStr);
 
-        let classSnippet = '';
-        if (overlappingClasses.length > 0) {
-            classSnippet = `📚 *Classes Missed During This Leave (${overlappingClasses.length}):*\n` +
-                overlappingClasses.slice(0, 5).map(c => `• ${c}`).join('\n') + '\n';
-            if (overlappingClasses.length > 5) {
-                classSnippet += `• _+${overlappingClasses.length - 5} more classes_\n`;
-            }
-            classSnippet += '\n';
-        }
-
         const finalMsg = `🗓️ *Leave Attendance Simulation Report*\n` +
-            `• *From:* \`${fromStr}\`\n` +
-            `• *To:* \`${toStr}\`\n` +
-            `• *Total Missed Classes:* ${overlappingClasses.length}\n\n` +
-            classSnippet +
+            `• *Duration:* \`${fromStr}\` ➔ \`${toStr}\`\n` +
+            `• *Classes Covered:* ${overlappingClasses.length}\n\n` +
             report;
 
         await sendTelegram(finalMsg, chatId);
