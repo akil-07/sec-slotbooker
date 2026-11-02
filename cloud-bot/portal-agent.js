@@ -86,45 +86,72 @@ function formatPortalDateTime(dateObj, hour = 8, minute = 0, ampm = 'AM') {
     return `${day}/${month}/${year} ${h}:${m} ${ampm.toUpperCase()}`;
 }
 
+function formatOrdinalDate(dateObj) {
+    const d = new Date(dateObj);
+    const day = d.getDate();
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const month = months[d.getMonth()];
+    const year = d.getFullYear();
+
+    let suffix = 'th';
+    if (day % 10 === 1 && day !== 11) suffix = 'st';
+    else if (day % 10 === 2 && day !== 12) suffix = 'nd';
+    else if (day % 10 === 3 && day !== 13) suffix = 'rd';
+
+    return `${day}${suffix} ${month} ${year}`;
+}
+
+function formatShortDate(dateObj) {
+    const d = new Date(dateObj);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    return `${day}/${month}/${d.getFullYear()}`;
+}
+
 /**
- * Formulate a professional student leave letter based on type, dates, and reason
+ * Formulate official Saveetha Engineering College letter matching the exact college format
  */
-async function generateLeaveLetter(leaveType, title, fromStr, toStr, rawReason, studentName = 'Student', callSmartAI = null) {
-    if (callSmartAI && typeof callSmartAI === 'function') {
-        try {
-            const prompt = `You are a formal letter assistant for a Saveetha University student named "${studentName}".
-The student is drafting a formal leave/OD application on the college portal.
-Details:
-- Application Type: ${leaveType}
-- Title / Purpose: ${title}
-- Duration: From ${fromStr} to ${toStr}
-- Student's Reason: "${rawReason}"
+function buildOfficialLeaveLetter({ leaveType, rawReason, fromDate, toDate, studentName, department }) {
+    const fromOrd = formatOrdinalDate(fromDate);
+    const toOrd = formatOrdinalDate(toDate);
+    const datePhrase = fromOrd === toOrd ? `on ${fromOrd}` : `from ${fromOrd} to ${toOrd}`;
+    const todayShort = formatShortDate(new Date());
 
-Write a concise, professional 3-to-4 sentence formal letter body for the application.
-Rules:
-- Include formal greeting ("Respected Faculty / Mentor,").
-- Clearly mention the reason and the exact duration from ${fromStr} to ${toStr}.
-- Mention that academic coursework will be caught up promptly.
-- Polite sign-off with student name.
-- Return ONLY the clean letter text (no markdown formatting, no backticks, no subject line).`;
+    const isGatePass = (leaveType || '').includes('GatePass');
+    const isOd = leaveType === 'OnDuty-Students';
+    const isMedical = leaveType === 'Medical Leave - Students';
 
-            const aiRes = await callSmartAI(prompt, [], rawReason, false);
-            if (aiRes && aiRes.trim().length > 30) {
-                return aiRes.trim();
-            }
-        } catch (_) {}
+    let toRecipient = 'The Class Advisor / HOD\nSaveetha Engineering College\nChennai';
+    let subjectLine = 'Request for Leave Permission';
+    let p1 = `I am writing to request permission for leave ${datePhrase} due to ${rawReason || 'personal reasons'}.`;
+    let p2 = `I kindly request you to grant me leave for the above-mentioned period. I will ensure that I catch up on all academic topics and resume my regular academic activities on ${toOrd}.`;
+
+    if (isGatePass) {
+        toRecipient = 'The Hostel Warden\nSaveetha Engineering College\nChennai';
+        subjectLine = 'Request for Hostel Gate Pass';
+        p1 = `I am writing to request permission to leave the hostel ${datePhrase} due to ${rawReason || 'personal reasons'}.`;
+        p2 = `I kindly request you to grant me a gate pass for the above-mentioned period. I will return to the hostel on ${toOrd} and resume my regular hostel and academic activities.`;
+    } else if (isOd) {
+        toRecipient = 'The Head of the Department\nSaveetha Engineering College\nChennai';
+        subjectLine = 'Request for On-Duty (OD) Permission';
+        p1 = `I am writing to request On-Duty (OD) permission ${datePhrase} to participate in ${rawReason || 'an official college symposium / technical event'}.`;
+        p2 = `I kindly request you to grant me On-Duty attendance for the above-mentioned period. I will ensure that I catch up on all academic topics and complete all coursework promptly.`;
+    } else if (isMedical) {
+        toRecipient = 'The Class Advisor / HOD\nSaveetha Engineering College\nChennai';
+        subjectLine = 'Request for Medical Leave';
+        p1 = `I am writing to request medical leave ${datePhrase} due to ${rawReason || 'ill health and medical rest'}.`;
+        p2 = `I kindly request you to grant me medical leave for the above-mentioned period. I will ensure that I catch up on all missed academic topics and resume regular classes on ${toOrd}.`;
     }
 
-    // High quality deterministic templates
-    if (leaveType === 'OnDuty-Students') {
-        return `Respected Faculty / Mentor,\n\nI am writing to formally request On-Duty (OD) attendance from ${fromStr} to ${toStr} as I am participating in ${rawReason || 'an official college symposium / technical event'}. I kindly request you to approve my OD attendance for the scheduled classes during this period.\n\nThank you.\nSincerely,\n${studentName}`;
-    } else if (leaveType === 'Medical Leave - Students') {
-        return `Respected Faculty / Mentor,\n\nI am writing to formally request medical leave from ${fromStr} to ${toStr} due to ${rawReason || 'health issues and doctor-advised rest'}. I will ensure that I catch up on all missed academic topics and assignments upon my return. Kindly consider and grant me leave for these sessions.\n\nThank you.\nSincerely,\n${studentName}`;
-    } else if (leaveType.includes('GatePass')) {
-        return `Respected Warden / Advisor,\n\nI am submitting this hostel gate pass request from ${fromStr} to ${toStr} for ${rawReason || 'personal work / visiting home'}. Kindly grant permission for the gate pass.\n\nThank you.\nSincerely,\n${studentName}`;
-    } else {
-        return `Respected Faculty / Mentor,\n\nI am writing to formally request leave from ${fromStr} to ${toStr} due to ${rawReason || 'personal circumstances'}. I will coordinate with my classmates and professors to complete all coursework covered during my absence. Kindly approve my leave application.\n\nThank you.\nSincerely,\n${studentName}`;
-    }
+    const p3 = 'I shall be grateful for your kind consideration and approval.';
+
+    const formattedName = studentName && studentName.toLowerCase() === 'akil s' ? 'Akil S.' : (studentName || 'Akil S.');
+    const deptLine = department || 'B.Tech – Information Technology';
+
+    return {
+        subject: subjectLine,
+        letterText: `To\n${toRecipient}\n\nSubject: ${subjectLine}\n\nRespected Sir,\n\n${p1}\n\n${p2}\n\n${p3}\n\nThank you.\n\nYours obediently,\n${formattedName}\n${deptLine}\nSaveetha Engineering College\nDate: ${todayShort}`
+    };
 }
 
 /**
@@ -187,8 +214,9 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         tomorrow.setDate(tomorrow.getDate() + 1);
 
         const targetDate = leaveData.date ? new Date(leaveData.date) : (leaveData.isTomorrow ? tomorrow : today);
+        const targetDateTo = leaveData.toDate ? new Date(leaveData.toDate) : targetDate;
         const fromStr = leaveData.fromTime || formatPortalDateTime(targetDate, 8, 0, 'AM');
-        const toStr = leaveData.toTime || formatPortalDateTime(targetDate, 5, 0, 'PM');
+        const toStr = leaveData.toTime || formatPortalDateTime(targetDateTo, 5, 0, 'PM');
 
         const fromInput = page.locator('input[name*="from" i], input[placeholder*="from" i], #id_leave_from').first();
         if (await fromInput.isVisible()) {
@@ -208,9 +236,21 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             await subjectInput.fill(subject);
         }
 
-        // Generate full formal letter body
-        const studentName = session.config ? (session.config.name || 'Student') : 'Student';
-        const letterBody = await generateLeaveLetter(resolvedType, title, fromStr, toStr, reason, studentName, callSmartAI);
+        // Generate exact official letter matching Saveetha format
+        const studentName = session.config ? (session.config.name || 'Akil S.') : 'Akil S.';
+        const department = session.config ? (session.config.department || 'B.Tech – Information Technology') : 'B.Tech – Information Technology';
+        const officialDoc = buildOfficialLeaveLetter({
+            leaveType: resolvedType,
+            rawReason: reason,
+            fromDate: targetDate,
+            toDate: targetDateTo,
+            studentName,
+            department
+        });
+        const letterBody = officialDoc.letterText;
+        if (!leaveData.subject) {
+            subject = officialDoc.subject;
+        }
 
         // E. Content (Rich text editor or standard textarea)
         const contentArea = page.locator('textarea[name*="content" i], textarea[name*="reason" i], div[contenteditable="true"]').first();
