@@ -24,6 +24,7 @@ const { GoogleGenAI } = require('@google/genai');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROK_API_KEY = process.env.GROK_API_KEY || process.env.XAI_API_KEY;
 const aiClient = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 const CHAT_ID = process.env.CHAT_ID;
@@ -905,7 +906,13 @@ function getChatHistory(chatId) {
 
 async function callGroq(messages, jsonMode = true) {
     if (!GROQ_API_KEY) return null;
-    const models = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+    const models = [
+        'openai/gpt-oss-120b',
+        'openai/gpt-oss-20b',
+        'qwen/qwen3.8-27b',
+        'llama-3.3-70b-versatile',
+        'llama-3.1-8b-instant'
+    ];
     let lastError = null;
 
     for (const model of models) {
@@ -945,6 +952,91 @@ async function callGroq(messages, jsonMode = true) {
     throw lastError || new Error('Groq API calls failed');
 }
 
+async function callGrok(messages, jsonMode = true) {
+    if (!GROK_API_KEY) return null;
+    const models = [
+        'grok-2-latest',
+        'grok-beta',
+        'grok-2-1212'
+    ];
+    let lastError = null;
+
+    for (const model of models) {
+        try {
+            const body = {
+                model,
+                messages,
+                temperature: 0.1
+            };
+            if (jsonMode) {
+                body.response_format = { type: 'json_object' };
+            }
+
+            const res = await fetch('https://api.x.ai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${GROK_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body)
+            });
+
+            if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(`xAI Grok HTTP ${res.status}: ${errText}`);
+            }
+
+            const data = await res.json();
+            if (data && data.choices && data.choices[0] && data.choices[0].message) {
+                return data.choices[0].message.content;
+            }
+        } catch (e) {
+            lastError = e;
+            console.warn(`[xAI Grok] Model ${model} failed: ${e.message}`);
+        }
+    }
+    throw lastError || new Error('xAI Grok API calls failed');
+}
+
+async function callGrokVision(prompt, imgBase64) {
+    if (!GROK_API_KEY) return null;
+    try {
+        const body = {
+            model: 'grok-2-vision-1212',
+            messages: [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: prompt },
+                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}` } }
+                    ]
+                }
+            ],
+            temperature: 0.1,
+            response_format: { type: 'json_object' }
+        };
+        const res = await fetch('https://api.x.ai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${GROK_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`xAI Grok Vision HTTP ${res.status}: ${errText}`);
+        }
+        const data = await res.json();
+        if (data && data.choices && data.choices[0] && data.choices[0].message) {
+            return data.choices[0].message.content;
+        }
+    } catch (e) {
+        console.warn(`[xAI Grok Vision] Failed: ${e.message}`);
+    }
+    return null;
+}
+
 async function callGemini(contents) {
     if (!aiClient) return null;
     const models = [
@@ -981,44 +1073,59 @@ async function callGemini(contents) {
 }
 
 async function callSmartAI(systemPrompt, history = [], userPrompt = '', jsonMode = true) {
-    // 1. Primary Engine: Groq (Ultra-fast ~1s inference)
+    const formattedMessages = [{ role: 'system', content: systemPrompt }];
+    if (Array.isArray(history)) {
+        for (const h of history) {
+            const role = h.role === 'model' ? 'assistant' : 'user';
+            const text = h.parts && h.parts[0] ? h.parts[0].text : '';
+            if (text) formattedMessages.push({ role, content: text });
+        }
+    }
+    if (userPrompt) {
+        formattedMessages.push({ role: 'user', content: userPrompt });
+    }
+
+    // 1. Primary Engine: Groq (Ultra-fast ~0.2s inference)
     if (GROQ_API_KEY) {
         try {
-            const groqMessages = [{ role: 'system', content: systemPrompt }];
-            if (Array.isArray(history)) {
-                for (const h of history) {
-                    const role = h.role === 'model' ? 'assistant' : 'user';
-                    const text = h.parts && h.parts[0] ? h.parts[0].text : '';
-                    if (text) groqMessages.push({ role, content: text });
-                }
-            }
-            if (userPrompt) {
-                groqMessages.push({ role: 'user', content: userPrompt });
-            }
-
-            const res = await callGroq(groqMessages, jsonMode);
+            const res = await callGroq(formattedMessages, jsonMode);
             if (res) return res;
         } catch (err) {
-            console.warn(`[AI] Groq primary engine error, seamlessly falling back to Gemini: ${err.message}`);
+            console.warn(`[AI] Groq primary engine error, cascading to xAI Grok: ${err.message}`);
         }
     }
 
-    // 2. Secondary Engine: Gemini Fallback
+    // 2. Secondary Engine: xAI Grok
+    if (GROK_API_KEY) {
+        try {
+            const res = await callGrok(formattedMessages, jsonMode);
+            if (res) return res;
+        } catch (err) {
+            console.warn(`[AI] xAI Grok engine error, cascading to Gemini: ${err.message}`);
+        }
+    }
+
+    // 3. Tertiary Engine: Google Gemini Fallback
     if (aiClient) {
-        const geminiContents = [
-            { role: 'user', parts: [{ text: systemPrompt }] },
-            { role: 'model', parts: [{ text: '{"action":"reply","message":"Ready to help!"}' }] }
-        ];
-        if (Array.isArray(history)) {
-            geminiContents.push(...history);
+        try {
+            const geminiContents = [
+                { role: 'user', parts: [{ text: systemPrompt }] },
+                { role: 'model', parts: [{ text: '{"action":"reply","message":"Ready to help!"}' }] }
+            ];
+            if (Array.isArray(history)) {
+                geminiContents.push(...history);
+            }
+            if (userPrompt) {
+                geminiContents.push({ role: 'user', parts: [{ text: userPrompt }] });
+            }
+            const res = await callGemini(geminiContents);
+            if (res) return res;
+        } catch (err) {
+            console.warn(`[AI] Gemini engine error: ${err.message}`);
         }
-        if (userPrompt) {
-            geminiContents.push({ role: 'user', parts: [{ text: userPrompt }] });
-        }
-        return await callGemini(geminiContents);
     }
 
-    throw new Error('No AI provider available (neither Groq nor Gemini)');
+    throw new Error('No AI provider available (Groq, xAI Grok, and Gemini all unavailable or unconfigured)');
 }
 
 function parseAiJson(aiRaw) {
@@ -5261,8 +5368,8 @@ async function main() {
 
                 // ── AI Natural Language & Multimodal Processing ──────────────
                 if (hasPhoto || (!text.startsWith('!') && !text.startsWith('/'))) {
-                    if (!aiClient && !GROQ_API_KEY) {
-                        await sendTelegram(`⚠️ AI not configured (missing Groq and Gemini API keys). Use standard ! commands.`, fromChatId);
+                    if (!aiClient && !GROQ_API_KEY && !GROK_API_KEY) {
+                        await sendTelegram(`⚠️ AI not configured (missing Groq, Grok, and Gemini API keys). Use standard ! commands.`, fromChatId);
                         continue;
                     }
 
@@ -5271,7 +5378,7 @@ async function main() {
 
                         // Case 1: Screenshot / Image sent by student
                         if (hasPhoto) {
-                            await sendTelegram(`🔍 *Analyzing screenshot with Gemini Vision...*`, fromChatId);
+                            await sendTelegram(`🔍 *Analyzing screenshot with AI Vision...*`, fromChatId);
                             const photoObj = msg.photo[msg.photo.length - 1];
                             const imgBuf = await downloadTelegramFile(photoObj.file_id);
                             if (!imgBuf) {
@@ -5300,15 +5407,34 @@ Return ONLY a valid JSON object (no markdown code blocks, no backticks):
   "message": "Friendly explanation with emojis"
 }`;
 
-                            const visionText = await callGemini([
-                                {
-                                    role: 'user',
-                                    parts: [
-                                        { inlineData: { mimeType: 'image/png', data: imgBuf.toString('base64') } },
-                                        { text: visionPrompt }
-                                    ]
+                            let visionText = null;
+                            if (aiClient) {
+                                try {
+                                    visionText = await callGemini([
+                                        {
+                                            role: 'user',
+                                            parts: [
+                                                { inlineData: { mimeType: 'image/png', data: imgBuf.toString('base64') } },
+                                                { text: visionPrompt }
+                                            ]
+                                        }
+                                    ]);
+                                } catch (e) {
+                                    console.warn(`[Vision] Gemini failed, attempting fallback: ${e.message}`);
                                 }
-                            ]);
+                            }
+
+                            if (!visionText && GROK_API_KEY) {
+                                try {
+                                    visionText = await callGrokVision(visionPrompt, imgBuf.toString('base64'));
+                                } catch (e) {
+                                    console.warn(`[Vision] Grok vision failed: ${e.message}`);
+                                }
+                            }
+
+                            if (!visionText) {
+                                throw new Error('Vision analysis failed across available providers');
+                            }
 
                             aiData = parseAiJson(visionText);
                             if (aiData.message) {
