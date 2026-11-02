@@ -233,6 +233,44 @@ async function fetchLeaveSchedulesFromPortal(page, fromStr, toStr) {
     return classes;
 }
 
+/**
+ * Simplifies a raw Saveetha timetable schedule row into a clean, human-readable line:
+ * "• 19AI305 — Advanced C Programming (Nov 02, 09:45 - 11:14)"
+ */
+function simplifyScheduleRow(row) {
+    if (!row) return '';
+    const str = String(row).replace(/\s+/g, ' ').trim();
+
+    // 1. Extract course code & name: e.g. "19AI305 — Advanced C Programming"
+    let subject = '';
+    const codeNameMatch = str.match(/\b([0-9]{2}[A-Z]{2,4}[0-9]{3}[A-Z]?|[A-Z]+-[A-Z]+-[A-Z0-9]+|[A-Z]{3,4})\s*[-—–]\s*([A-Za-z0-9&/ ]+?)(?=\s+[0-9]{2}[A-Z0-9]{4,8}|\s+Student|\s+Nov|\s+Dec|\s+Jan|\s+Feb|\s+Mar|\s+Apr|\s+May|\s+Jun|\s+Jul|\s+Aug|\s+Sep|\s+Oct|$)/i);
+
+    if (codeNameMatch) {
+        subject = `${codeNameMatch[1].toUpperCase()} — ${codeNameMatch[2].trim()}`;
+    } else {
+        // Fallback: strip noise words
+        subject = str.replace(/Academic|Student\s*·\s*Class|Student\s*:\s*Class|\d{4}/gi, '').trim();
+    }
+
+    // 2. Extract date & start-end times
+    const times = str.match(/([A-Za-z]{3}\s+\d{1,2}(?:,\s*\d{4})?)\s+(\d{1,2}:\d{2})/g);
+    let timeSnippet = '';
+    if (times && times.length >= 2) {
+        const dMatch = times[0].match(/([A-Za-z]{3}\s+\d{1,2})/);
+        const t1 = times[0].match(/\d{1,2}:\d{2}/)[0];
+        const t2 = times[1].match(/\d{1,2}:\d{2}/)[0];
+        const datePart = dMatch ? dMatch[1] : '';
+        timeSnippet = datePart ? `(${datePart}, ${t1} - ${t2})` : `(${t1} - ${t2})`;
+    } else {
+        const anyTimes = str.match(/\d{2}:\d{2}/g);
+        if (anyTimes && anyTimes.length >= 2) {
+            timeSnippet = `(${anyTimes[0]} - ${anyTimes[1]})`;
+        }
+    }
+
+    return timeSnippet ? `• ${subject} ${timeSnippet}` : `• ${subject}`;
+}
+
 function formatOrdinalDate(dateObj) {
     const d = new Date(dateObj);
     const day = d.getDate();
@@ -339,7 +377,7 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
             });
         }
 
-        const key = matchedRecord ? matchedRecord.subject : (code || str.substring(0, 30));
+        const key = matchedRecord ? matchedRecord.subject : (code || str);
         missedCounts[key] = (missedCounts[key] || 0) + 1;
     });
 
@@ -779,11 +817,8 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         // 9. Format Telegram Report for Student
         let classListStr = '';
         if (overlappingClasses.length > 0) {
-            classListStr = `\n📚 *Classes Covered During This Leave (${overlappingClasses.length}):*\n` +
-                overlappingClasses.slice(0, 6).map(c => `• ${c}`).join('\n');
-            if (overlappingClasses.length > 6) {
-                classListStr += `\n• _+${overlappingClasses.length - 6} more classes_`;
-            }
+            classListStr = `\n📚 *Scheduled Classes Covered (${overlappingClasses.length}):*\n` +
+                overlappingClasses.map(c => simplifyScheduleRow(c)).join('\n');
         } else {
             classListStr = `\nℹ️ *Overlapping Classes:* None detected for this specific window.`;
         }
@@ -1062,9 +1097,16 @@ async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, 
         const impact = calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses);
         const report = formatAttendanceImpactMessage(impact, fromStr, toStr);
 
+        let classSnippet = '';
+        if (overlappingClasses.length > 0) {
+            classSnippet = `📚 *Scheduled Classes Covered (${overlappingClasses.length}):*\n` +
+                overlappingClasses.map(c => simplifyScheduleRow(c)).join('\n') + '\n\n';
+        }
+
         const finalMsg = `🗓️ *Leave Attendance Simulation Report*\n` +
             `• *Duration:* \`${fromStr}\` ➔ \`${toStr}\`\n` +
             `• *Classes Covered:* ${overlappingClasses.length}\n\n` +
+            classSnippet +
             report;
 
         await sendTelegram(finalMsg, chatId);
@@ -1086,6 +1128,7 @@ module.exports = {
     parseIndianDate,
     formatPortalDateTime,
     extractDateRangeFromText,
+    simplifyScheduleRow,
     calculateAttendanceLeaveImpact,
     formatAttendanceImpactMessage,
     simulateLeaveAttendanceImpact,
