@@ -8,6 +8,7 @@ process.on('uncaughtException', (error) => {
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const portalAgent = require('./portal-agent');
 const https = require('https');
 
 // Fix for Playwright temp dir permission issue
@@ -36,7 +37,8 @@ let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, i
 let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
 let superAdminNotificationsEnabled = true; // Added for super admin notifications toggle
 const pendingOtpRequests = new Map(); // chatId -> callback function
-const pendingTimeConfirmations = new Map(); // chatId -> { params, unusualTime, isTooEarly }
+const pendingTimeConfirmations = new Map();
+const pendingLeaveConfirmations = new Map(); // chatId -> { params, unusualTime, isTooEarly }
 
 function isSuperAdmin(chatId) {
     if (!chatId) return false;
@@ -82,7 +84,7 @@ function loadTwilioConfig() {
                 TWILIO_CONFIG = { ...TWILIO_CONFIG, ...data };
             }
         }
-    } catch (_) {}
+    } catch (_) { }
 }
 loadTwilioConfig();
 
@@ -102,9 +104,9 @@ function saveTwilioConfig(cfg, chatId = null) {
             accounts: TWILIO_ACCOUNTS
         };
         fs.writeFileSync(TWILIO_CONFIG_FILE, JSON.stringify(payload, null, 2));
-    } catch (_) {}
+    } catch (_) { }
     if (typeof syncTwilioConfigToGist === 'function') {
-        syncTwilioConfigToGist().catch(() => {});
+        syncTwilioConfigToGist().catch(() => { });
     }
 }
 
@@ -131,7 +133,7 @@ async function triggerTwilioVoiceCall(message, customTo, chatId = null) {
 
     const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
     const speechText = message || 'Attention! This is your Saveetha Hostel Attendance reminder. Please mark your hostel attendance now.';
-    
+
     // TwiML payload with clear speech and repetition
     const twiml = `<Response><Pause length="1"/><Say voice="Polly.Aditi" language="en-IN">${speechText}</Say><Pause length="2"/><Say voice="Polly.Aditi" language="en-IN">Repeating: ${speechText}</Say><Pause length="1"/></Response>`;
 
@@ -204,7 +206,7 @@ function loadCallConfig() {
                 if (data.accounts) CALLMEBOT_ACCOUNTS = { ...CALLMEBOT_ACCOUNTS, ...data.accounts };
             }
         }
-    } catch (_) {}
+    } catch (_) { }
 }
 loadCallConfig();
 
@@ -215,9 +217,9 @@ function saveCallConfig(target, chatId = null) {
     }
     try {
         fs.writeFileSync(CALLMEBOT_CONFIG_FILE, JSON.stringify({ user: target, accounts: CALLMEBOT_ACCOUNTS }, null, 2));
-    } catch (_) {}
+    } catch (_) { }
     if (typeof syncCallConfigToGist === 'function') {
-        syncCallConfigToGist(target).catch(() => {});
+        syncCallConfigToGist(target).catch(() => { });
     }
 }
 
@@ -346,7 +348,7 @@ async function syncBlockedToGist() {
                     'X-GitHub-Api-Version': '2022-11-28'
                 }
             }, (res) => {
-                res.on('data', () => {});
+                res.on('data', () => { });
                 res.on('end', () => {
                     if (res.statusCode >= 200 && res.statusCode < 300) resolve();
                     else reject(new Error(`Gist save failed: ${res.statusCode}`));
@@ -386,7 +388,7 @@ async function syncCallConfigToGist(target) {
                     'X-GitHub-Api-Version': '2022-11-28'
                 }
             }, (res) => {
-                res.on('data', () => {});
+                res.on('data', () => { });
                 res.on('end', () => {
                     if (res.statusCode >= 200 && res.statusCode < 300) resolve();
                     else reject(new Error(`Gist call config save failed: ${res.statusCode}`));
@@ -430,7 +432,7 @@ async function syncTwilioConfigToGist(cfg) {
                     'X-GitHub-Api-Version': '2022-11-28'
                 }
             }, (res) => {
-                res.on('data', () => {});
+                res.on('data', () => { });
                 res.on('end', () => {
                     if (res.statusCode >= 200 && res.statusCode < 300) resolve();
                     else reject(new Error(`Gist twilio config save failed: ${res.statusCode}`));
@@ -670,7 +672,7 @@ async function initAccounts() {
                         CALLMEBOT_USER = gistCall.user;
                         console.log('[Bot] Loaded Gist call config user:', CALLMEBOT_USER);
                     }
-                } catch (_) {}
+                } catch (_) { }
             }
             if (gist.files && gist.files['saveetha_twilio_config.json'] && gist.files['saveetha_twilio_config.json'].content) {
                 try {
@@ -682,7 +684,7 @@ async function initAccounts() {
                         TWILIO_CONFIG = { ...TWILIO_CONFIG, ...gistTwilio };
                         console.log('[Bot] Loaded Gist Twilio config. Default To:', TWILIO_CONFIG.toNumber, 'Accounts:', Object.keys(TWILIO_ACCOUNTS).join(', '));
                     }
-                } catch (_) {}
+                } catch (_) { }
             }
         }
     } catch (e) {
@@ -817,7 +819,7 @@ async function sendTelegram(text, chatId = CHAT_ID) {
             if (data.description && data.description.toLowerCase().includes('can\'t parse entities')) {
                 await apiRequest.post(url, {
                     data: { chat_id: chatId, text }
-                }).catch(() => {});
+                }).catch(() => { });
             }
         } else {
             console.log('[Telegram] Message sent.');
@@ -2050,7 +2052,7 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
             await page.waitForTimeout(5000);
 
             // Reload page so Django server-rendered HTML reflects when faculty generates OTP
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => { });
 
         } catch (e) {
             console.error(`[OTP] Polling error: ${e.message}`);
@@ -2075,7 +2077,7 @@ async function enterOtpOnPage(page, otp, phase = 'start') {
             'input[name*="inotp" i]',
             `form[data-otp-type="in" i] input:not([type="hidden"])`,
             `form[data-otp-form][data-otp-type="in" i] input:not([type="hidden"])`
-          ]
+        ]
         : [
             'input[placeholder*="Enter OUT OTP" i]',
             'input[placeholder*="OUT OTP" i]',
@@ -2083,7 +2085,7 @@ async function enterOtpOnPage(page, otp, phase = 'start') {
             'input[name*="outotp" i]',
             `form[data-otp-type="out" i] input:not([type="hidden"])`,
             `form[data-otp-form][data-otp-type="out" i] input:not([type="hidden"])`
-          ];
+        ];
 
     const otpInputSelectors = [
         ...phaseSelectors,
@@ -2173,7 +2175,7 @@ async function enterAndVerifyOtp(page, userOtp, phase, className, chatId) {
 
     // If server hasn't re-rendered yet, do a quick reload to get latest status
     if (!checkApproved) {
-        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => { });
         await page.waitForTimeout(2000);
         afterStatus = await getPageAttendanceStatus(page);
     }
@@ -2202,8 +2204,8 @@ async function enterAndVerifyOtp(page, userOtp, phase, className, chatId) {
                 chatId
             );
         }
-    } catch (_) {}
-    try { fs.unlinkSync(afterPic); } catch (_) {}
+    } catch (_) { }
+    try { fs.unlinkSync(afterPic); } catch (_) { }
     return isSuccess;
 }
 
@@ -2306,8 +2308,8 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
             try {
                 await page.screenshot({ path: beforePic });
                 await sendTelegramPhoto(beforePic, `🚨 *${phase === 'start' ? 'IN' : 'OUT'} OTP Box is OPEN!*`, chatId);
-            } catch (_) {}
-            try { fs.unlinkSync(beforePic); } catch (_) {}
+            } catch (_) { }
+            try { fs.unlinkSync(beforePic); } catch (_) { }
 
             await sendTelegram(
                 `🔔 *OTP Window is Open!*\n\n` +
@@ -2344,7 +2346,7 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
         console.error('[AttendanceOTP] Error:', e);
         await sendTelegram(`⚠️ Attendance monitor error: ${e.message}`, chatId);
     } finally {
-        await page.close().catch(() => {});
+        await page.close().catch(() => { });
     }
 }
 
@@ -2359,10 +2361,10 @@ async function findAttendanceTarget(page, kw) {
             const h = (el.getAttribute('href') || '').toLowerCase();
             const t = (el.innerText || el.value || '').trim().toLowerCase();
             return h.includes('attendance_process') ||
-                   h.includes('event_attendance_process') ||
-                   (t.includes('view') && t.includes('attendance')) ||
-                   t === 'view attendance' ||
-                   t === 'view event';
+                h.includes('event_attendance_process') ||
+                (t.includes('view') && t.includes('attendance')) ||
+                t === 'view attendance' ||
+                t === 'view event';
         });
 
         if (!clickable.length) return null;
@@ -2693,9 +2695,9 @@ async function checkAttendanceStatus(session, targetKeyword, chatId = CHAT_ID) {
         try {
             await page.screenshot({ path: screenshotPath });
             let msg = `📋 *Attendance Status*\n\n` +
-                      `📚 *Class:* *${target.name}*\n\n` +
-                      `• *IN OTP:* ${status.inText}\n` +
-                      `• *OUT OTP:* ${status.outText}\n`;
+                `📚 *Class:* *${target.name}*\n\n` +
+                `• *IN OTP:* ${status.inText}\n` +
+                `• *OUT OTP:* ${status.outText}\n`;
 
             if (status.inApproved && status.outApproved) {
                 msg += `\n🎉 *It is already done!* Both IN and OUT attendance are complete for this session.`;
@@ -2746,13 +2748,13 @@ async function checkAttendanceStatus(session, targetKeyword, chatId = CHAT_ID) {
                 chatId
             );
         } finally {
-            try { fs.unlinkSync(screenshotPath); } catch (_) {}
+            try { fs.unlinkSync(screenshotPath); } catch (_) { }
         }
     } catch (e) {
         console.error('[AttendanceStatus] Error:', e);
         await sendTelegram(`⚠️ Error checking attendance status: ${e.message}`, chatId);
     } finally {
-        await page.close().catch(() => {});
+        await page.close().catch(() => { });
     }
 }
 
@@ -2932,7 +2934,7 @@ function parseTargetDate(inputStr) {
     // 5. Month names: "2 nov", "nov 2", "2nd november", "november 2"
     const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
     const mNameMatch = clean.match(/(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3,9})(?:\s+(\d{4}))?/) ||
-                       clean.match(/([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?/);
+        clean.match(/([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?/);
     if (mNameMatch) {
         let dayStr = mNameMatch[1].match(/^\d+$/) ? mNameMatch[1] : mNameMatch[2];
         let monthStr = mNameMatch[1].match(/^\d+$/) ? mNameMatch[2] : mNameMatch[1];
@@ -2961,8 +2963,8 @@ function parseTargetDate(inputStr) {
 
 function isSameDay(d1, d2) {
     return d1.getFullYear() === d2.getFullYear() &&
-           d1.getMonth() === d2.getMonth() &&
-           d1.getDate() === d2.getDate();
+        d1.getMonth() === d2.getMonth() &&
+        d1.getDate() === d2.getDate();
 }
 
 function buildDateInfo(d, isToday = false, extraLabel = '') {
@@ -4233,7 +4235,7 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                 } catch (_) {
                     await sendTelegram(`🎉 *Hostel Attendance Approved!* All phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
                 }
-                try { fs.unlinkSync(picPath); } catch (_) {}
+                try { fs.unlinkSync(picPath); } catch (_) { }
                 return true;
             }
 
@@ -4279,7 +4281,7 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                 } catch (_) {
                     await sendTelegram(`🎉 *Hostel Attendance Approved!* Your IN attendance has been approved for this session.\nAll phone calls and scanning have been stopped. Goodnight! 🛌✨`, chatId);
                 }
-                try { fs.unlinkSync(picPath); } catch (_) {}
+                try { fs.unlinkSync(picPath); } catch (_) { }
                 return true;
             }
 
@@ -4290,8 +4292,8 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
                 try {
                     await page.screenshot({ path: openPic });
                     await sendTelegramPhoto(openPic, `🚨 *Hostel Attendance OTP Box is OPEN!*`, chatId);
-                } catch (_) {}
-                try { fs.unlinkSync(openPic); } catch (_) {}
+                } catch (_) { }
+                try { fs.unlinkSync(openPic); } catch (_) { }
 
                 await sendTelegram(
                     `🔔 *Hostel Attendance OTP is OPEN!*\n\n` +
@@ -4326,7 +4328,7 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
             return false;
         } finally {
             state.isScanning = false;
-            await page.close().catch(() => {});
+            await page.close().catch(() => { });
         }
     };
 
@@ -4468,7 +4470,7 @@ function scheduleSlotReminders(chatId, session, slots) {
                         `📍 Venue: *${venueDisplay}*\n\n` +
                         `_Get ready! Class starts in 15 minutes. 🚀_`;
                     await sendTelegram(msg, chatId);
-                } catch (err) {}
+                } catch (err) { }
             }, reminderDelay);
             activeReminders.set(reminderKey, timeoutId);
             console.log(`[Scheduler] 15m reminder for "${s.slot}" in ${Math.round(reminderDelay / 60000)} min (${session.config.name})`);
@@ -4575,11 +4577,11 @@ async function startClassCallLoop(chatId) {
     const callResult = await triggerClassVoiceCall(speech, cid);
 
     let callNotice = `📞 *Class Call Reminder Ringing!* (Call #1)\n\n` +
-                     `📚 *Class:* *${reminder.className}*\n` +
-                     `⏰ *Starts at:* *${reminder.classTime}*\n` +
-                     `${reminder.venue && reminder.venue !== 'N/A' ? `📍 *Venue:* *${reminder.venue}*\n` : ''}\n` +
-                     `🔄 *Calling your phone repeatedly every 5 minutes* until you tell me to stop!\n\n` +
-                     `👉 *To silence & stop:* Reply with *stop*, *awake*, or send \`!stopcall\`.`;
+        `📚 *Class:* *${reminder.className}*\n` +
+        `⏰ *Starts at:* *${reminder.classTime}*\n` +
+        `${reminder.venue && reminder.venue !== 'N/A' ? `📍 *Venue:* *${reminder.venue}*\n` : ''}\n` +
+        `🔄 *Calling your phone repeatedly every 5 minutes* until you tell me to stop!\n\n` +
+        `👉 *To silence & stop:* Reply with *stop*, *awake*, or send \`!stopcall\`.`;
     if (!callResult.success && callResult.reason) {
         callNotice += `\n\n⚠️ _Call warning: ${callResult.reason}_`;
     }
@@ -5073,6 +5075,25 @@ async function main() {
                     continue;
                 }
 
+                // ── Pending Leave / OD Application Confirmation ────────────
+                if (pendingLeaveConfirmations.has(fromChatId)) {
+                    const isYes = ['yes', 'y', 'submit', 'apply', 'commit', 'confirm', 'ok', 'proceed'].includes(text);
+                    const isNo = ['no', 'n', 'cancel', 'abort', 'discard'].includes(text);
+                    if (isYes) {
+                        pendingLeaveConfirmations.delete(fromChatId);
+                        const session = await getOrSpawnSession(fromChatId, userConfig);
+                        if (session) {
+                            session.doLogin = doLogin;
+                            await portalAgent.officiallySubmitLeave(session, fromChatId, sendTelegram, sendTelegramPhoto);
+                        }
+                        continue;
+                    } else if (isNo) {
+                        pendingLeaveConfirmations.delete(fromChatId);
+                        await sendTelegram(`🛑 *Cancelled.* Your leave draft remains safely saved on the portal without submission.`, fromChatId);
+                        continue;
+                    }
+                }
+
                 // ── Unusual Time / Typo Confirmation Intercept ─────────────
                 if (pendingTimeConfirmations.has(fromChatId)) {
                     const pending = pendingTimeConfirmations.get(fromChatId);
@@ -5305,6 +5326,11 @@ Possible Actions:
   Params: keyword.
 - "callremind": Set up a 30-min repeating phone call reminder for a class. E.g. "call me before python class", "remind me with a call for my next class", "set call reminder for 1:15 pm".
   Params: keyword (subject name, time, or null for next class).
+- "apply_leave": Draft or submit Leave, On-Duty (OD), Medical Leave, Hostel Gate Pass, or Placement request. E.g. "apply leave for tomorrow", "apply OD for symposium", "request on-duty for hackathon", "medical leave for fever", "hostel gate pass for tonight".
+  Params: leaveType ("OnDuty-Students" | "Medical Leave - Students" | "Leave-Students" | "HostelGatePass" | "EmergencyHostelGatePass" | "PlacementInternshipRequest" | "Placement Interview"), title, reason, date, fromTime (e.g. "03/11/2026 08:00 AM"), toTime, isTomorrow (boolean).
+- "circulars": View latest campus circulars or ask questions about holidays, exam timetables, or notices. E.g. "any circulars today?", "check circulars for holiday", "when are exams according to circulars".
+  Params: query (topic or question, else null).
+- "rewards": Check student reward points balance and coins. E.g. "check my reward points", "how many coins do I have?".
 - "stopcall": Stop active class phone call reminder. E.g. "stop calling me", "i am awake stop the call", "silence class calls".
 - "help": User asks what the bot can do or wants a command list.
 - "reply": Friendly conversational response, advice, greetings, answering questions, or asking for clarification.
@@ -5312,7 +5338,12 @@ Possible Actions:
 
 JSON Schema:
 {
-  "action": "scan" | "book" | "unbook" | "bunk" | "attendance" | "analyze_attendance" | "timetable" | "workflow" | "progress" | "status" | "stop" | "otp" | "checkotp" | "callremind" | "stopcall" | "help" | "reply",
+  "action": "scan" | "book" | "unbook" | "bunk" | "attendance" | "analyze_attendance" | "timetable" | "workflow" | "apply_leave" | "circulars" | "rewards" | "progress" | "status" | "stop" | "otp" | "checkotp" | "callremind" | "stopcall" | "help" | "reply",
+  "leaveType": "string or null",
+  "title": "string or null",
+  "reason": "string or null",
+  "isTomorrow": "boolean or null",
+  "query": "string or null",
   "keyword": "string or null",
   "time": "HH:MM AM/PM or null",
   "startTime": "HH:MM AM/PM or null",
@@ -5383,6 +5414,24 @@ JSON Schema:
                                 text = `!checkotp ${aiData.keyword || ''}`.trim();
                             } else if (aiData.action === 'callremind') {
                                 text = aiData.keyword ? `!callremind ${aiData.keyword}` : '!callremind';
+                            } else if (aiData.action === 'apply_leave') {
+                                const session = await getOrSpawnSession(fromChatId, userConfig);
+                                if (!session) continue;
+                                session.doLogin = doLogin;
+                                await portalAgent.draftLeaveApplication(session, aiData, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations);
+                                continue;
+                            } else if (aiData.action === 'circulars') {
+                                const session = await getOrSpawnSession(fromChatId, userConfig);
+                                if (!session) continue;
+                                session.doLogin = doLogin;
+                                await portalAgent.browseCirculars(session, aiData.query || rawText, fromChatId, sendTelegram, callSmartAI);
+                                continue;
+                            } else if (aiData.action === 'rewards') {
+                                const session = await getOrSpawnSession(fromChatId, userConfig);
+                                if (!session) continue;
+                                session.doLogin = doLogin;
+                                await portalAgent.checkRewardPoints(session, fromChatId, sendTelegram, sendTelegramPhoto);
+                                continue;
                             } else if (aiData.action === 'stopcall') {
                                 text = '!stopcall';
                             } else if (aiData.action === 'help') {
@@ -5398,6 +5447,41 @@ JSON Schema:
                         continue;
                     }
                 }
+                // ── !leave / !od (Draft Leave / On-Duty) ───────────────────
+                if (text.startsWith('!leave') || text.startsWith('!od') || text.startsWith('!applyleave')) {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    session.doLogin = doLogin;
+                    const isOd = text.startsWith('!od') || text.includes('od');
+                    const reason = rawText.replace(/^!(leave|od|applyleave)s*/i, '').trim();
+                    const leavePayload = {
+                        type: isOd ? 'OnDuty-Students' : 'Leave-Students',
+                        reason: reason || (isOd ? 'Attending symposium / official college event.' : 'Personal leave.'),
+                        isTomorrow: text.includes('tomorrow')
+                    };
+                    await portalAgent.draftLeaveApplication(session, leavePayload, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations);
+                    continue;
+                }
+
+                // ── !circulars ─────────────────────────────────────────────
+                if (text.startsWith('!circular') || text.startsWith('!notices')) {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    session.doLogin = doLogin;
+                    const query = rawText.replace(/^!(circulars?|notices?)s*/i, '').trim();
+                    await portalAgent.browseCirculars(session, query, fromChatId, sendTelegram, callSmartAI);
+                    continue;
+                }
+
+                // ── !rewards ───────────────────────────────────────────────
+                if (text === '!rewards' || text === '!coins' || text === '!points') {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    session.doLogin = doLogin;
+                    await portalAgent.checkRewardPoints(session, fromChatId, sendTelegram, sendTelegramPhoto);
+                    continue;
+                }
+
                 // ── !help ─────────────────────────────────────────────────
                 if (text === '!help' || text === '/start') {
                     let helpMsg =
@@ -5455,8 +5539,8 @@ JSON Schema:
                             `\`!setphone <phone>\` — Set destination phone (e.g. +91XXXXXXXXXX)\n` +
                             `\`!twiliostatus\` — Check Twilio configuration status\n` +
                             `\`!testcall\` — Test phone call reminder immediately\n` +
-                        `\`!setcall @username\` — Set CallMeBot Telegram username for free calls\n` +
-                        `\`!testcallmebot\` — Test CallMeBot Telegram voice call\n` +
+                            `\`!setcall @username\` — Set CallMeBot Telegram username for free calls\n` +
+                            `\`!testcallmebot\` — Test CallMeBot Telegram voice call\n` +
                             `\`!stopbot\` — Permanently stop GitHub Actions bot\n` +
                             `\`!restartbot\` — Restart GitHub Actions bot\n`;
                     }
@@ -5643,12 +5727,12 @@ JSON Schema:
                             blockedUsers.add(targetId);
                             saveBlockedUsers();
                             await sendTelegram(`🚫 User \`${targetId}\` (*${ACCOUNTS[targetId].name}*) has been blocked.`, fromChatId);
-                            
+
                             // Close their active session
                             if (USER_SESSIONS.has(targetId)) {
                                 const session = USER_SESSIONS.get(targetId);
-                                if (session.persistentPage) await session.persistentPage.close().catch(() => {});
-                                if (session.context) await session.context.close().catch(() => {});
+                                if (session.persistentPage) await session.persistentPage.close().catch(() => { });
+                                if (session.context) await session.context.close().catch(() => { });
                                 USER_SESSIONS.delete(targetId);
                             }
                         }
@@ -5663,12 +5747,12 @@ JSON Schema:
                             blockedUsers.delete(targetId);
                             saveBlockedUsers();
                             await sendTelegram(`✅ User \`${targetId}\` has been unblocked.`, fromChatId);
-                            
+
                             // Immediately log them in if authorized
                             if (ACCOUNTS[targetId] && !USER_SESSIONS.has(targetId)) {
                                 await sendTelegram(`⏳ Spawning session for \`${targetId}\`...`, fromChatId);
                                 spawnUserSession(browser, targetId, ACCOUNTS[targetId]).then(success => {
-                                    if(success) sendTelegram(`✅ Session ready for \`${targetId}\`.`, fromChatId);
+                                    if (success) sendTelegram(`✅ Session ready for \`${targetId}\`.`, fromChatId);
                                     else sendTelegram(`❌ Failed to start session for \`${targetId}\`.`, fromChatId);
                                 });
                             }
@@ -5690,11 +5774,11 @@ JSON Schema:
                             ACCOUNTS[targetChatId] = { user: targetUser, pass: targetPass, name: targetName };
                             await syncAccountsToGist();
                             await sendTelegram(`✅ Added user ${targetUser} (Name: ${targetName}) with Chat ID ${targetChatId} and saved to Gist.`, fromChatId);
-                            
+
                             if (!USER_SESSIONS.has(targetChatId) && !blockedUsers.has(targetChatId)) {
                                 await sendTelegram(`⏳ Spawning session for \`${targetChatId}\`...`, fromChatId);
                                 spawnUserSession(browser, targetChatId, ACCOUNTS[targetChatId]).then(success => {
-                                    if(success) sendTelegram(`✅ Session ready for \`${targetChatId}\`.`, fromChatId);
+                                    if (success) sendTelegram(`✅ Session ready for \`${targetChatId}\`.`, fromChatId);
                                     else sendTelegram(`❌ Failed to start session for \`${targetChatId}\`.`, fromChatId);
                                 });
                             }
@@ -5746,7 +5830,7 @@ JSON Schema:
                 if (text.startsWith('!timetable') || text.startsWith('!tt')) {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
-                    
+
                     const query = text.replace(/^!(timetable|tt)\s*/i, '').trim();
                     let targetDateInfo = null;
                     if (query) {
@@ -5776,7 +5860,7 @@ JSON Schema:
                             } catch (_) {
                                 await sendTelegram(msg, fromChatId);
                             }
-                            try { fs.unlinkSync(screenshotPath); } catch (_) {}
+                            try { fs.unlinkSync(screenshotPath); } catch (_) { }
                         } else {
                             await sendTelegram(msg, fromChatId);
                         }
@@ -5914,7 +5998,7 @@ JSON Schema:
                         `✅ *CallMeBot username saved:* \`${cleanTarget}\`\n\n` +
                         `⚠️ *ONE-TIME SETUP REQUIRED:* Telegram requires you to authorize CallMeBot once so it can ring you:\n` +
                         `1️⃣ Open: https://t.me/CallMeBot_txtbot\n` +
-                        `2️⃣ Click *START* or send `/start`\n\n` +
+                        `2️⃣ Click *START* or send ` / start`\n\n` +
                         `👉 Once authorized, test your voice call immediately by sending:\n` +
                         `\`!testcallmebot\``,
                         fromChatId
@@ -6524,4 +6608,4 @@ main().catch(async (err) => {
     console.error('[Bot] Fatal error:', err);
     await sendTelegram(`❌ *Bot crashed:* ${err.message}`).catch(() => { });
     process.exit(1);
-});
+});
