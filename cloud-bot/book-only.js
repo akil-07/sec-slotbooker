@@ -5496,6 +5496,8 @@ Possible Actions:
   Params: keyword (subject name, time, or null for next class).
 - "apply_leave": Draft or submit Leave, On-Duty (OD), Medical Leave, Hostel Gate Pass, or Placement request. E.g. "apply leave for tomorrow", "leave 06/11/2026 to 11/11/2026", "apply OD for symposium", "request on-duty for hackathon", "medical leave for fever", "hostel gate pass for tonight".
   Params: leaveType ("OnDuty-Students" | "Medical Leave - Students" | "Leave-Students" | "HostelGatePass"), title, reason, fromDate (DD/MM/YYYY e.g. "06/11/2026"), toDate (DD/MM/YYYY e.g. "11/11/2026"), date (single date if applicable), fromTime (e.g. "08:00 AM"), toTime (e.g. "08:00 PM"), isTomorrow (boolean).
+- "leave_impact": Calculate whether taking leave between dates X and Y will cause any subject to drop below Saveetha's mandatory 80% attendance rule. E.g. "will my attendance drop below 80% if I take leave from 06/11 to 11/11?", "can I take leave next week?", "leave impact 03/11/2026 to 05/11/2026", "check attendance drop if I miss college tomorrow", "!leaveimpact 06/11/2026 to 11/11/2026".
+  Params: fromDate (DD/MM/YYYY e.g. "06/11/2026"), toDate (DD/MM/YYYY e.g. "11/11/2026"), date (single date if applicable).
 - "circulars": View latest campus circulars or ask questions about holidays, exam timetables, or notices. E.g. "any circulars today?", "check circulars for holiday", "when are exams according to circulars".
   Params: query (topic or question, else null).
 - "rewards": Check student reward points balance and coins. E.g. "check my reward points", "how many coins do I have?".
@@ -5506,7 +5508,7 @@ Possible Actions:
 
 JSON Schema:
 {
-  "action": "scan" | "book" | "unbook" | "bunk" | "attendance" | "analyze_attendance" | "timetable" | "workflow" | "apply_leave" | "circulars" | "rewards" | "progress" | "status" | "stop" | "otp" | "checkotp" | "callremind" | "stopcall" | "help" | "reply",
+  "action": "scan" | "book" | "unbook" | "bunk" | "attendance" | "analyze_attendance" | "timetable" | "workflow" | "apply_leave" | "leave_impact" | "circulars" | "rewards" | "progress" | "status" | "stop" | "otp" | "checkotp" | "callremind" | "stopcall" | "help" | "reply",
   "leaveType": "string or null",
   "title": "string or null",
   "reason": "string or null",
@@ -5590,7 +5592,15 @@ JSON Schema:
                                 const session = await getOrSpawnSession(fromChatId, userConfig);
                                 if (!session) continue;
                                 session.doLogin = doLogin;
-                                await portalAgent.draftLeaveApplication(session, aiData, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations, callSmartAI);
+                                await portalAgent.draftLeaveApplication(session, aiData, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations, callSmartAI, fetchAttendance);
+                                continue;
+                            } else if (aiData.action === 'leave_impact') {
+                                const session = await getOrSpawnSession(fromChatId, userConfig);
+                                if (!session) continue;
+                                session.doLogin = doLogin;
+                                const fDate = aiData.fromDate || aiData.date || 'today';
+                                const tDate = aiData.toDate || fDate;
+                                await portalAgent.simulateLeaveAttendanceImpact(session, fDate, tDate, fromChatId, sendTelegram, fetchAttendance);
                                 continue;
                             } else if (aiData.action === 'circulars') {
                                 const session = await getOrSpawnSession(fromChatId, userConfig);
@@ -5619,6 +5629,18 @@ JSON Schema:
                         continue;
                     }
                 }
+
+                // ── !leaveimpact (Calculate 80% Attendance Impact for Dates) ───
+                if (text.toLowerCase().startsWith('!leaveimpact') || text.toLowerCase().startsWith('!impact')) {
+                    const session = await getOrSpawnSession(fromChatId, userConfig);
+                    if (!session) continue;
+                    session.doLogin = doLogin;
+                    const args = rawText.replace(/^!(leaveimpact|impact)\s*/i, '').trim();
+                    const range = portalAgent.extractDateRangeFromText(args) || { from: new Date(), to: new Date() };
+                    await portalAgent.simulateLeaveAttendanceImpact(session, range.from, range.to, fromChatId, sendTelegram, fetchAttendance);
+                    continue;
+                }
+
                 // ── !leave / !od (Draft Leave / On-Duty) ───────────────────
                 if (text.startsWith('!leave') || text.startsWith('!od') || text.startsWith('!applyleave')) {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
@@ -5631,7 +5653,7 @@ JSON Schema:
                         reason: reason || (isOd ? 'Attending symposium / official college event.' : 'Personal leave.'),
                         isTomorrow: text.includes('tomorrow')
                     };
-                    await portalAgent.draftLeaveApplication(session, leavePayload, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations, callSmartAI);
+                    await portalAgent.draftLeaveApplication(session, leavePayload, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations, callSmartAI, fetchAttendance);
                     continue;
                 }
 

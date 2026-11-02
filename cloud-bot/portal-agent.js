@@ -202,9 +202,181 @@ function buildOfficialLeaveLetter({ leaveType, rawReason, fromDate, toDate, stud
 }
 
 /**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 80% ATTENDANCE IMPACT ENGINE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Computes whether taking leave during a given date window will cause any subject
+ * to drop below Saveetha's mandatory 80% attendance rule.
+ */
+function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
+    if (!Array.isArray(attendanceRecords) || attendanceRecords.length === 0) {
+        return {
+            hasRecords: false,
+            summaryMsg: '⚠️ _Could not cross-reference attendance records (no subjects loaded)._'
+        };
+    }
+
+    // 1. Group overlapping classes by subject identifier
+    const missedCounts = {}; // subjectKey -> count
+
+    (overlappingClasses || []).forEach(cls => {
+        const str = String(cls).trim();
+        // Look for course code e.g. 19AI305, 19EY709, ECA-SCOFT-M, 19CS404
+        const codeMatch = str.match(/\b(\d{2}[A-Z]{2,4}\d{3}[A-Z]?|[A-Z]+-[A-Z]+-[A-Z0-9]+)\b/i);
+        const code = codeMatch ? codeMatch[1].toUpperCase() : null;
+
+        const namePart = str.replace(/Academic|Student\s*·\s*Class|\d{2}:\d{2}|[0-9]{4}/gi, ' ').trim().toLowerCase();
+
+        let matchedRecord = null;
+        if (code) {
+            matchedRecord = attendanceRecords.find(r => (r.subject || '').toUpperCase().includes(code));
+        }
+        if (!matchedRecord) {
+            matchedRecord = attendanceRecords.find(r => {
+                const subLow = (r.subject || '').toLowerCase();
+                const subWords = subLow.split(/\s+/).filter(w => w.length > 3);
+                return subWords.some(w => namePart.includes(w));
+            });
+        }
+
+        const key = matchedRecord ? matchedRecord.subject : (code || str.substring(0, 30));
+        missedCounts[key] = (missedCounts[key] || 0) + 1;
+    });
+
+    const analysis = [];
+    let criticalDropCount = 0;
+    let totalMissedSessions = 0;
+
+    for (const record of attendanceRecords) {
+        const subName = record.subject;
+        const k = missedCounts[subName] || 0;
+        totalMissedSessions += k;
+
+        let attended = parseFloat(record.attended);
+        let total = parseFloat(record.total);
+        let currentPct = parseFloat(String(record.percent || '').replace('%', ''));
+
+        if ((isNaN(attended) || isNaN(total)) && !isNaN(currentPct)) {
+            total = 20;
+            attended = Math.round((currentPct / 100) * total);
+        }
+
+        if (isNaN(attended) || isNaN(total) || total <= 0) {
+            continue;
+        }
+
+        const currentPercent = (attended / total) * 100;
+        const newTotal = total + k;
+        const projectedPercent = (attended / newTotal) * 100;
+        const pctDiff = projectedPercent - currentPercent;
+
+        const isCurrentBelow80 = currentPercent < 80.0;
+        const isProjectedBelow80 = projectedPercent < 80.0;
+        const dropsBelow80 = !isCurrentBelow80 && isProjectedBelow80;
+
+        // Consecutive classes needed to recover back to 80% if projected < 80%:
+        // (attended + R) / (newTotal + R) >= 0.8  =>  R >= 4*newTotal - 5*attended
+        let recoveryClassesNeeded = 0;
+        if (isProjectedBelow80) {
+            recoveryClassesNeeded = Math.max(0, Math.ceil(4 * newTotal - 5 * attended));
+        }
+
+        // Buffer classes remaining if projected >= 80%:
+        // attended / (newTotal + B) >= 0.8  =>  B <= (5*attended - 4*newTotal) / 4
+        let bufferRemaining = 0;
+        if (!isProjectedBelow80) {
+            bufferRemaining = Math.max(0, Math.floor((5 * attended - 4 * newTotal) / 4));
+        }
+
+        if (isProjectedBelow80 && k > 0) {
+            criticalDropCount++;
+        }
+
+        analysis.push({
+            subject: subName,
+            missedCount: k,
+            currentAttended: attended,
+            currentTotal: total,
+            currentPercent: Math.round(currentPercent * 10) / 10,
+            projectedTotal: newTotal,
+            projectedPercent: Math.round(projectedPercent * 10) / 10,
+            pctDiff: Math.round(pctDiff * 10) / 10,
+            isCurrentBelow80,
+            isProjectedBelow80,
+            dropsBelow80,
+            recoveryClassesNeeded,
+            bufferRemaining
+        });
+    }
+
+    // Sort: impacted critical drops first, then by lowest projected percentage
+    analysis.sort((a, b) => {
+        if (a.missedCount > 0 && b.missedCount === 0) return -1;
+        if (a.missedCount === 0 && b.missedCount > 0) return 1;
+        if (a.isProjectedBelow80 && !b.isProjectedBelow80) return -1;
+        if (!a.isProjectedBelow80 && b.isProjectedBelow80) return 1;
+        return a.projectedPercent - b.projectedPercent;
+    });
+
+    return {
+        hasRecords: true,
+        criticalDropCount,
+        totalMissedSessions,
+        items: analysis
+    };
+}
+
+function formatAttendanceImpactMessage(impact, fromStr = '', toStr = '') {
+    if (!impact || !impact.hasRecords) {
+        return impact ? impact.summaryMsg : '';
+    }
+
+    const { criticalDropCount, items } = impact;
+    let msg = `📊 *80% Attendance Impact Analysis:*\n`;
+
+    const impactedItems = items.filter(it => it.missedCount > 0);
+    const untouchedCount = items.length - impactedItems.length;
+
+    if (impactedItems.length === 0) {
+        msg += `✅ *Safe to Leave:* No scheduled classes fall into this leave window. Your attendance percentage is completely unaffected.\n`;
+        return msg;
+    }
+
+    if (criticalDropCount > 0) {
+        msg += `🚨 *CRITICAL WARNING: ${criticalDropCount} subject(s) will drop below 80%!* Review carefully before submitting.\n\n`;
+    } else {
+        msg += `✅ *ALL SUBJECTS SAFE!* Your attendance will stay ≥ 80% across all classes during this leave.\n\n`;
+    }
+
+    // List affected subjects
+    for (const it of impactedItems) {
+        const subDisplay = it.subject.replace(/([_*`\[])/g, '');
+        const dropSign = it.pctDiff < 0 ? `${it.pctDiff}%` : `0.0%`;
+
+        if (it.isProjectedBelow80) {
+            msg += `🚨 *${subDisplay}*\n`;
+            msg += `   • Current: *${it.currentPercent}%* (${it.currentAttended}/${it.currentTotal})\n`;
+            msg += `   • Projected: *${it.projectedPercent}%* (${it.currentAttended}/${it.projectedTotal}) 🔻 [${dropSign}]\n`;
+            msg += `   • ⚠️ *Misses ${it.missedCount} class(es)!* Needs *${it.recoveryClassesNeeded} consecutive classes* to recover back to 80%.\n\n`;
+        } else {
+            msg += `✅ *${subDisplay}*\n`;
+            msg += `   • Current: *${it.currentPercent}%* (${it.currentAttended}/${it.currentTotal})\n`;
+            msg += `   • Projected: *${it.projectedPercent}%* (${it.currentAttended}/${it.projectedTotal}) 🔻 [${dropSign}]\n`;
+            msg += `   • Safe (Buffer remaining: can miss *${it.bufferRemaining} more class(es)* after this leave).\n\n`;
+        }
+    }
+
+    if (untouchedCount > 0) {
+        msg += `ℹ️ _${untouchedCount} other subject(s) have no classes scheduled during this leave._\n`;
+    }
+
+    return msg;
+}
+
+/**
  * 1. AUTOMATED LEAVE & OD APPLICATION DRAFTING & SUBMISSION
  */
-async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, sendTelegramPhoto, pendingConfirmations, callSmartAI = null) {
+async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, sendTelegramPhoto, pendingConfirmations, callSmartAI = null, fetchAttendanceFn = null) {
     const page = await session.context.newPage();
     const screenshotPath = path.join(__dirname, `_leave_draft_${Date.now()}.png`);
 
@@ -436,6 +608,24 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         // Capture full page screenshot of the Workflow Requests dashboard showing the new draft card!
         await page.screenshot({ path: screenshotPath, fullPage: true });
 
+        // 8. 80% Attendance Impact Analysis
+        let attendanceImpactStr = '';
+        let criticalDropCount = 0;
+        try {
+            let attendanceRecords = [];
+            if (fetchAttendanceFn && session && session.context) {
+                console.log('[PortalAgent] Cross-referencing 80% attendance impact...');
+                attendanceRecords = await fetchAttendanceFn(session.context, session.config).catch(() => []);
+            }
+            if (attendanceRecords && attendanceRecords.length > 0) {
+                const impact = calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses);
+                criticalDropCount = impact.criticalDropCount || 0;
+                attendanceImpactStr = '\n' + formatAttendanceImpactMessage(impact, fromStr, toStr) + '\n';
+            }
+        } catch (e) {
+            console.warn('[PortalAgent] Attendance impact calculation skipped:', e.message);
+        }
+
         // 9. Format Telegram Report for Student
         let classListStr = '';
         if (overlappingClasses.length > 0) {
@@ -459,7 +649,8 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             `• *From:* \`${fromStr}\`\n` +
             `• *To:* \`${toStr}\`\n` +
             workflowStr + `\n` +
-            classListStr + `\n\n` +
+            classListStr + `\n` +
+            attendanceImpactStr + `\n` +
             `📄 *Drafted Application Letter:*\n` +
             `━━━━━━━━━━━━━━━━━━━━\n` +
             `${letterBody}\n` +
@@ -471,12 +662,17 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
 
         // Send photo with concise caption (avoiding Telegram 1024 char caption limit), then send complete letter in message
         if (sendTelegramPhoto) {
+            const riskWarning = criticalDropCount > 0 
+                ? `• ⚠️ *WARNING:* ${criticalDropCount} subject(s) will drop below 80%!\n`
+                : `• ✅ *80% Rule:* All subjects remain safe (≥ 80%)\n`;
+
             const photoCaption = 
                 `📝 *Leave / OD Drafted on Portal*\n\n` +
                 `• *Type:* \`${resolvedType}\`\n` +
                 `• *Duration:* \`${fromStr}\` ➔ \`${toStr}\`\n` +
-                `• *Classes Covered:* ${overlappingClasses.length}\n\n` +
-                `👉 _See the complete drafted letter below!_`;
+                `• *Classes Covered:* ${overlappingClasses.length}\n` +
+                riskWarning + `\n` +
+                `👉 _See the full attendance impact & letter below!_`;
             await sendTelegramPhoto(screenshotPath, photoCaption, chatId);
         }
         await sendTelegram(fullReportMsg, chatId);
@@ -658,11 +854,106 @@ async function checkRewardPoints(session, chatId, sendTelegram, sendTelegramPhot
     }
 }
 
+/**
+ * 2. STANDALONE 80% LEAVE ATTENDANCE SIMULATOR
+ * Calculates if taking leave from date X to date Y will drop any subject below 80%.
+ */
+async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, sendTelegram, fetchAttendanceFn = null) {
+    const page = await session.context.newPage();
+    try {
+        await ensurePortalSession(page, session);
+
+        const dFrom = parseIndianDate(fromDate) || new Date();
+        const dTo = parseIndianDate(toDate) || dFrom;
+        const fromStr = formatPortalDateTime(dFrom, 8, 0, 'AM');
+        const toStr = formatPortalDateTime(dTo, 20, 0, 'PM');
+
+        await sendTelegram(`⏳ *Simulating leave from ${fromStr} to ${toStr} against your timetable and 80% attendance rule...*`, chatId);
+
+        // 1. Fetch live attendance records
+        let attendanceRecords = [];
+        if (fetchAttendanceFn && session && session.context) {
+            attendanceRecords = await fetchAttendanceFn(session.context, session.config).catch(() => []);
+        }
+
+        // 2. Open leave creation form to let Saveetha populate live schedules
+        await page.goto('https://learner.saveetha.in/academics/workflow-requests/leave-applications/create/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(2000);
+
+        // Fill dates
+        const fromInput = page.locator('#id_leave_date_from, input[name="leave_date_from"]').first();
+        if (await fromInput.isVisible()) {
+            await fromInput.click();
+            await fromInput.fill(fromStr);
+            await fromInput.evaluate((el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new Event('blur', { bubbles: true }));
+            }, fromStr);
+        }
+
+        const toInput = page.locator('#id_leave_date_to, input[name="leave_date_to"]').first();
+        if (await toInput.isVisible()) {
+            await toInput.click();
+            await toInput.fill(toStr);
+            await toInput.evaluate((el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new Event('blur', { bubbles: true }));
+            }, toStr);
+        }
+
+        await page.waitForTimeout(3000);
+
+        // Scrape overlapping schedules
+        const overlappingClasses = await page.evaluate(() => {
+            const rows = Array.from(document.querySelectorAll('table tbody tr'));
+            const scheduleRows = rows.filter(r => r.innerText.includes('Academic') || r.innerText.includes('Student : Class') || /\d{2}:\d{2}/.test(r.innerText));
+            return scheduleRows.map(r => r.innerText.replace(/\s+/g, ' ').trim());
+        });
+
+        // 3. Run impact calculation
+        const impact = calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses);
+        const report = formatAttendanceImpactMessage(impact, fromStr, toStr);
+
+        let classSnippet = '';
+        if (overlappingClasses.length > 0) {
+            classSnippet = `📚 *Classes Missed During This Leave (${overlappingClasses.length}):*\n` +
+                overlappingClasses.slice(0, 5).map(c => `• ${c}`).join('\n') + '\n';
+            if (overlappingClasses.length > 5) {
+                classSnippet += `• _+${overlappingClasses.length - 5} more classes_\n`;
+            }
+            classSnippet += '\n';
+        }
+
+        const finalMsg = `🗓️ *Leave Attendance Simulation Report*\n` +
+            `• *From:* \`${fromStr}\`\n` +
+            `• *To:* \`${toStr}\`\n` +
+            `• *Total Missed Classes:* ${overlappingClasses.length}\n\n` +
+            classSnippet +
+            report;
+
+        await sendTelegram(finalMsg, chatId);
+        return { success: true, impact, overlappingCount: overlappingClasses.length };
+    } catch (err) {
+        console.error('[PortalAgent] Error simulating leave impact:', err);
+        await sendTelegram(`⚠️ Could not simulate leave impact: ${err.message}`, chatId);
+        return { success: false, error: err.message };
+    } finally {
+        await page.close().catch(() => {});
+    }
+}
+
 module.exports = {
     MODULE_URLS,
     LEAVE_TYPE_MAP,
     ensurePortalSession,
     resolveLeaveType,
+    extractDateRangeFromText,
+    calculateAttendanceLeaveImpact,
+    simulateLeaveAttendanceImpact,
     draftLeaveApplication,
     officiallySubmitLeave,
     browseCirculars,
