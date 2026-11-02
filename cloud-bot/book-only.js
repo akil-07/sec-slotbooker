@@ -947,18 +947,34 @@ async function callGroq(messages, jsonMode = true) {
 
 async function callGemini(contents) {
     if (!aiClient) return null;
-    const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash'];
+    const models = [
+        'gemini-3.5-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.8-flash',
+        'gemini-2.5-flash'
+    ];
     let lastError = null;
     for (const model of models) {
-        try {
-            const result = await aiClient.models.generateContent({
-                model,
-                contents,
-            });
-            if (result && result.text) return result.text;
-        } catch (e) {
-            lastError = e;
-            console.warn(`[Gemini] Model ${model} failed: ${e.message}`);
+        let attempts = 0;
+        while (attempts < 2) {
+            attempts++;
+            try {
+                const result = await aiClient.models.generateContent({
+                    model,
+                    contents,
+                });
+                if (result && result.text) return result.text;
+                break;
+            } catch (e) {
+                lastError = e;
+                const is503 = e.message && (e.message.includes('503') || e.message.includes('UNAVAILABLE') || e.message.includes('high demand'));
+                console.warn(`[Gemini] Model ${model} (attempt ${attempts}) failed: ${e.message}`);
+                if (is503 && attempts < 2) {
+                    await new Promise(r => setTimeout(r, 1500));
+                    continue;
+                }
+                break;
+            }
         }
     }
     throw lastError || new Error('Gemini API call failed');
