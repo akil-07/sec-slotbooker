@@ -183,32 +183,63 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         await leaveAppOption.click();
         await page.waitForTimeout(2500);
 
-        // 4. Fill Form Fields
-        const resolvedType = resolveLeaveType(leaveData.type || leaveData.leaveType);
-        let title = leaveData.title || (resolvedType === 'OnDuty-Students' ? 'On-Duty Application' : 'Leave Application');
-        let subject = leaveData.subject || (resolvedType === 'OnDuty-Students' ? 'Request for On-Duty (OD) Attendance' : 'Application for Leave');
-        let reason = leaveData.reason || leaveData.content || (resolvedType === 'OnDuty-Students' ? 'Participating in technical event/symposium representing college.' : 'Unable to attend classes due to personal/medical reasons.');
+        // 4. Determine Leave Type & Target Workflow
+        const rawTypeStr = (leaveData.type || leaveData.leaveType || '').toLowerCase();
+        const rawReasonStr = (leaveData.reason || leaveData.content || '').toLowerCase();
+        const isHostel = rawTypeStr.includes('hostel') || rawTypeStr.includes('gatepass') || rawReasonStr.includes('hostel') || rawReasonStr.includes('gate pass');
+        const isOd = rawTypeStr.includes('od') || rawTypeStr.includes('onduty') || rawTypeStr.includes('on-duty');
+        const isMedical = rawTypeStr.includes('medical') || rawTypeStr.includes('sick') || rawTypeStr.includes('fever');
 
-        console.log(`[PortalAgent] Filling Leave Form: Type=${resolvedType}, Title="${title}"`);
+        // Strictly select HostelGatePass (NOT EmergencyHostelGatePass) or Leave-Students or OnDuty-Students
+        let targetWorkflow = 'Leave-Students';
+        if (isHostel) {
+            targetWorkflow = 'HostelGatePass'; // Strictly non-emergency per college policy
+        } else if (isOd) {
+            targetWorkflow = 'OnDuty-Students';
+        } else if (isMedical) {
+            targetWorkflow = 'Medical Leave - Students';
+        }
 
-        // A. Leave Title
-        const titleInput = page.locator('input[name*="title" i], input[placeholder*="title" i], #id_title').first();
+        const resolvedType = targetWorkflow;
+        let title = leaveData.title || (isHostel ? 'Hostel Gate Pass' : (isOd ? 'On-Duty Application' : 'Leave Application'));
+        let subject = leaveData.subject || (isHostel ? 'Request for Hostel Gate Pass' : (isOd ? 'Request for On-Duty (OD) Attendance' : 'Application for Leave'));
+        let reason = leaveData.reason || leaveData.content || (isHostel ? 'Need permission to leave hostel for personal reasons.' : (isOd ? 'Participating in technical event/symposium representing college.' : 'Unable to attend classes due to personal reasons.'));
+
+        console.log(`[PortalAgent] Filling Leave Form: Workflow=${targetWorkflow}, Title="${title}"`);
+
+        // A. Short Title *
+        const titleInput = page.locator('input[name*="title" i], input[placeholder*="title" i], #id_short_title, #id_title, input[id*="title" i]').first();
         if (await titleInput.isVisible()) {
             await titleInput.fill(title);
+            await titleInput.evaluate((el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, title);
         }
 
-        // B. Leave Type Dropdown
-        const typeSelect = page.locator('select[name*="leave_type" i], select[name*="type" i], select#id_leave_type').first();
+        // B. Leave Type * Dropdown (on first tab)
+        const typeSelect = page.locator('select[name*="leave_type" i], select[name*="type" i], select#id_leave_type, select[id*="type" i]').first();
         if (await typeSelect.isVisible()) {
-            // Find option matching resolvedType
             const options = await typeSelect.locator('option').allTextContents();
-            const matchedOpt = options.find(o => o.trim().toLowerCase() === resolvedType.toLowerCase()) || resolvedType;
-            await typeSelect.selectOption({ label: matchedOpt }).catch(async () => {
-                await typeSelect.selectOption({ value: resolvedType }).catch(() => {});
-            });
+            console.log('[PortalAgent] Available Leave Type options:', options);
+            let matchedOpt = null;
+            if (isHostel) {
+                matchedOpt = options.find(o => o.toLowerCase().includes('hostel') || o.toLowerCase().includes('gatepass'));
+            }
+            if (!matchedOpt) {
+                matchedOpt = options.find(o => o.trim().toLowerCase() === 'leave') ||
+                             options.find(o => o.toLowerCase().includes('leave') && !o.includes('---')) ||
+                             options.find(o => !o.includes('---') && o.trim().length > 0);
+            }
+            if (matchedOpt) {
+                await typeSelect.selectOption({ label: matchedOpt.trim() }).catch(async () => {
+                    await typeSelect.selectOption({ index: 1 }).catch(() => {});
+                });
+            }
         }
 
-        // C. Dates: From and To
+        // C. Dates: From and To (Strict Saveetha format: DD/MM/YYYY hh:mm A)
         const today = new Date();
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
@@ -216,25 +247,37 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         const targetDate = leaveData.date ? new Date(leaveData.date) : (leaveData.isTomorrow ? tomorrow : today);
         const targetDateTo = leaveData.toDate ? new Date(leaveData.toDate) : targetDate;
         const fromStr = leaveData.fromTime || formatPortalDateTime(targetDate, 8, 0, 'AM');
-        const toStr = leaveData.toTime || formatPortalDateTime(targetDateTo, 5, 0, 'PM');
+        const toStr = leaveData.toTime || formatPortalDateTime(targetDateTo, 8, 0, 'PM');
 
         const fromInput = page.locator('input[name*="from" i], input[placeholder*="from" i], #id_leave_from').first();
         if (await fromInput.isVisible()) {
+            await fromInput.click();
             await fromInput.fill(fromStr);
-            await fromInput.dispatchEvent('change');
+            await fromInput.evaluate((el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new Event('blur', { bubbles: true }));
+            }, fromStr);
         }
 
         const toInput = page.locator('input[name*="to" i], input[placeholder*="to" i], #id_leave_to').first();
         if (await toInput.isVisible()) {
+            await toInput.click();
             await toInput.fill(toStr);
-            await toInput.dispatchEvent('change');
+            await toInput.evaluate((el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new Event('blur', { bubbles: true }));
+            }, toStr);
         }
 
         // Generate exact official letter matching Saveetha format
         const studentName = session.config ? (session.config.name || 'Akil S.') : 'Akil S.';
         const department = session.config ? (session.config.department || 'B.Tech – Information Technology') : 'B.Tech – Information Technology';
         const officialDoc = buildOfficialLeaveLetter({
-            leaveType: resolvedType,
+            leaveType: targetWorkflow,
             rawReason: reason,
             fromDate: targetDate,
             toDate: targetDateTo,
@@ -246,18 +289,28 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             subject = officialDoc.subject;
         }
 
-        // D. Subject (fill with resolved/official subject)
-        const subjectInput = page.locator('input[name*="subject" i], input[placeholder*="subject" i], #id_subject').first();
+        // D. Subject * (fill with resolved official subject)
+        const subjectInput = page.locator('input[name*="subject" i], input[placeholder*="subject" i], #id_subject, input[id*="subject" i]').first();
         if (await subjectInput.isVisible()) {
             await subjectInput.fill(subject);
+            await subjectInput.evaluate((el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, subject);
         }
 
-        // E. Content (Rich text editor or standard textarea)
-        const contentArea = page.locator('textarea[name*="content" i], textarea[name*="reason" i], div[contenteditable="true"]').first();
+        // E. Content * (Rich text editor or standard textarea)
+        const contentArea = page.locator('.note-editable, div[contenteditable="true"], textarea[name*="content" i], textarea[name*="reason" i], textarea#id_content').first();
         if (await contentArea.isVisible()) {
-            const isEditableDiv = await contentArea.evaluate(el => el.getAttribute('contenteditable') === 'true');
+            const isEditableDiv = await contentArea.evaluate(el => el.getAttribute('contenteditable') === 'true' || el.classList.contains('note-editable'));
             if (isEditableDiv) {
-                await contentArea.evaluate((el, text) => { el.innerText = text; }, letterBody);
+                await contentArea.click();
+                await contentArea.evaluate((el, text) => {
+                    el.innerText = text;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }, letterBody);
             } else {
                 await contentArea.fill(letterBody);
             }
@@ -271,41 +324,62 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         const overlappingClasses = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'));
             const scheduleRows = rows.filter(r => r.innerText.includes('Academic') || r.innerText.includes('Student : Class') || /\d{2}:\d{2}/.test(r.innerText));
-            return scheduleRows.map(r => {
-                const text = r.innerText.replace(/\s+/g, ' ').trim();
-                return text;
-            });
+            return scheduleRows.map(r => r.innerText.replace(/\s+/g, ' ').trim());
         });
 
-        // 6. Switch to "Approval Flow" tab and inspect available workflows
-        console.log('[PortalAgent] Checking Approval Flow tab...');
-        const approvalTab = page.locator('a:has-text("Approval Flow"), button:has-text("Approval Flow"), [data-bs-target*="approval" i]').first();
-        let workflowOptions = [];
+        // 6. STEP 3: Click "Save Draft" button at the bottom of the Leave Application tab!
+        console.log('[PortalAgent] Clicking "Save Draft" on Leave Application tab...');
+        const saveDraftBtn = page.locator('button:has-text("Save Draft"), input[value*="Save Draft"], #save_draft, button.btn-primary:has-text("Draft")').first();
+        if (await saveDraftBtn.isVisible()) {
+            await saveDraftBtn.click();
+            console.log('[PortalAgent] "Save Draft" button clicked successfully!');
+            await page.waitForTimeout(3000);
+        } else {
+            console.warn('[PortalAgent] "Save Draft" button not found, searching alternative submit/draft buttons...');
+            const altDraftBtn = page.locator('button:has-text("Draft"), input[type="submit"][value*="Draft"]').first();
+            if (await altDraftBtn.isVisible()) {
+                await altDraftBtn.click();
+                await page.waitForTimeout(3000);
+            }
+        }
+
+        // 7. STEP 4: Switch to "Approval Flow" tab and assign Workflow
+        console.log('[PortalAgent] Switching to Approval Flow tab...');
+        const approvalTab = page.locator('a:has-text("Approval Flow"), button:has-text("Approval Flow"), [data-bs-target*="approval" i], li:has-text("Approval Flow") a').first();
+        let assignedWorkflow = targetWorkflow;
         if (await approvalTab.isVisible()) {
             await approvalTab.click();
-            await page.waitForTimeout(1500);
+            await page.waitForTimeout(2000);
 
-            const workflowSelect = page.locator('select[name*="workflow" i], select#id_workflow').first();
+            const workflowSelect = page.locator('select[name*="workflow" i], select#id_workflow, select').first();
             if (await workflowSelect.isVisible()) {
-                workflowOptions = await workflowSelect.locator('option').allTextContents();
-                workflowOptions = workflowOptions.map(o => o.trim()).filter(o => o && !o.includes('----'));
-                // Select first valid workflow option if available
-                if (workflowOptions.length > 0) {
-                    await workflowSelect.selectOption({ label: workflowOptions[0] }).catch(() => {});
-                    await page.waitForTimeout(800);
+                const availableWorkflows = (await workflowSelect.locator('option').allTextContents()).map(o => o.trim());
+                console.log('[PortalAgent] Available Approval Workflows:', availableWorkflows);
+
+                const matched = availableWorkflows.find(w => w.toLowerCase() === targetWorkflow.toLowerCase()) || targetWorkflow;
+                console.log(`[PortalAgent] Selecting Approval Workflow: ${matched}`);
+                await workflowSelect.selectOption({ label: matched }).catch(async () => {
+                    await workflowSelect.selectOption({ value: matched }).catch(() => {});
+                });
+                assignedWorkflow = matched;
+                await page.waitForTimeout(1000);
+
+                // Click "Save Workflow" button on Approval Flow tab
+                const saveWorkflowBtn = page.locator('button:has-text("Save Workflow"), input[value*="Save Workflow"]').first();
+                if (await saveWorkflowBtn.isVisible()) {
+                    console.log('[PortalAgent] Clicking "Save Workflow" button...');
+                    await saveWorkflowBtn.click();
+                    await page.waitForTimeout(2500);
                 }
             }
         }
 
-        // 7. Save Draft
-        console.log('[PortalAgent] Saving draft to portal...');
-        const saveDraftBtn = page.locator('button:has-text("Save Draft"), input[value*="Save Draft"]').first();
-        if (await saveDraftBtn.isVisible()) {
-            await saveDraftBtn.click();
-            await page.waitForTimeout(2000);
-        }
+        // 8. STEP 5: Return to Workflow Requests dashboard to verify draft card appears
+        console.log('[PortalAgent] Navigating to Workflow Requests dashboard to verify draft...');
+        await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(2500);
 
-        // 8. Capture Full Verification Screenshot
+        // Capture full page screenshot of the Workflow Requests dashboard showing the new draft card!
         await page.screenshot({ path: screenshotPath, fullPage: true });
 
         // 9. Format Telegram Report for Student
@@ -320,7 +394,7 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             classListStr = `\nℹ️ *Overlapping Classes:* None detected for this specific window.`;
         }
 
-        const workflowStr = workflowOptions.length > 0 ? `\n🔄 *Assigned Approval Flow:* \`${workflowOptions[0]}\`` : '';
+        const workflowStr = assignedWorkflow ? `\n🔄 *Assigned Approval Flow:* \`${assignedWorkflow}\`` : '';
 
         // Format complete user-facing report with the exact drafted letter included
         const fullReportMsg = 
@@ -388,8 +462,8 @@ async function officiallySubmitLeave(session, chatId, sendTelegram, sendTelegram
         await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(2000);
 
-        // Click on the most recent draft item
-        const draftItem = page.locator('a:has-text("Draft"), tr:has-text("Draft") a').first();
+        // Click on the most recent draft item [Open] button
+        const draftItem = page.locator('.card:has-text("Draft") button:has-text("Open"), .card:has-text("Draft") a:has-text("Open"), button:has-text("Open"), a:has-text("Open"), a:has-text("Draft"), tr:has-text("Draft") a').first();
         if (await draftItem.isVisible()) {
             await draftItem.click();
             await page.waitForTimeout(2000);
