@@ -185,9 +185,9 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
 
         // 4. Fill Form Fields
         const resolvedType = resolveLeaveType(leaveData.type || leaveData.leaveType);
-        const title = leaveData.title || (resolvedType === 'OnDuty-Students' ? 'On-Duty Application' : 'Leave Application');
-        const subject = leaveData.subject || (resolvedType === 'OnDuty-Students' ? 'Request for On-Duty (OD) Attendance' : 'Application for Leave');
-        const reason = leaveData.reason || leaveData.content || (resolvedType === 'OnDuty-Students' ? 'Participating in technical event/symposium representing college.' : 'Unable to attend classes due to personal/medical reasons.');
+        let title = leaveData.title || (resolvedType === 'OnDuty-Students' ? 'On-Duty Application' : 'Leave Application');
+        let subject = leaveData.subject || (resolvedType === 'OnDuty-Students' ? 'Request for On-Duty (OD) Attendance' : 'Application for Leave');
+        let reason = leaveData.reason || leaveData.content || (resolvedType === 'OnDuty-Students' ? 'Participating in technical event/symposium representing college.' : 'Unable to attend classes due to personal/medical reasons.');
 
         console.log(`[PortalAgent] Filling Leave Form: Type=${resolvedType}, Title="${title}"`);
 
@@ -230,12 +230,6 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             await toInput.dispatchEvent('change');
         }
 
-        // D. Subject
-        const subjectInput = page.locator('input[name*="subject" i], input[placeholder*="subject" i], #id_subject').first();
-        if (await subjectInput.isVisible()) {
-            await subjectInput.fill(subject);
-        }
-
         // Generate exact official letter matching Saveetha format
         const studentName = session.config ? (session.config.name || 'Akil S.') : 'Akil S.';
         const department = session.config ? (session.config.department || 'B.Tech – Information Technology') : 'B.Tech – Information Technology';
@@ -250,6 +244,12 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         const letterBody = officialDoc.letterText;
         if (!leaveData.subject) {
             subject = officialDoc.subject;
+        }
+
+        // D. Subject (fill with resolved/official subject)
+        const subjectInput = page.locator('input[name*="subject" i], input[placeholder*="subject" i], #id_subject').first();
+        if (await subjectInput.isVisible()) {
+            await subjectInput.fill(subject);
         }
 
         // E. Content (Rich text editor or standard textarea)
