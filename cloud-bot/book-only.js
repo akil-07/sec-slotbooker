@@ -5444,7 +5444,7 @@ JSON Schema:
                                 const session = await getOrSpawnSession(fromChatId, userConfig);
                                 if (!session) continue;
                                 session.doLogin = doLogin;
-                                await portalAgent.draftLeaveApplication(session, aiData, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations);
+                                await portalAgent.draftLeaveApplication(session, aiData, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations, callSmartAI);
                                 continue;
                             } else if (aiData.action === 'circulars') {
                                 const session = await getOrSpawnSession(fromChatId, userConfig);
@@ -5479,13 +5479,13 @@ JSON Schema:
                     if (!session) continue;
                     session.doLogin = doLogin;
                     const isOd = text.startsWith('!od') || text.includes('od');
-                    const reason = rawText.replace(/^!(leave|od|applyleave)s*/i, '').trim();
+                    const reason = rawText.replace(/^!(leave|od|applyleave)\s*/i, '').trim();
                     const leavePayload = {
                         type: isOd ? 'OnDuty-Students' : 'Leave-Students',
                         reason: reason || (isOd ? 'Attending symposium / official college event.' : 'Personal leave.'),
                         isTomorrow: text.includes('tomorrow')
                     };
-                    await portalAgent.draftLeaveApplication(session, leavePayload, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations);
+                    await portalAgent.draftLeaveApplication(session, leavePayload, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations, callSmartAI);
                     continue;
                 }
 

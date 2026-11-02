@@ -87,9 +87,50 @@ function formatPortalDateTime(dateObj, hour = 8, minute = 0, ampm = 'AM') {
 }
 
 /**
+ * Formulate a professional student leave letter based on type, dates, and reason
+ */
+async function generateLeaveLetter(leaveType, title, fromStr, toStr, rawReason, studentName = 'Student', callSmartAI = null) {
+    if (callSmartAI && typeof callSmartAI === 'function') {
+        try {
+            const prompt = `You are a formal letter assistant for a Saveetha University student named "${studentName}".
+The student is drafting a formal leave/OD application on the college portal.
+Details:
+- Application Type: ${leaveType}
+- Title / Purpose: ${title}
+- Duration: From ${fromStr} to ${toStr}
+- Student's Reason: "${rawReason}"
+
+Write a concise, professional 3-to-4 sentence formal letter body for the application.
+Rules:
+- Include formal greeting ("Respected Faculty / Mentor,").
+- Clearly mention the reason and the exact duration from ${fromStr} to ${toStr}.
+- Mention that academic coursework will be caught up promptly.
+- Polite sign-off with student name.
+- Return ONLY the clean letter text (no markdown formatting, no backticks, no subject line).`;
+
+            const aiRes = await callSmartAI(prompt, [], rawReason, false);
+            if (aiRes && aiRes.trim().length > 30) {
+                return aiRes.trim();
+            }
+        } catch (_) {}
+    }
+
+    // High quality deterministic templates
+    if (leaveType === 'OnDuty-Students') {
+        return `Respected Faculty / Mentor,\n\nI am writing to formally request On-Duty (OD) attendance from ${fromStr} to ${toStr} as I am participating in ${rawReason || 'an official college symposium / technical event'}. I kindly request you to approve my OD attendance for the scheduled classes during this period.\n\nThank you.\nSincerely,\n${studentName}`;
+    } else if (leaveType === 'Medical Leave - Students') {
+        return `Respected Faculty / Mentor,\n\nI am writing to formally request medical leave from ${fromStr} to ${toStr} due to ${rawReason || 'health issues and doctor-advised rest'}. I will ensure that I catch up on all missed academic topics and assignments upon my return. Kindly consider and grant me leave for these sessions.\n\nThank you.\nSincerely,\n${studentName}`;
+    } else if (leaveType.includes('GatePass')) {
+        return `Respected Warden / Advisor,\n\nI am submitting this hostel gate pass request from ${fromStr} to ${toStr} for ${rawReason || 'personal work / visiting home'}. Kindly grant permission for the gate pass.\n\nThank you.\nSincerely,\n${studentName}`;
+    } else {
+        return `Respected Faculty / Mentor,\n\nI am writing to formally request leave from ${fromStr} to ${toStr} due to ${rawReason || 'personal circumstances'}. I will coordinate with my classmates and professors to complete all coursework covered during my absence. Kindly approve my leave application.\n\nThank you.\nSincerely,\n${studentName}`;
+    }
+}
+
+/**
  * 1. AUTOMATED LEAVE & OD APPLICATION DRAFTING & SUBMISSION
  */
-async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, sendTelegramPhoto, pendingConfirmations) {
+async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, sendTelegramPhoto, pendingConfirmations, callSmartAI = null) {
     const page = await session.context.newPage();
     const screenshotPath = path.join(__dirname, `_leave_draft_${Date.now()}.png`);
 
@@ -167,14 +208,18 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             await subjectInput.fill(subject);
         }
 
+        // Generate full formal letter body
+        const studentName = session.config ? (session.config.name || 'Student') : 'Student';
+        const letterBody = await generateLeaveLetter(resolvedType, title, fromStr, toStr, reason, studentName, callSmartAI);
+
         // E. Content (Rich text editor or standard textarea)
         const contentArea = page.locator('textarea[name*="content" i], textarea[name*="reason" i], div[contenteditable="true"]').first();
         if (await contentArea.isVisible()) {
             const isEditableDiv = await contentArea.evaluate(el => el.getAttribute('contenteditable') === 'true');
             if (isEditableDiv) {
-                await contentArea.evaluate((el, text) => { el.innerText = text; }, reason);
+                await contentArea.evaluate((el, text) => { el.innerText = text; }, letterBody);
             } else {
-                await contentArea.fill(reason);
+                await contentArea.fill(letterBody);
             }
         }
 
@@ -237,7 +282,8 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
 
         const workflowStr = workflowOptions.length > 0 ? `\n🔄 *Assigned Approval Flow:* \`${workflowOptions[0]}\`` : '';
 
-        const confirmationMsg = 
+        // Format complete user-facing report with the exact drafted letter included
+        const fullReportMsg = 
             `📝 *Leave / OD Application Prepared & Drafted!*\n\n` +
             `• *Type:* \`${resolvedType}\`\n` +
             `• *Title:* *${title}*\n` +
@@ -246,16 +292,26 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             `• *To:* \`${toStr}\`\n` +
             workflowStr + `\n` +
             classListStr + `\n\n` +
+            `📄 *Drafted Application Letter:*\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `${letterBody}\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n\n` +
             `⚠️ *Ready for Official Submission:*\n` +
             `The draft has been populated on your Saveetha portal. Check the attached screenshot!\n\n` +
             `👉 Reply *submit* or *apply* to officially route this to your Mentor/HOD.\n` +
             `👉 Reply *cancel* to keep it as an unsubmitted draft.`;
 
+        // Send photo with concise caption (avoiding Telegram 1024 char caption limit), then send complete letter in message
         if (sendTelegramPhoto) {
-            await sendTelegramPhoto(screenshotPath, confirmationMsg, chatId);
-        } else {
-            await sendTelegram(confirmationMsg, chatId);
+            const photoCaption = 
+                `📝 *Leave / OD Drafted on Portal*\n\n` +
+                `• *Type:* \`${resolvedType}\`\n` +
+                `• *Duration:* \`${fromStr}\` ➔ \`${toStr}\`\n` +
+                `• *Classes Covered:* ${overlappingClasses.length}\n\n` +
+                `👉 _See the complete drafted letter below!_`;
+            await sendTelegramPhoto(screenshotPath, photoCaption, chatId);
         }
+        await sendTelegram(fullReportMsg, chatId);
 
         // Store pending submission context
         if (pendingConfirmations) {
@@ -444,3 +500,4 @@ module.exports = {
     browseCirculars,
     checkRewardPoints
 };
+
