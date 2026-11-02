@@ -5,3 +5,6 @@ node_modules/
 *.log
 *twilio_config.json
 *call_config.json
+scratch*
+cloud-bot/scratch*
+

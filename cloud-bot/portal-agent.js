@@ -79,7 +79,23 @@ function resolveLeaveType(inputStr) {
 function parseIndianDate(dateStr) {
     if (!dateStr) return null;
     if (dateStr instanceof Date && !isNaN(dateStr.getTime())) return dateStr;
-    const s = String(dateStr).trim();
+    const s = String(dateStr).trim().toLowerCase();
+
+    const now = new Date();
+    if (s === 'today') {
+        return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    }
+    if (s === 'tomorrow') {
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        d.setDate(d.getDate() + 1);
+        return d;
+    }
+    if (s.includes('day after tomorrow')) {
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        d.setDate(d.getDate() + 2);
+        return d;
+    }
+
     // Match DD/MM/YYYY or DD-MM-YYYY
     const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
     if (dmy) {
@@ -96,12 +112,19 @@ function parseIndianDate(dateStr) {
         const day = parseInt(ymd[3], 10);
         return new Date(year, month, day);
     }
-    const d = new Date(s);
+    // Match DD/MM e.g. 06/11 (assume current year)
+    const dm = s.match(/^(\d{1,2})[\/\-](\d{1,2})$/);
+    if (dm) {
+        const day = parseInt(dm[1], 10);
+        const month = parseInt(dm[2], 10) - 1;
+        return new Date(now.getFullYear(), month, day);
+    }
+    const d = new Date(dateStr);
     return isNaN(d.getTime()) ? null : d;
 }
 
 /**
- * Extracts date range from text (e.g. "Leave 06/11/2026 to 11/11/2026" or "06-11-2026 - 11-11-2026")
+ * Extracts date range from text (e.g. "Leave 06/11/2026 to 11/11/2026" or "06/11 to 11/11")
  */
 function extractDateRangeFromText(text) {
     if (!text) return null;
@@ -110,6 +133,12 @@ function extractDateRangeFromText(text) {
     if (rangeMatch) {
         const d1 = parseIndianDate(rangeMatch[1]);
         const d2 = parseIndianDate(rangeMatch[2]);
+        if (d1 && d2) return { from: d1, to: d2 };
+    }
+    const shortRangeMatch = str.match(/(\d{1,2}[\/\-]\d{1,2})\s*(?:to|-|until)\s*(\d{1,2}[\/\-]\d{1,2})/i);
+    if (shortRangeMatch) {
+        const d1 = parseIndianDate(shortRangeMatch[1]);
+        const d2 = parseIndianDate(shortRangeMatch[2]);
         if (d1 && d2) return { from: d1, to: d2 };
     }
     const singleMatch = str.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/);
@@ -121,16 +150,87 @@ function extractDateRangeFromText(text) {
 }
 
 /**
- * Format date/time to portal format: DD/MM/YYYY hh:mm A (e.g. 03/11/2026 08:00 AM)
+ * Format date/time to strictly compliant Saveetha format: DD/MM/YYYY hh:mm A (e.g. 06/11/2026 08:00 AM)
+ * Always normalizes 24-hour hours (e.g. 20 -> 08:00 PM) to avoid invalid formats like 20:00 PM.
  */
-function formatPortalDateTime(dateObj, hour = 8, minute = 0, ampm = 'AM') {
+function formatPortalDateTime(dateObj, hour = 8, minute = 0, ampm = null) {
     const d = (dateObj instanceof Date && !isNaN(dateObj.getTime())) ? dateObj : new Date();
     const day = String(d.getDate()).padStart(2, '0');
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const year = d.getFullYear();
-    const h = String(hour).padStart(2, '0');
-    const m = String(minute).padStart(2, '0');
-    return `${day}/${month}/${year} ${h}:${m} ${ampm.toUpperCase()}`;
+
+    let resolvedHour = Number(hour) || 0;
+    let resolvedAmPm = ampm ? String(ampm).toUpperCase() : null;
+
+    if (!resolvedAmPm) {
+        resolvedAmPm = resolvedHour >= 12 ? 'PM' : 'AM';
+    }
+
+    let h12 = resolvedHour % 12;
+    if (h12 === 0) h12 = 12;
+
+    const hStr = String(h12).padStart(2, '0');
+    const mStr = String(minute).padStart(2, '0');
+    return `${day}/${month}/${year} ${hStr}:${mStr} ${resolvedAmPm}`;
+}
+
+/**
+ * Fetches overlapping timetable schedules for a leave window directly from Saveetha's
+ * schedules endpoint (/academics/workflow-requests/leave-applications/schedules/)
+ * and falls back to inspecting the DOM table.
+ */
+async function fetchLeaveSchedulesFromPortal(page, fromStr, toStr) {
+    let classes = [];
+
+    // Approach 1: Directly query Saveetha's schedule preview JSON endpoint via page context
+    try {
+        const scheduleUrl = `/academics/workflow-requests/leave-applications/schedules/?leave_date_from=${encodeURIComponent(fromStr)}&leave_date_to=${encodeURIComponent(toStr)}`;
+        const result = await page.evaluate(async (url) => {
+            try {
+                const res = await fetch(url, {
+                    cache: 'no-store',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+                if (!res.ok) return { ok: false, status: res.status };
+                const data = await res.json();
+                return { ok: true, html: (data && data.html) ? data.html : '' };
+            } catch (e) {
+                return { ok: false, error: e.message };
+            }
+        }, scheduleUrl);
+
+        if (result && result.ok && result.html) {
+            classes = await page.evaluate((html) => {
+                const div = document.createElement('div');
+                div.innerHTML = html;
+                const rows = Array.from(div.querySelectorAll('tr'));
+                return rows
+                    .map(r => r.innerText.replace(/\s+/g, ' ').trim())
+                    .filter(t => t.length > 0 && !t.toLowerCase().startsWith('type schedule role') && (t.includes('Academic') || t.includes('Student') || /\d{2}:\d{2}/.test(t)));
+            }, result.html);
+
+            if (classes.length > 0) {
+                console.log(`[PortalAgent] Fetched ${classes.length} overlapping classes directly from schedule endpoint.`);
+                return classes;
+            }
+        }
+    } catch (err) {
+        console.warn('[PortalAgent] Direct schedule fetch failed, falling back to DOM:', err.message);
+    }
+
+    // Approach 2: DOM fallback - wait for UI to update and scrape table
+    await page.waitForTimeout(2500);
+    classes = await page.evaluate(() => {
+        const rows = Array.from(document.querySelectorAll('table tbody tr, [data-leave-schedule-preview] table tr'));
+        const scheduleRows = rows.filter(r => {
+            const txt = r.innerText.trim();
+            return !txt.toLowerCase().startsWith('type schedule role') && (txt.includes('Academic') || txt.includes('Student') || /\d{2}:\d{2}/.test(txt));
+        });
+        return scheduleRows.map(r => r.innerText.replace(/\s+/g, ' ').trim());
+    });
+
+    console.log(`[PortalAgent] Fetched ${classes.length} overlapping classes from DOM table.`);
+    return classes;
 }
 
 function formatOrdinalDate(dateObj) {
@@ -554,11 +654,7 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
 
         // 4. Scrape Overlapping Schedules
         console.log('[PortalAgent] Checking overlapping schedules during leave duration...');
-        const overlappingClasses = await page.evaluate(() => {
-            const rows = Array.from(document.querySelectorAll('table tbody tr'));
-            const scheduleRows = rows.filter(r => r.innerText.includes('Academic') || r.innerText.includes('Student : Class') || /\d{2}:\d{2}/.test(r.innerText));
-            return scheduleRows.map(r => r.innerText.replace(/\s+/g, ' ').trim());
-        });
+        const overlappingClasses = await fetchLeaveSchedulesFromPortal(page, fromStr, toStr);
 
         // 5. STEP 3: Click "Save Draft" button on the Leave Application form!
         console.log('[PortalAgent] Clicking "Save Draft" button...');
@@ -866,7 +962,7 @@ async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, 
         const dFrom = parseIndianDate(fromDate) || new Date();
         const dTo = parseIndianDate(toDate) || dFrom;
         const fromStr = formatPortalDateTime(dFrom, 8, 0, 'AM');
-        const toStr = formatPortalDateTime(dTo, 20, 0, 'PM');
+        const toStr = formatPortalDateTime(dTo, 8, 0, 'PM');
 
         await sendTelegram(`⏳ *Simulating leave from ${fromStr} to ${toStr} against your timetable and 80% attendance rule...*`, chatId);
 
@@ -880,7 +976,7 @@ async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, 
         await page.goto('https://learner.saveetha.in/academics/workflow-requests/leave-applications/create/', { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(2000);
 
-        // Fill dates
+        // Fill dates into inputs
         const fromInput = page.locator('#id_leave_date_from, input[name="leave_date_from"]').first();
         if (await fromInput.isVisible()) {
             await fromInput.click();
@@ -905,14 +1001,8 @@ async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, 
             }, toStr);
         }
 
-        await page.waitForTimeout(3000);
-
-        // Scrape overlapping schedules
-        const overlappingClasses = await page.evaluate(() => {
-            const rows = Array.from(document.querySelectorAll('table tbody tr'));
-            const scheduleRows = rows.filter(r => r.innerText.includes('Academic') || r.innerText.includes('Student : Class') || /\d{2}:\d{2}/.test(r.innerText));
-            return scheduleRows.map(r => r.innerText.replace(/\s+/g, ' ').trim());
-        });
+        // Scrape overlapping schedules directly and via DOM
+        const overlappingClasses = await fetchLeaveSchedulesFromPortal(page, fromStr, toStr);
 
         // 3. Run impact calculation
         const impact = calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses);
@@ -951,6 +1041,8 @@ module.exports = {
     LEAVE_TYPE_MAP,
     ensurePortalSession,
     resolveLeaveType,
+    parseIndianDate,
+    formatPortalDateTime,
     extractDateRangeFromText,
     calculateAttendanceLeaveImpact,
     simulateLeaveAttendanceImpact,
