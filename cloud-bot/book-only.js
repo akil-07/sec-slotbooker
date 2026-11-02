@@ -947,7 +947,7 @@ async function callGroq(messages, jsonMode = true) {
 
 async function callGemini(contents) {
     if (!aiClient) return null;
-    const models = ['gemini-2.5-flash', 'gemini-3.5-flash-lite'];
+    const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash'];
     let lastError = null;
     for (const model of models) {
         try {
@@ -2768,75 +2768,101 @@ async function startAttendanceMonitor(context, config, targetKeyword, startTimeS
 
 async function doLogin(page, user, pass) {
     console.log(`[Bot] Logging in as ${user}...`);
-    if (!page.url().includes('/login') && !page.url().includes('/authorize')) {
-        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    }
 
-    // Try multiple selectors for the username field
-    const userSelectors = [
-        '#id_username',
-        'input[name="username"]',
-        'input[name="uid"]',
-        '#username',
-        'input[type="text"]',
-        'input[placeholder*="user" i]',
-        'input[placeholder*="id" i]',
-        'input[placeholder*="roll" i]'
-    ];
+    let attempts = 0;
+    const maxAttempts = 3;
 
-    let userInput = null;
-    for (const sel of userSelectors) {
+    while (attempts < maxAttempts) {
+        attempts++;
         try {
-            await page.waitForSelector(sel, { timeout: 10000, state: 'visible' });
-            userInput = page.locator(sel).first();
-            break;
-        } catch (_) { }
-    }
-
-    if (!userInput) {
-        const title = await page.title().catch(() => 'unknown');
-        throw new Error(`Could not find username input on login page. URL: ${page.url()}, Title: ${title}`);
-    }
-
-    // Fill using React-compatible method
-    await userInput.fill(String(user));
-
-    const passInput = page.locator('input[type="password"]').first();
-    await passInput.fill(String(pass));
-
-    // Click login button
-    const loginSelectors = [
-        'button[type="submit"]',
-        'input[type="submit"]',
-        'button:has-text("Login")',
-        'button:has-text("Sign in")',
-        'button:has-text("Log in")'
-    ];
-
-    let clicked = false;
-    for (const sel of loginSelectors) {
-        try {
-            const btn = page.locator(sel).first();
-            if (await btn.count() > 0) {
-                await btn.click({ force: true });
-                clicked = true;
-                break;
+            if (!page.url().includes('/login') && !page.url().includes('/authorize')) {
+                await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
             }
-        } catch (_) { }
+
+            let pageTitle = (await page.title().catch(() => '')) || '';
+            if (/50[234]|temporarily unavailable|gateway time/i.test(pageTitle)) {
+                console.warn(`[Login] Saveetha server error "${pageTitle}" (attempt ${attempts}/${maxAttempts}). Waiting 4s to retry...`);
+                await page.waitForTimeout(4000);
+                await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+                pageTitle = (await page.title().catch(() => '')) || '';
+            }
+
+            // Try multiple selectors for the username field
+            const userSelectors = [
+                '#id_username',
+                'input[name="username"]',
+                'input[name="uid"]',
+                '#username',
+                'input[type="text"]',
+                'input[placeholder*="user" i]',
+                'input[placeholder*="id" i]',
+                'input[placeholder*="roll" i]'
+            ];
+
+            let userInput = null;
+            for (const sel of userSelectors) {
+                try {
+                    await page.waitForSelector(sel, { timeout: 8000, state: 'visible' });
+                    userInput = page.locator(sel).first();
+                    break;
+                } catch (_) { }
+            }
+
+            if (!userInput) {
+                const title = await page.title().catch(() => 'unknown');
+                if (/50[234]|temporarily unavailable|gateway time/i.test(title) && attempts < maxAttempts) {
+                    console.warn(`[Login] Portal busy (${title}). Retrying login attempt ${attempts + 1}...`);
+                    await page.waitForTimeout(4000);
+                    continue;
+                }
+                throw new Error(`Could not find username input on login page. URL: ${page.url()}, Title: ${title}`);
+            }
+
+            // Fill using React-compatible method
+            await userInput.fill(String(user));
+
+            const passInput = page.locator('input[type="password"]').first();
+            await passInput.fill(String(pass));
+
+            // Click login button
+            const loginSelectors = [
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button:has-text("Login")',
+                'button:has-text("Sign in")',
+                'button:has-text("Log in")'
+            ];
+
+            let clicked = false;
+            for (const sel of loginSelectors) {
+                try {
+                    const btn = page.locator(sel).first();
+                    if (await btn.count() > 0) {
+                        await btn.click({ force: true });
+                        clicked = true;
+                        break;
+                    }
+                } catch (_) { }
+            }
+            if (!clicked) await page.keyboard.press('Enter');
+
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+
+            // Wait for SSO redirects to complete
+            try {
+                await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
+            } catch (e) {
+                // ignore timeout, we'll just log the URL anyway
+            }
+            await page.waitForTimeout(500);
+            console.log('[Bot] Logged in. Current URL:', page.url());
+            return; // Login succeeded
+        } catch (err) {
+            if (attempts >= maxAttempts) throw err;
+            console.warn(`[Login] Error on attempt ${attempts}: ${err.message}. Retrying in 3s...`);
+            await page.waitForTimeout(3000);
+        }
     }
-    if (!clicked) await page.keyboard.press('Enter');
-
-    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-
-    // Wait for SSO redirects to complete
-    try {
-        await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
-    } catch (e) {
-        // ignore timeout, we'll just log the URL anyway
-    }
-    await page.waitForTimeout(500);
-
-    console.log('[Bot] Logged in. Current URL:', page.url());
 }
 
 // ─── Timetable Scraper ───────────────────────────────────────────────────────
