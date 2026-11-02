@@ -5494,8 +5494,8 @@ Possible Actions:
   Params: keyword.
 - "callremind": Set up a 30-min repeating phone call reminder for a class. E.g. "call me before python class", "remind me with a call for my next class", "set call reminder for 1:15 pm".
   Params: keyword (subject name, time, or null for next class).
-- "apply_leave": Draft or submit Leave, On-Duty (OD), Medical Leave, Hostel Gate Pass, or Placement request. E.g. "apply leave for tomorrow", "apply OD for symposium", "request on-duty for hackathon", "medical leave for fever", "hostel gate pass for tonight".
-  Params: leaveType ("OnDuty-Students" | "Medical Leave - Students" | "Leave-Students" | "HostelGatePass" | "EmergencyHostelGatePass" | "PlacementInternshipRequest" | "Placement Interview"), title, reason, date, fromTime (e.g. "03/11/2026 08:00 AM"), toTime, isTomorrow (boolean).
+- "apply_leave": Draft or submit Leave, On-Duty (OD), Medical Leave, Hostel Gate Pass, or Placement request. E.g. "apply leave for tomorrow", "leave 06/11/2026 to 11/11/2026", "apply OD for symposium", "request on-duty for hackathon", "medical leave for fever", "hostel gate pass for tonight".
+  Params: leaveType ("OnDuty-Students" | "Medical Leave - Students" | "Leave-Students" | "HostelGatePass"), title, reason, fromDate (DD/MM/YYYY e.g. "06/11/2026"), toDate (DD/MM/YYYY e.g. "11/11/2026"), date (single date if applicable), fromTime (e.g. "08:00 AM"), toTime (e.g. "08:00 PM"), isTomorrow (boolean).
 - "circulars": View latest campus circulars or ask questions about holidays, exam timetables, or notices. E.g. "any circulars today?", "check circulars for holiday", "when are exams according to circulars".
   Params: query (topic or question, else null).
 - "rewards": Check student reward points balance and coins. E.g. "check my reward points", "how many coins do I have?".
@@ -5510,13 +5510,17 @@ JSON Schema:
   "leaveType": "string or null",
   "title": "string or null",
   "reason": "string or null",
+  "fromDate": "string or null",
+  "toDate": "string or null",
+  "fromTime": "HH:MM AM/PM or null",
+  "toTime": "HH:MM AM/PM or null",
   "isTomorrow": "boolean or null",
   "query": "string or null",
   "keyword": "string or null",
   "time": "HH:MM AM/PM or null",
   "startTime": "HH:MM AM/PM or null",
   "venue": "string or null",
-  "date": "MM/DD/YYYY or null",
+  "date": "string or null",
   "otpCode": "string or null",
   "phase": "in" | "out" | null,
   "args": "string or null",

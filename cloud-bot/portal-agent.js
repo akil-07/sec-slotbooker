@@ -74,10 +74,57 @@ function resolveLeaveType(inputStr) {
 }
 
 /**
+ * Helper to parse Indian DD/MM/YYYY date strings into JS Date objects
+ */
+function parseIndianDate(dateStr) {
+    if (!dateStr) return null;
+    if (dateStr instanceof Date && !isNaN(dateStr.getTime())) return dateStr;
+    const s = String(dateStr).trim();
+    // Match DD/MM/YYYY or DD-MM-YYYY
+    const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmy) {
+        const day = parseInt(dmy[1], 10);
+        const month = parseInt(dmy[2], 10) - 1;
+        const year = parseInt(dmy[3], 10);
+        return new Date(year, month, day);
+    }
+    // Match YYYY-MM-DD
+    const ymd = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (ymd) {
+        const year = parseInt(ymd[1], 10);
+        const month = parseInt(ymd[2], 10) - 1;
+        const day = parseInt(ymd[3], 10);
+        return new Date(year, month, day);
+    }
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Extracts date range from text (e.g. "Leave 06/11/2026 to 11/11/2026" or "06-11-2026 - 11-11-2026")
+ */
+function extractDateRangeFromText(text) {
+    if (!text) return null;
+    const str = String(text);
+    const rangeMatch = str.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\s*(?:to|-|until)\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
+    if (rangeMatch) {
+        const d1 = parseIndianDate(rangeMatch[1]);
+        const d2 = parseIndianDate(rangeMatch[2]);
+        if (d1 && d2) return { from: d1, to: d2 };
+    }
+    const singleMatch = str.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/);
+    if (singleMatch) {
+        const d = parseIndianDate(singleMatch[1]);
+        if (d) return { from: d, to: d };
+    }
+    return null;
+}
+
+/**
  * Format date/time to portal format: DD/MM/YYYY hh:mm A (e.g. 03/11/2026 08:00 AM)
  */
 function formatPortalDateTime(dateObj, hour = 8, minute = 0, ampm = 'AM') {
-    const d = new Date(dateObj);
+    const d = (dateObj instanceof Date && !isNaN(dateObj.getTime())) ? dateObj : new Date();
     const day = String(d.getDate()).padStart(2, '0');
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const year = d.getFullYear();
@@ -165,25 +212,24 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         await ensurePortalSession(page, session);
         await sendTelegram(`⏳ *Opening Workflow Engine on Saveetha Portal...*`, chatId);
 
-        // 1. Navigate to Workflow Requests
-        await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForTimeout(2000);
-
-        // 2. Click "New Application ▼" dropdown
-        console.log('[PortalAgent] Locating New Application dropdown button...');
-        const newAppBtn = await page.locator('button:has-text("New Application"), a:has-text("New Application"), .dropdown-toggle:has-text("Application")').first();
-        await newAppBtn.waitFor({ state: 'visible', timeout: 15000 });
-        await newAppBtn.click();
-        await page.waitForTimeout(800);
-
-        // 3. Click "New Leave Application"
-        console.log('[PortalAgent] Selecting New Leave Application...');
-        const leaveAppOption = await page.locator('a:has-text("New Leave Application"), button:has-text("New Leave Application")').first();
-        await leaveAppOption.waitFor({ state: 'visible', timeout: 10000 });
-        await leaveAppOption.click();
+        // 1. Navigate directly to Leave Application creation form
+        console.log('[PortalAgent] Navigating to Leave Application form...');
+        try {
+            await page.goto('https://learner.saveetha.in/academics/workflow-requests/leave-applications/create/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        } catch (_) {
+            await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForTimeout(2000);
+            const newAppBtn = await page.locator('button:has-text("New Application"), a:has-text("New Application"), .dropdown-toggle:has-text("Application")').first();
+            await newAppBtn.waitFor({ state: 'visible', timeout: 15000 });
+            await newAppBtn.click();
+            await page.waitForTimeout(800);
+            const leaveAppOption = await page.locator('a:has-text("New Leave Application"), button:has-text("New Leave Application")').first();
+            await leaveAppOption.waitFor({ state: 'visible', timeout: 10000 });
+            await leaveAppOption.click();
+        }
         await page.waitForTimeout(2500);
 
-        // 4. Determine Leave Type & Target Workflow
+        // 2. Parse Leave Type & Target Workflow
         const rawTypeStr = (leaveData.type || leaveData.leaveType || '').toLowerCase();
         const rawReasonStr = (leaveData.reason || leaveData.content || '').toLowerCase();
         const isHostel = rawTypeStr.includes('hostel') || rawTypeStr.includes('gatepass') || rawReasonStr.includes('hostel') || rawReasonStr.includes('gate pass');
@@ -192,23 +238,56 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
 
         // Strictly select HostelGatePass (NOT EmergencyHostelGatePass) or Leave-Students or OnDuty-Students
         let targetWorkflow = 'Leave-Students';
+        let formLeaveTypeValue = 'Leave';
         if (isHostel) {
             targetWorkflow = 'HostelGatePass'; // Strictly non-emergency per college policy
+            formLeaveTypeValue = 'GatePass';
         } else if (isOd) {
             targetWorkflow = 'OnDuty-Students';
+            formLeaveTypeValue = 'OD';
         } else if (isMedical) {
             targetWorkflow = 'Medical Leave - Students';
+            formLeaveTypeValue = 'ML';
         }
 
         const resolvedType = targetWorkflow;
-        let title = leaveData.title || (isHostel ? 'Hostel Gate Pass' : (isOd ? 'On-Duty Application' : 'Leave Application'));
-        let subject = leaveData.subject || (isHostel ? 'Request for Hostel Gate Pass' : (isOd ? 'Request for On-Duty (OD) Attendance' : 'Application for Leave'));
+        let title = leaveData.title || (isHostel ? 'Hostel Gate Pass' : (isOd ? 'On-Duty Application' : 'Personal Leave'));
+        // Clean title if user passed a raw command string
+        if (title.length > 50) title = title.substring(0, 50);
+
+        let subject = leaveData.subject || (isHostel ? 'Request for Hostel Gate Pass' : (isOd ? 'Request for On-Duty (OD) Attendance' : 'Request for Leave Permission'));
         let reason = leaveData.reason || leaveData.content || (isHostel ? 'Need permission to leave hostel for personal reasons.' : (isOd ? 'Participating in technical event/symposium representing college.' : 'Unable to attend classes due to personal reasons.'));
 
-        console.log(`[PortalAgent] Filling Leave Form: Workflow=${targetWorkflow}, Title="${title}"`);
+        // 3. Parse Dates (support fromDate/toDate and regex extraction from text)
+        const textToScan = `${leaveData.title || ''} ${leaveData.reason || ''} ${leaveData.content || ''} ${leaveData.query || ''}`;
+        const extractedRange = extractDateRangeFromText(textToScan);
+
+        let targetDate = leaveData.fromDate ? parseIndianDate(leaveData.fromDate) : (leaveData.date ? parseIndianDate(leaveData.date) : null);
+        let targetDateTo = leaveData.toDate ? parseIndianDate(leaveData.toDate) : null;
+
+        if (!targetDate && extractedRange) {
+            targetDate = extractedRange.from;
+            if (!targetDateTo) targetDateTo = extractedRange.to;
+        }
+
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        if (!targetDate) {
+            targetDate = leaveData.isTomorrow ? tomorrow : today;
+        }
+        if (!targetDateTo) {
+            targetDateTo = targetDate;
+        }
+
+        const fromStr = leaveData.fromTime || formatPortalDateTime(targetDate, 8, 0, 'AM');
+        const toStr = leaveData.toTime || formatPortalDateTime(targetDateTo, 8, 0, 'PM');
+
+        console.log(`[PortalAgent] Filling Leave Form: Type=${formLeaveTypeValue}, Workflow=${targetWorkflow}, From=${fromStr}, To=${toStr}`);
 
         // A. Short Title *
-        const titleInput = page.locator('input[name*="title" i], input[placeholder*="title" i], #id_short_title, #id_title, input[id*="title" i]').first();
+        const titleInput = page.locator('#id_short_title, input[name="short_title"], input[placeholder*="title" i]').first();
         if (await titleInput.isVisible()) {
             await titleInput.fill(title);
             await titleInput.evaluate((el, val) => {
@@ -218,38 +297,18 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             }, title);
         }
 
-        // B. Leave Type * Dropdown (on first tab)
-        const typeSelect = page.locator('select[name*="leave_type" i], select[name*="type" i], select#id_leave_type, select[id*="type" i]').first();
+        // B. Leave Type * Dropdown (#id_leavetype)
+        const typeSelect = page.locator('#id_leavetype, select[name="leavetype"]').first();
         if (await typeSelect.isVisible()) {
-            const options = await typeSelect.locator('option').allTextContents();
-            console.log('[PortalAgent] Available Leave Type options:', options);
-            let matchedOpt = null;
-            if (isHostel) {
-                matchedOpt = options.find(o => o.toLowerCase().includes('hostel') || o.toLowerCase().includes('gatepass'));
-            }
-            if (!matchedOpt) {
-                matchedOpt = options.find(o => o.trim().toLowerCase() === 'leave') ||
-                             options.find(o => o.toLowerCase().includes('leave') && !o.includes('---')) ||
-                             options.find(o => !o.includes('---') && o.trim().length > 0);
-            }
-            if (matchedOpt) {
-                await typeSelect.selectOption({ label: matchedOpt.trim() }).catch(async () => {
-                    await typeSelect.selectOption({ index: 1 }).catch(() => {});
-                });
-            }
+            console.log(`[PortalAgent] Selecting Leave Type value: ${formLeaveTypeValue}`);
+            await typeSelect.selectOption(formLeaveTypeValue).catch(async () => {
+                await typeSelect.selectOption({ label: formLeaveTypeValue }).catch(() => {});
+            });
+            await page.waitForTimeout(500);
         }
 
         // C. Dates: From and To (Strict Saveetha format: DD/MM/YYYY hh:mm A)
-        const today = new Date();
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-
-        const targetDate = leaveData.date ? new Date(leaveData.date) : (leaveData.isTomorrow ? tomorrow : today);
-        const targetDateTo = leaveData.toDate ? new Date(leaveData.toDate) : targetDate;
-        const fromStr = leaveData.fromTime || formatPortalDateTime(targetDate, 8, 0, 'AM');
-        const toStr = leaveData.toTime || formatPortalDateTime(targetDateTo, 8, 0, 'PM');
-
-        const fromInput = page.locator('input[name*="from" i], input[placeholder*="from" i], #id_leave_from').first();
+        const fromInput = page.locator('#id_leave_date_from, input[name="leave_date_from"]').first();
         if (await fromInput.isVisible()) {
             await fromInput.click();
             await fromInput.fill(fromStr);
@@ -261,7 +320,7 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             }, fromStr);
         }
 
-        const toInput = page.locator('input[name*="to" i], input[placeholder*="to" i], #id_leave_to').first();
+        const toInput = page.locator('#id_leave_date_to, input[name="leave_date_to"]').first();
         if (await toInput.isVisible()) {
             await toInput.click();
             await toInput.fill(toStr);
@@ -290,7 +349,7 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         }
 
         // D. Subject * (fill with resolved official subject)
-        const subjectInput = page.locator('input[name*="subject" i], input[placeholder*="subject" i], #id_subject, input[id*="subject" i]').first();
+        const subjectInput = page.locator('#id_subject, input[name="subject"]').first();
         if (await subjectInput.isVisible()) {
             await subjectInput.fill(subject);
             await subjectInput.evaluate((el, val) => {
@@ -300,26 +359,28 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             }, subject);
         }
 
-        // E. Content * (Rich text editor or standard textarea)
-        const contentArea = page.locator('.note-editable, div[contenteditable="true"], textarea[name*="content" i], textarea[name*="reason" i], textarea#id_content').first();
-        if (await contentArea.isVisible()) {
-            const isEditableDiv = await contentArea.evaluate(el => el.getAttribute('contenteditable') === 'true' || el.classList.contains('note-editable'));
-            if (isEditableDiv) {
-                await contentArea.click();
-                await contentArea.evaluate((el, text) => {
-                    el.innerText = text;
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                }, letterBody);
-            } else {
-                await contentArea.fill(letterBody);
+        // E. Content * (Saveetha uses TinyMCE for #id_content)
+        await page.evaluate((text) => {
+            if (window.tinymce && window.tinymce.get('id_content')) {
+                window.tinymce.get('id_content').setContent(text.replace(/\n/g, '<br>'));
+                window.tinymce.triggerSave();
             }
-        }
+            const textarea = document.querySelector('#id_content');
+            if (textarea) {
+                textarea.value = text;
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                textarea.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            const iframe = document.querySelector('#id_content_ifr');
+            if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
+                iframe.contentDocument.body.innerHTML = text.replace(/\n/g, '<br>');
+            }
+        }, letterBody);
 
         // Allow live timetable query to trigger and populate Schedules During Leave
         await page.waitForTimeout(3000);
 
-        // 5. Scrape Overlapping Schedules
+        // 4. Scrape Overlapping Schedules
         console.log('[PortalAgent] Checking overlapping schedules during leave duration...');
         const overlappingClasses = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'));
@@ -327,24 +388,17 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             return scheduleRows.map(r => r.innerText.replace(/\s+/g, ' ').trim());
         });
 
-        // 6. STEP 3: Click "Save Draft" button at the bottom of the Leave Application tab!
-        console.log('[PortalAgent] Clicking "Save Draft" on Leave Application tab...');
-        const saveDraftBtn = page.locator('button:has-text("Save Draft"), input[value*="Save Draft"], #save_draft, button.btn-primary:has-text("Draft")').first();
+        // 5. STEP 3: Click "Save Draft" button on the Leave Application form!
+        console.log('[PortalAgent] Clicking "Save Draft" button...');
+        const saveDraftBtn = page.locator('button:has-text("Save Draft"), input[value*="Save Draft"]').first();
         if (await saveDraftBtn.isVisible()) {
             await saveDraftBtn.click();
             console.log('[PortalAgent] "Save Draft" button clicked successfully!');
-            await page.waitForTimeout(3000);
-        } else {
-            console.warn('[PortalAgent] "Save Draft" button not found, searching alternative submit/draft buttons...');
-            const altDraftBtn = page.locator('button:has-text("Draft"), input[type="submit"][value*="Draft"]').first();
-            if (await altDraftBtn.isVisible()) {
-                await altDraftBtn.click();
-                await page.waitForTimeout(3000);
-            }
+            await page.waitForTimeout(4000);
         }
 
-        // 7. STEP 4: Switch to "Approval Flow" tab and assign Workflow
-        console.log('[PortalAgent] Switching to Approval Flow tab...');
+        // 6. STEP 4: Switch to "Approval Flow" tab on the created draft and assign Workflow
+        console.log('[PortalAgent] Assigning Approval Flow workflow...');
         const approvalTab = page.locator('a:has-text("Approval Flow"), button:has-text("Approval Flow"), [data-bs-target*="approval" i], li:has-text("Approval Flow") a').first();
         let assignedWorkflow = targetWorkflow;
         if (await approvalTab.isVisible()) {
@@ -374,7 +428,7 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             }
         }
 
-        // 8. STEP 5: Return to Workflow Requests dashboard to verify draft card appears
+        // 7. STEP 5: Return to Workflow Requests dashboard to verify draft card appears
         console.log('[PortalAgent] Navigating to Workflow Requests dashboard to verify draft...');
         await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(2500);
