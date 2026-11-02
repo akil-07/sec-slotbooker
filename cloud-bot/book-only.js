@@ -3785,9 +3785,14 @@ async function fetchAttendance(context, config) {
                         }
                     }
                     if (subject && percent) {
+                        // Look for total scheduled sessions in card if displayed
+                        let totalSessions = '';
+                        const totMatch = (card.innerText || '').match(/Total\s*(?:Sessions|Classes)?\s*:?\s*(\d+)/i);
+                        if (totMatch) totalSessions = totMatch[1];
+
                         // Prevent duplicates (sometimes the DOM has hidden copies of cards)
                         if (!results.some(r => r.subject === subject)) {
-                            results.push({ subject, percent, attended, total });
+                            results.push({ subject, percent, attended, total, totalSessions });
                         }
                     }
                 }
