@@ -528,9 +528,14 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses, o
         totalOdSessions += kOd;
         const kReg = Math.max(0, k - kOd); // unexcused absences if any
 
+        // In Saveetha, 1 class = 2 credit hours (e.g. 4/8 on portal means 2 classes attended / 4 conducted)
+        const kHours = k * 2;
+        const kOdHours = kOd * 2;
+        const kRegHours = kReg * 2;
+
         // Under Saveetha OD policy: OD sessions count as PRESENT (attended increases)!
-        const projectedAttended = attended + kOd;
-        const newTotal = total + k;
+        const projectedAttended = attended + kOdHours;
+        const newTotal = total + kHours;
         const projectedPercent = (projectedAttended / newTotal) * 100;
         const currentPercent = (attended / total) * 100;
         const pctDiff = projectedPercent - currentPercent;
@@ -539,17 +544,17 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses, o
         const isProjectedBelow80 = projectedPercent < 80.0;
         const dropsBelow80 = !isCurrentBelow80 && isProjectedBelow80;
 
-        // Consecutive classes needed to recover back to 80% immediately after leave:
-        // (projectedAttended + R) / (newTotal + R) >= 0.8  =>  R >= 4*newTotal - 5*projectedAttended
+        // Consecutive classes (each = 2 hrs) needed to recover back to 80% immediately:
+        // (projectedAttended + R*2) / (newTotal + R*2) >= 0.8  =>  2*R >= 4*newTotal - 5*projectedAttended
         let recoveryClassesNeeded = 0;
         if (isProjectedBelow80) {
-            recoveryClassesNeeded = Math.max(0, Math.ceil(4 * newTotal - 5 * projectedAttended));
+            recoveryClassesNeeded = Math.max(0, Math.ceil((4 * newTotal - 5 * projectedAttended) / 2));
         }
 
         // Buffer classes remaining immediately if projected >= 80%:
         let bufferRemaining = 0;
         if (!isProjectedBelow80) {
-            bufferRemaining = Math.max(0, Math.floor((5 * projectedAttended - 4 * newTotal) / 4));
+            bufferRemaining = Math.max(0, Math.floor((5 * projectedAttended - 4 * newTotal) / 8));
         }
 
         if (isProjectedBelow80 && kReg > 0) {
@@ -557,30 +562,31 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses, o
         }
 
         // ── Whole Semester Projection ──
-        const pastMissed = Math.max(0, total - attended);
-        // Only regular unexcused absences (kReg) consume the semester absence limit!
-        const totalMissedWithLeave = pastMissed + kReg;
+        const pastMissedHours = Math.max(0, total - attended);
+        const totalMissedHoursWithLeave = pastMissedHours + kRegHours;
 
-        let semTotal = 45; // Standard Saveetha course curriculum total hours/sessions
-        if (record.totalSessions && !isNaN(parseFloat(record.totalSessions)) && parseFloat(record.totalSessions) > total) {
-            semTotal = Math.round(parseFloat(record.totalSessions));
-        } else if (total >= 30) {
-            semTotal = Math.max(45, Math.ceil(total * 1.4), total + 15);
+        // Total semester classes (Saveetha courses typically have ~41-45 classes = ~82-90 hrs)
+        let semTotalClasses = 41;
+        if (record.totalSessions && !isNaN(parseFloat(record.totalSessions))) {
+            const raw = parseFloat(record.totalSessions);
+            semTotalClasses = raw > 60 ? Math.round(raw / 2) : Math.round(raw);
+        } else if (total >= 40) {
+            semTotalClasses = Math.max(41, Math.round(total / 2) + 12);
         } else {
-            semTotal = Math.max(45, total + 20);
+            semTotalClasses = Math.max(41, Math.round(total / 2) + 25);
         }
 
-        const remainingSemClasses = Math.max(0, semTotal - (total + k));
-        // Max attended at semester end = past attended + OD credit + all future classes
-        const maxSemAttended = projectedAttended + remainingSemClasses;
-        const endOfSemMaxPercent = Math.round(((maxSemAttended / semTotal) * 100) * 10) / 10;
-        const maxAllowedSemAbsences = Math.floor(0.20 * semTotal);
-        const willDropBelow80WholeSem = totalMissedWithLeave > maxAllowedSemAbsences;
-        const minRequiredToAttendTillSemEnd = Math.max(0, Math.ceil(0.80 * semTotal - projectedAttended));
-        const semBunkCushion = Math.max(0, maxAllowedSemAbsences - totalMissedWithLeave);
+        const semTotalHours = semTotalClasses * 2;
+        const conductedClasses = Math.round(total / 2);
+        const remainingSemClasses = Math.max(0, semTotalClasses - conductedClasses - k);
+        const maxSemAttendedHours = projectedAttended + (remainingSemClasses * 2);
+        const endOfSemMaxPercent = Math.round(((maxSemAttendedHours / semTotalHours) * 100) * 10) / 10;
+        const maxAllowedSemAbsenceHours = Math.floor(0.20 * semTotalHours);
+        const willDropBelow80WholeSem = totalMissedHoursWithLeave > maxAllowedSemAbsenceHours;
+        const minRequiredToAttendTillSemEnd = Math.max(0, Math.ceil((0.80 * semTotalHours - projectedAttended) / 2));
+        const semBunkCushion = Math.max(0, Math.floor((maxAllowedSemAbsenceHours - totalMissedHoursWithLeave) / 2));
 
         // Bunk / Cutoff bonus gained from OD:
-        // Since kOd classes are credited as present, student gains kOd extra bunks for the semester!
         const odCutoffBonus = kOd;
 
         if (willDropBelow80WholeSem && kReg > 0) {

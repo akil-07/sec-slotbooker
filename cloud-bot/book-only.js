@@ -3963,57 +3963,52 @@ async function fetchBunkStatsForSubject(context, config, targetSubject, subjectS
             percent = conductedHours > 0 ? (presentHours / conductedHours) * 100 : 0;
         }
 
-        // Determine session count and upcoming count
-        // Hours per session is AT LEAST 1 (never 0!)
-        const hoursPerSession = 1;
+        // In Saveetha, 1 class session = 2 credit hours (e.g. 4/8 on portal = 2 classes attended / 4 classes conducted)
+        const hoursPerSession = 2;
         const conductedSessions = Math.round(conductedHours / hoursPerSession);
+        const presentSessions = Math.round(presentHours / hoursPerSession);
 
         if (totalSessions && totalSessions > 0) {
+            // If totalSessions from portal is in hours (e.g. > 60), normalize to classes
+            if (totalSessions > 60) totalSessions = Math.round(totalSessions / 2);
             if (conductedHours === 0) {
-                // If 0 classes conducted, ALL total sessions are upcoming!
                 upcomingSessions = totalSessions;
             } else {
-                // Remaining sessions in the semester is total minus conducted
                 upcomingSessions = Math.max(0, totalSessions - conductedSessions);
             }
         } else {
-            // If totalSessions not found, use upcomingSessions if found, else 0
             if (upcomingSessions === null) upcomingSessions = 0;
             totalSessions = conductedSessions + upcomingSessions;
         }
 
         const remainingHours = upcomingSessions * hoursPerSession;
-        const totalSemesterHours = Math.max(
-            conductedHours + remainingHours,
-            totalSessions * hoursPerSession,
-            conductedHours
-        );
+        const totalSemesterHours = totalSessions * hoursPerSession;
 
         let maxBunkSessions = 0;
         let projectedFinalPercent = percent;
 
         if (totalSemesterHours > 0) {
-            // Target is 80% attendance
+            // Target is 80% attendance (totalSemesterHours * 0.80)
             const targetAttendedHours = totalSemesterHours * 0.80;
             const missedHours = Math.max(0, conductedHours - presentHours);
 
-            // Allowed total misses across semester minus misses already taken
-            const maxBunkHours = totalSemesterHours - targetAttendedHours - missedHours;
-            maxBunkSessions = Math.floor(maxBunkHours / hoursPerSession);
+            // Allowed total misses across semester (20% of semester hours)
+            const maxAllowedMissHours = Math.floor(totalSemesterHours * 0.20);
+            const remainingBunkHours = maxAllowedMissHours - missedHours;
+            maxBunkSessions = Math.floor(remainingBunkHours / hoursPerSession);
 
             projectedFinalPercent = ((presentHours + remainingHours) / totalSemesterHours) * 100;
         } else if (conductedHours > 0) {
-            // Only current attendance known
             const targetAttended = conductedHours * 0.80;
             if (presentHours >= targetAttended) {
-                maxBunkSessions = Math.floor((presentHours - 0.80 * conductedHours) / 0.80);
+                maxBunkSessions = Math.floor((presentHours - 0.80 * conductedHours) / (0.80 * hoursPerSession));
             } else {
-                const needed = Math.ceil((0.80 * conductedHours - presentHours) / 0.20);
-                maxBunkSessions = -needed;
+                const neededHours = 0.80 * conductedHours - presentHours;
+                maxBunkSessions = -Math.ceil(neededHours / (0.20 * hoursPerSession));
             }
         }
 
-        // OD Cutoff calculations:
+        // OD Cutoff calculations (each OD class adds 2 hours of attendance credit)
         let maxBunkWithOD = maxBunkSessions;
         let projectedFinalPercentWithOD = projectedFinalPercent;
         if (odCount > 0) {
@@ -4075,13 +4070,18 @@ function formatBunkStats(data, userName, odCount = 0) {
         }
 
         msg += `🔹 *${sub}*\n`;
+        const conductedCls = Math.round(item.conductedHours / 2);
+        const presentCls = Math.round(item.presentHours / 2);
         if (item.conductedHours === 0) {
             msg += `   ├ Current: *0.0%* _(0 classes conducted yet)_\n`;
         } else {
-            msg += `   ├ Current Attendance: *${item.percent.toFixed(1)}%* _(${item.presentHours}/${item.conductedHours} attended)_\n`;
+            msg += `   ├ Current Attendance: *${item.percent.toFixed(1)}%* _(${presentCls}/${conductedCls} classes · ${item.presentHours}/${item.conductedHours} hrs)_\n`;
         }
         if (item.totalSessions > 0) {
-            msg += `   ├ Total Semester Classes: *${item.totalSessions}*\n`;
+            msg += `   ├ Total Semester Classes: *${item.totalSessions}* _(${item.upcomingSessions} remaining)_\n`;
+            if (item.projectedFinalPercent !== undefined) {
+                msg += `   ├ If attend all remaining (${item.upcomingSessions} cls): *${item.projectedFinalPercent.toFixed(1)}%*\n`;
+            }
         }
         msg += `   ├ Standard Bunk Allowance: ${status}\n`;
 
