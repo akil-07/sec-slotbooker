@@ -3855,7 +3855,7 @@ function formatAttendance(data, userName) {
 
 // ─── Bunk Calculator ──────────────────────────────────────────────────────────
 
-async function fetchBunkStatsForSubject(context, config, targetSubject, subjectSummary = null) {
+async function fetchBunkStatsForSubject(context, config, targetSubject, subjectSummary = null, odCount = 0) {
     const page = await context.newPage();
     try {
         console.log(`[Bunk] Fetching bunk stats for: ${targetSubject}...`);
@@ -4013,6 +4013,17 @@ async function fetchBunkStatsForSubject(context, config, targetSubject, subjectS
             }
         }
 
+        // OD Cutoff calculations:
+        let maxBunkWithOD = maxBunkSessions;
+        let projectedFinalPercentWithOD = projectedFinalPercent;
+        if (odCount > 0) {
+            maxBunkWithOD = maxBunkSessions + odCount;
+            if (totalSemesterHours > 0) {
+                const effectiveAttended = presentHours + remainingHours + (odCount * hoursPerSession);
+                projectedFinalPercentWithOD = Math.min(100, (effectiveAttended / totalSemesterHours) * 100);
+            }
+        }
+
         const result = {
             subject: targetSubject,
             percent,
@@ -4023,6 +4034,9 @@ async function fetchBunkStatsForSubject(context, config, targetSubject, subjectS
             totalSemesterHours,
             maxBunkSessions,
             projectedFinalPercent,
+            odCount,
+            maxBunkWithOD,
+            projectedFinalPercentWithOD,
             targetPercent: 80
         };
 
@@ -4035,12 +4049,12 @@ async function fetchBunkStatsForSubject(context, config, targetSubject, subjectS
     }
 }
 
-function formatBunkStats(data, userName) {
+function formatBunkStats(data, userName, odCount = 0) {
     if (!data || data.length === 0) {
         return `⚠️ Could not calculate bunk stats for ${userName}. (Missing schedule info)`;
     }
 
-    let msg = `🛌 *Bunk Calculator (80% Limit) for ${userName}*\n\n`;
+    let msg = `🛌 *Bunk & Cutoff Calculator (80% Limit) for ${userName}*\n\n`;
 
     data.forEach(item => {
         let sub = item.subject.replace(/([_*`\[])/g, '\\$1');
@@ -4054,7 +4068,7 @@ function formatBunkStats(data, userName) {
         } else {
             const shortage = Math.abs(item.maxBunkSessions);
             if (item.projectedFinalPercent !== undefined && item.projectedFinalPercent < 80) {
-                status = `🔴 *Shortage!* Even attending all remaining classes yields ${item.projectedFinalPercent.toFixed(2)}%. You need ${shortage} extra class${shortage > 1 ? 'es' : ''} to reach 80%.`;
+                status = `🔴 *Shortage!* Even attending all remaining classes yields ${item.projectedFinalPercent.toFixed(1)}%. You need ${shortage} extra class${shortage > 1 ? 'es' : ''} to reach 80%.`;
             } else {
                 status = `🔴 *Shortage!* You need to attend ${shortage} extra class${shortage > 1 ? 'es' : ''} to reach 80%.`;
             }
@@ -4062,21 +4076,32 @@ function formatBunkStats(data, userName) {
 
         msg += `🔹 *${sub}*\n`;
         if (item.conductedHours === 0) {
-            msg += `   ├ Current: *0.00%* _(0 classes conducted yet)_\n`;
+            msg += `   ├ Current: *0.0%* _(0 classes conducted yet)_\n`;
         } else {
-            msg += `   ├ Current: *${item.percent.toFixed(2)}%* _(${item.presentHours}/${item.conductedHours} attended)_\n`;
+            msg += `   ├ Current Attendance: *${item.percent.toFixed(1)}%* _(${item.presentHours}/${item.conductedHours} attended)_\n`;
         }
         if (item.totalSessions > 0) {
             msg += `   ├ Total Semester Classes: *${item.totalSessions}*\n`;
         }
-        if (item.projectedFinalPercent !== undefined && item.totalSemesterHours > 0) {
-            if (item.upcomingSessions > 0) {
-                msg += `   ├ If attend all remaining (${item.upcomingSessions}): *${item.projectedFinalPercent.toFixed(2)}%*\n`;
+        msg += `   ├ Standard Bunk Allowance: ${status}\n`;
+
+        if (odCount > 0) {
+            let odStatus = '';
+            if (item.maxBunkWithOD > 0) {
+                odStatus = `🟢 *${item.maxBunkWithOD} class(es) can be safely cutoff / bunked!* (+${odCount} extra bunks from OD)`;
+            } else if (item.maxBunkWithOD === 0) {
+                odStatus = `🟡 *Borderline with OD!* (OD clears your shortage, but attend remaining classes)`;
             } else {
-                msg += `   ├ No upcoming classes left.\n`;
+                const rem = Math.abs(item.maxBunkWithOD);
+                odStatus = `🔴 *Still short by ${rem} class(es)* even with ${odCount} OD classes.`;
             }
+            msg += `   │\n`;
+            msg += `   🎓 *With ${odCount} On-Duty (OD) Class(es) Credited:*\n`;
+            msg += `   ├ Total Cutoff Allowance: ${odStatus}\n`;
+            msg += `   └ Projected Sem Finish: *${item.projectedFinalPercentWithOD.toFixed(1)}%*\n\n`;
+        } else {
+            msg += `   └ 💡 *OD Bonus:* Every 1 OD class you obtain adds *+1 extra class you can safely bunk*! (Try: \`!bunk <subject> 2 od\`)\n\n`;
         }
-        msg += `   └ ${status}\n\n`;
     });
 
     return msg.trim();
@@ -5481,8 +5506,8 @@ Possible Actions:
   Params: keyword (required), time, startTime, venue, date.
 - "unbook": Cancel / drop an already booked slot. E.g. "cancel my maths slot", "unbook physics", "unbook the slot at 3 pm".
   Params: keyword (optional if time is given), time (optional target time to cancel e.g. "03:00 PM").
-- "bunk": Calculate how many classes user can skip while maintaining 80% attendance limit. E.g. "can I bunk calculus?", "how many classes can I miss?", "check bunk stats".
-  Params: keyword (subject name if specified, else null).
+- "bunk": Calculate how many classes user can skip/cutoff while maintaining 80% attendance limit, with optional On-Duty (OD) credit support. E.g. "can I bunk calculus?", "how many classes can I miss?", "check bunk stats with 2 OD in python", "how many classes can I cutoff if I get OD?".
+  Params: keyword (subject name), odCount (number of OD sessions/classes if mentioned, e.g. 2).
 - "attendance": View full attendance report. E.g. "what's my attendance?", "show attendance table".
 - "analyze_attendance": User wants advice or analysis on their attendance. E.g. "am I in danger of getting detained?", "will I get into trouble for attendance?", "how is my attendance looking?".
 - "timetable": View schedule / classes for today, a specific day of the week, or date. E.g. "what's my schedule today?", "timetable for monday", "classes on friday", "schedule for tomorrow", "show timetable on 2nd nov".
@@ -5501,8 +5526,8 @@ Possible Actions:
   Params: keyword (subject name, time, or null for next class).
 - "apply_leave": Draft or submit Leave, On-Duty (OD), Medical Leave, Hostel Gate Pass, or Placement request. E.g. "apply leave for tomorrow", "leave 06/11/2026 to 11/11/2026", "apply OD for symposium", "request on-duty for hackathon", "medical leave for fever", "hostel gate pass for tonight".
   Params: leaveType ("OnDuty-Students" | "Medical Leave - Students" | "Leave-Students" | "HostelGatePass"), title, reason, fromDate (DD/MM/YYYY e.g. "06/11/2026"), toDate (DD/MM/YYYY e.g. "11/11/2026"), date (single date if applicable), fromTime (e.g. "08:00 AM"), toTime (e.g. "08:00 PM"), isTomorrow (boolean).
-- "leave_impact": Calculate whether taking leave between dates X and Y will cause any subject to drop below Saveetha's mandatory 80% attendance rule. E.g. "will my attendance drop below 80% if I take leave from 06/11 to 11/11?", "can I take leave next week?", "leave impact 03/11/2026 to 05/11/2026", "check attendance drop if I miss college tomorrow", "!leaveimpact 06/11/2026 to 11/11/2026".
-  Params: fromDate (DD/MM/YYYY e.g. "06/11/2026"), toDate (DD/MM/YYYY e.g. "11/11/2026"), date (single date if applicable).
+- "leave_impact": Calculate whether taking leave or On-Duty (OD) between dates X and Y will cause any subject to drop below Saveetha's 80% rule, or how much bunk cushion OD unlocks. E.g. "will my attendance drop below 80% if I take leave from 06/11 to 11/11?", "can I take leave next week?", "leave impact 03/11/2026 to 05/11/2026", "OD impact from 06/11 to 11/11", "how much can I cutoff if I get OD from 06/11 to 11/11?".
+  Params: fromDate (DD/MM/YYYY e.g. "06/11/2026"), toDate (DD/MM/YYYY e.g. "11/11/2026"), date (single date if applicable), isOd (boolean, true if OD or on-duty), odCount (number of OD classes if specified).
 - "circulars": View latest campus circulars or ask questions about holidays, exam timetables, or notices. E.g. "any circulars today?", "check circulars for holiday", "when are exams according to circulars".
   Params: query (topic or question, else null).
 - "rewards": Check student reward points balance and coins. E.g. "check my reward points", "how many coins do I have?".
@@ -5522,6 +5547,8 @@ JSON Schema:
   "fromTime": "HH:MM AM/PM or null",
   "toTime": "HH:MM AM/PM or null",
   "isTomorrow": "boolean or null",
+  "isOd": "boolean or null",
+  "odCount": "number or null",
   "query": "string or null",
   "keyword": "string or null",
   "time": "HH:MM AM/PM or null",
@@ -5574,7 +5601,8 @@ JSON Schema:
                             } else if (aiData.action === 'unbook') {
                                 text = `!unbook ${aiData.keyword || ''}`.trim();
                             } else if (aiData.action === 'bunk') {
-                                text = aiData.keyword ? `!bunk ${aiData.keyword}` : '!bunk';
+                                const odPart = aiData.odCount ? ` ${aiData.odCount} od` : '';
+                                text = aiData.keyword ? `!bunk ${aiData.keyword}${odPart}` : '!bunk';
                             } else if (aiData.action === 'attendance') {
                                 text = '!attendance';
                             } else if (aiData.action === 'timetable') {
@@ -5605,7 +5633,9 @@ JSON Schema:
                                 session.doLogin = doLogin;
                                 const fDate = aiData.fromDate || aiData.date || 'today';
                                 const tDate = aiData.toDate || fDate;
-                                await portalAgent.simulateLeaveAttendanceImpact(session, fDate, tDate, fromChatId, sendTelegram, fetchAttendance);
+                                const isOd = Boolean(aiData.isOd || rawText.toLowerCase().includes('od') || rawText.toLowerCase().includes('on-duty') || rawText.toLowerCase().includes('onduty'));
+                                const odCount = Number(aiData.odCount) || 0;
+                                await portalAgent.simulateLeaveAttendanceImpact(session, fDate, tDate, fromChatId, sendTelegram, fetchAttendance, { isOd, odCount });
                                 continue;
                             } else if (aiData.action === 'circulars') {
                                 const session = await getOrSpawnSession(fromChatId, userConfig);
@@ -5635,14 +5665,17 @@ JSON Schema:
                     }
                 }
 
-                // ── !leaveimpact (Calculate 80% Attendance Impact for Dates) ───
-                if (text.toLowerCase().startsWith('!leaveimpact') || text.toLowerCase().startsWith('!impact')) {
+                // ── !leaveimpact / !odimpact (Calculate 80% Attendance / OD Impact for Dates) ───
+                if (text.toLowerCase().startsWith('!leaveimpact') || text.toLowerCase().startsWith('!odimpact') || text.toLowerCase().startsWith('!impact')) {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
                     session.doLogin = doLogin;
-                    const args = rawText.replace(/^!(leaveimpact|impact)\s*/i, '').trim();
+                    const args = rawText.replace(/^!(leaveimpact|odimpact|impact)\s*/i, '').trim();
+                    const isOd = text.toLowerCase().startsWith('!odimpact') || /\b(?:od|on-?duty)\b/i.test(args);
+                    const odMatch = args.match(/(\d+)\s*(?:od|on-?duty)/i) || args.match(/(?:od|on-?duty)\s*(\d+)/i);
+                    const odCount = odMatch ? parseInt(odMatch[1], 10) : 0;
                     const range = portalAgent.extractDateRangeFromText(args) || { from: new Date(), to: new Date() };
-                    await portalAgent.simulateLeaveAttendanceImpact(session, range.from, range.to, fromChatId, sendTelegram, fetchAttendance);
+                    await portalAgent.simulateLeaveAttendanceImpact(session, range.from, range.to, fromChatId, sendTelegram, fetchAttendance, { isOd, odCount });
                     continue;
                 }
 
@@ -6451,9 +6484,16 @@ JSON Schema:
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
 
-                    const keyword = text.substring(6).trim().toLowerCase();
+                    let rawArgs = text.substring(6).trim();
+                    let odCount = 0;
+                    const odMatch = rawArgs.match(/(\d+)\s*(?:od|on-?duty)/i) || rawArgs.match(/(?:od|on-?duty)\s*(\d+)/i);
+                    if (odMatch) {
+                        odCount = parseInt(odMatch[1], 10);
+                        rawArgs = rawArgs.replace(odMatch[0], '').replace(/\b(?:with|classes|sessions|in|for)\b/gi, '').trim();
+                    }
+                    const keyword = rawArgs.toLowerCase();
                     if (!keyword) {
-                        await sendTelegram(`❌ Please provide a keyword. Example: \`!bunk calculus\``, fromChatId);
+                        await sendTelegram(`❌ Please provide a keyword. Example: \`!bunk calculus\` or \`!bunk python 2 od\``, fromChatId);
                         continue;
                     }
 
@@ -6483,10 +6523,13 @@ JSON Schema:
 
                         const matchedSubjectObj = allSubjects[matchedIndex];
                         const matchedSubject = matchedSubjectObj.subject;
-                        await sendTelegram(`🧮 Calculating bunk stats for *${matchedSubject}*... Please wait...`, fromChatId);
+                        const calcMsg = odCount > 0 
+                            ? `🧮 Calculating bunk & cutoff stats for *${matchedSubject}* with *${odCount} OD class(es)*...`
+                            : `🧮 Calculating bunk stats for *${matchedSubject}*... Please wait...`;
+                        await sendTelegram(calcMsg, fromChatId);
 
-                        const data = await fetchBunkStatsForSubject(session.context, session.config, matchedSubject, matchedSubjectObj);
-                        const msg = formatBunkStats(data, session.config.name);
+                        const data = await fetchBunkStatsForSubject(session.context, session.config, matchedSubject, matchedSubjectObj, odCount);
+                        const msg = formatBunkStats(data, session.config.name, odCount);
                         await sendTelegram(msg, fromChatId);
                     } catch (err) {
                         await sendTelegram(`❌ Failed to calculate bunk stats: ${err.message}`, fromChatId);

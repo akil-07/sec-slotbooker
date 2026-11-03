@@ -246,6 +246,7 @@ function simplifyScheduleRow(row) {
     const codeNameMatch = str.match(/\b([0-9]{2}[A-Z]{2,4}[0-9]{3}[A-Z]?|[A-Z]+-[A-Z]+-[A-Z0-9]+|[A-Z]{3,4})\s*[-—–]\s*([A-Za-z0-9&/ ]+?)(?=\s+[0-9]{2}[A-Z0-9]{4,8}|\s+Student|\s+Nov|\s+Dec|\s+Jan|\s+Feb|\s+Mar|\s+Apr|\s+May|\s+Jun|\s+Jul|\s+Aug|\s+Sep|\s+Oct|$)/i);
 
     if (codeNameMatch) {
+        
         subject = `${codeNameMatch[1].toUpperCase()} — ${codeNameMatch[2].trim()}`;
     } else {
         // Fallback: strip noise words
@@ -346,13 +347,18 @@ function buildOfficialLeaveLetter({ leaveType, rawReason, fromDate, toDate, stud
  * Computes whether taking leave during a given date window will cause any subject
  * to drop below Saveetha's mandatory 80% attendance rule.
  */
-function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
+function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses, options = {}) {
     if (!Array.isArray(attendanceRecords) || attendanceRecords.length === 0) {
         return {
             hasRecords: false,
             summaryMsg: '⚠️ _Could not cross-reference attendance records (no subjects loaded)._'
         };
     }
+
+    const isGlobalOd = Boolean(options.isOd);
+    const odTargetCount = Number(options.odCount) || 0;
+    const odTargetSubject = options.odSubject ? String(options.odSubject).toLowerCase() : null;
+    let remainingOdBudget = odTargetCount;
 
     // 1. Group overlapping classes by subject identifier
     const missedCounts = {}; // subjectKey -> count
@@ -385,6 +391,7 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
     let criticalDropCount = 0;
     let semCriticalDropCount = 0;
     let totalMissedSessions = 0;
+    let totalOdSessions = 0;
 
     for (const record of attendanceRecords) {
         const subName = record.subject;
@@ -404,9 +411,24 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
             continue;
         }
 
-        const currentPercent = (attended / total) * 100;
+        // On-Duty (OD) resolution for this subject:
+        let kOd = 0;
+        if (isGlobalOd) {
+            kOd = k; // all classes in this window are credited as OD
+        } else if (odTargetSubject && subName.toLowerCase().includes(odTargetSubject)) {
+            kOd = odTargetCount > 0 ? Math.min(k, odTargetCount) : k;
+        } else if (remainingOdBudget > 0 && k > 0) {
+            kOd = Math.min(k, remainingOdBudget);
+            remainingOdBudget -= kOd;
+        }
+        totalOdSessions += kOd;
+        const kReg = Math.max(0, k - kOd); // unexcused absences if any
+
+        // Under Saveetha OD policy: OD sessions count as PRESENT (attended increases)!
+        const projectedAttended = attended + kOd;
         const newTotal = total + k;
-        const projectedPercent = (attended / newTotal) * 100;
+        const projectedPercent = (projectedAttended / newTotal) * 100;
+        const currentPercent = (attended / total) * 100;
         const pctDiff = projectedPercent - currentPercent;
 
         const isCurrentBelow80 = currentPercent < 80.0;
@@ -414,27 +436,26 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
         const dropsBelow80 = !isCurrentBelow80 && isProjectedBelow80;
 
         // Consecutive classes needed to recover back to 80% immediately after leave:
-        // (attended + R) / (newTotal + R) >= 0.8  =>  R >= 4*newTotal - 5*attended
+        // (projectedAttended + R) / (newTotal + R) >= 0.8  =>  R >= 4*newTotal - 5*projectedAttended
         let recoveryClassesNeeded = 0;
         if (isProjectedBelow80) {
-            recoveryClassesNeeded = Math.max(0, Math.ceil(4 * newTotal - 5 * attended));
+            recoveryClassesNeeded = Math.max(0, Math.ceil(4 * newTotal - 5 * projectedAttended));
         }
 
         // Buffer classes remaining immediately if projected >= 80%:
-        // attended / (newTotal + B) >= 0.8  =>  B <= (5*attended - 4*newTotal) / 4
         let bufferRemaining = 0;
         if (!isProjectedBelow80) {
-            bufferRemaining = Math.max(0, Math.floor((5 * attended - 4 * newTotal) / 4));
+            bufferRemaining = Math.max(0, Math.floor((5 * projectedAttended - 4 * newTotal) / 4));
         }
 
-        if (isProjectedBelow80 && k > 0) {
+        if (isProjectedBelow80 && kReg > 0) {
             criticalDropCount++;
         }
 
         // ── Whole Semester Projection ──
-        // Calculate whether attending all remaining classes until the end of semester keeps >= 80%
         const pastMissed = Math.max(0, total - attended);
-        const totalMissedWithLeave = pastMissed + k;
+        // Only regular unexcused absences (kReg) consume the semester absence limit!
+        const totalMissedWithLeave = pastMissed + kReg;
 
         let semTotal = 45; // Standard Saveetha course curriculum total hours/sessions
         if (record.totalSessions && !isNaN(parseFloat(record.totalSessions)) && parseFloat(record.totalSessions) > total) {
@@ -446,23 +467,32 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
         }
 
         const remainingSemClasses = Math.max(0, semTotal - (total + k));
-        const maxSemAttended = attended + remainingSemClasses;
+        // Max attended at semester end = past attended + OD credit + all future classes
+        const maxSemAttended = projectedAttended + remainingSemClasses;
         const endOfSemMaxPercent = Math.round(((maxSemAttended / semTotal) * 100) * 10) / 10;
         const maxAllowedSemAbsences = Math.floor(0.20 * semTotal);
         const willDropBelow80WholeSem = totalMissedWithLeave > maxAllowedSemAbsences;
-        const minRequiredToAttendTillSemEnd = Math.max(0, Math.ceil(0.80 * semTotal - attended));
+        const minRequiredToAttendTillSemEnd = Math.max(0, Math.ceil(0.80 * semTotal - projectedAttended));
         const semBunkCushion = Math.max(0, maxAllowedSemAbsences - totalMissedWithLeave);
 
-        if (willDropBelow80WholeSem && k > 0) {
+        // Bunk / Cutoff bonus gained from OD:
+        // Since kOd classes are credited as present, student gains kOd extra bunks for the semester!
+        const odCutoffBonus = kOd;
+
+        if (willDropBelow80WholeSem && kReg > 0) {
             semCriticalDropCount++;
         }
 
         analysis.push({
             subject: subName,
             missedCount: k,
+            kOd,
+            kReg,
+            odCutoffBonus,
             currentAttended: attended,
             currentTotal: total,
             currentPercent: Math.round(currentPercent * 10) / 10,
+            projectedAttended,
             projectedTotal: newTotal,
             projectedPercent: Math.round(projectedPercent * 10) / 10,
             pctDiff: Math.round(pctDiff * 10) / 10,
@@ -484,7 +514,7 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
         });
     }
 
-    // Sort: permanent sem drops first, then immediate critical drops, then lowest projected %
+    // Sort:
     analysis.sort((a, b) => {
         if (a.missedCount > 0 && b.missedCount === 0) return -1;
         if (a.missedCount === 0 && b.missedCount > 0) return 1;
@@ -497,6 +527,8 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses) {
 
     return {
         hasRecords: true,
+        isOd: Boolean(isGlobalOd || totalOdSessions > 0),
+        totalOdSessions,
         criticalDropCount,
         semCriticalDropCount,
         totalMissedSessions,
@@ -509,7 +541,7 @@ function formatAttendanceImpactMessage(impact, fromStr = '', toStr = '') {
         return impact ? impact.summaryMsg : '';
     }
 
-    const { criticalDropCount, semCriticalDropCount, items } = impact;
+    const { isOd, totalOdSessions, criticalDropCount, semCriticalDropCount, items } = impact;
     const impactedItems = items.filter(it => it.missedCount > 0);
     const untouchedCount = items.length - impactedItems.length;
 
@@ -517,10 +549,14 @@ function formatAttendanceImpactMessage(impact, fromStr = '', toStr = '') {
         return `✅ *Safe to Leave:* No classes fall into this leave window. Your attendance is completely unaffected.`;
     }
 
-    let msg = `📊 *80% Attendance Impact Analysis*\n`;
+    let msg = isOd
+        ? `📊 *On-Duty (OD) Attendance & Bunk Cutoff Analysis*\n`
+        : `📊 *80% Attendance Impact Analysis*\n`;
 
     // High level verdict banner
-    if (semCriticalDropCount > 0) {
+    if (isOd) {
+        msg += `🎯 *Verdict:* 🎖️ *Protected under On-Duty (OD)!* (${totalOdSessions} class(es) credited as Present)\n`;
+    } else if (semCriticalDropCount > 0) {
         msg += `🎯 *Verdict:* 🚨 *Permanent Shortage in ${semCriticalDropCount} subject(s)!*\n`;
     } else if (criticalDropCount > 0) {
         msg += `🎯 *Verdict:* ⚠️ *Temporary Dip, but Safe on Whole Sem!* (Recoverable)\n`;
@@ -529,35 +565,53 @@ function formatAttendanceImpactMessage(impact, fromStr = '', toStr = '') {
     }
     msg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-    // Clean, crisp per-subject breakdown (3 concise lines per subject)
+    // Clean, crisp per-subject breakdown
     for (const it of impactedItems) {
         const subDisplay = it.subject.replace(/([_*`\[\]])/g, '').replace(/\s+/g, ' ').trim();
-        const dropSign = it.pctDiff < 0 ? `${it.pctDiff}%` : `0.0%`;
+        const dropSign = it.pctDiff >= 0 ? `+${it.pctDiff}%` : `${it.pctDiff}%`;
+        const trendIcon = it.pctDiff >= 0 ? '🔼' : '🔻';
 
         let icon = '✅';
-        if (it.willDropBelow80WholeSem) {
+        if (it.kOd > 0) {
+            icon = '🎖️';
+        } else if (it.willDropBelow80WholeSem) {
             icon = '🚨';
         } else if (it.isProjectedBelow80) {
             icon = '⚠️';
         }
 
         msg += `${icon} *${subDisplay}*\n`;
-        msg += `• *Classes Missed:* ${it.missedCount}\n`;
-        msg += `• *Attendance:* ${it.currentPercent}% ➔ *${it.projectedPercent}%* 🔻 [${dropSign}]\n`;
 
-        if (it.willDropBelow80WholeSem) {
+        if (it.kOd > 0) {
+            msg += `• *OD Credit:* ${it.kOd} class(es) marked 100% Present!${it.kReg > 0 ? ` (${it.kReg} regular absence)` : ''}\n`;
+            msg += `• *Attendance:* ${it.currentPercent}% ➔ *${it.projectedPercent}%* ${trendIcon} [${dropSign}]\n`;
+            msg += `• *Bunk Cutoff Bonus:* You gain *+${it.odCutoffBonus} extra class(es)* you can safely cutoff/bunk later!\n`;
+            msg += `• *Sem Outlook:* Up to *${it.endOfSemMaxPercent}%* (Cushion: *${it.semBunkCushion} more bunks* allowed this sem)\n\n`;
+        } else if (it.willDropBelow80WholeSem) {
+            msg += `• *Classes Missed:* ${it.missedCount}\n`;
+            msg += `• *Attendance:* ${it.currentPercent}% ➔ *${it.projectedPercent}%* 🔻 [${dropSign}]\n`;
             msg += `• *Sem Outlook:* Max *${it.endOfSemMaxPercent}%* (Permanent Shortage 🚨)\n`;
             msg += `• ⚠️ Exceeds semester limit (${it.totalMissedWithLeave}/${it.maxAllowedSemAbsences} missed). Cannot reach 80% even with 100% future attendance.\n\n`;
         } else if (it.isProjectedBelow80) {
+            msg += `• *Classes Missed:* ${it.missedCount}\n`;
+            msg += `• *Attendance:* ${it.currentPercent}% ➔ *${it.projectedPercent}%* 🔻 [${dropSign}]\n`;
             msg += `• *Sem Outlook:* Up to *${it.endOfSemMaxPercent}%* (Safe ✅)\n`;
             msg += `• *Cushion:* Can still miss *${it.semBunkCushion} more class(es)* this sem (Needs ${it.recoveryClassesNeeded} classes to recover immediately).\n\n`;
         } else {
+            msg += `• *Classes Missed:* ${it.missedCount}\n`;
+            msg += `• *Attendance:* ${it.currentPercent}% ➔ *${it.projectedPercent}%* 🔻 [${dropSign}]\n`;
             msg += `• *Sem Outlook:* Up to *${it.endOfSemMaxPercent}%* (Safe ✅)\n`;
             msg += `• *Bunk Cushion:* Can still miss *${it.semBunkCushion} more class(es)* this semester.\n\n`;
         }
     }
 
     msg += `━━━━━━━━━━━━━━━━━━━━\n`;
+    if (isOd) {
+        msg += `💡 *OD Advantage:* Because OD classes are credited as Attended, you don't lose percentage and you unlock *+${totalOdSessions} extra bunk(s)* later in the sem!\n`;
+    } else if (impactedItems.length > 0) {
+        const totalMissed = impactedItems.reduce((acc, i) => acc + i.missedCount, 0);
+        msg += `💡 *OD Tip:* If you apply for On-Duty (OD) instead of leave for these classes, you gain *+${totalMissed} extra class(es)* you can safely bunk later!\n`;
+    }
     if (untouchedCount > 0) {
         msg += `ℹ️ _${untouchedCount} other subject(s) have no classes during this leave._\n`;
     }
@@ -1043,7 +1097,7 @@ async function checkRewardPoints(session, chatId, sendTelegram, sendTelegramPhot
  * 2. STANDALONE 80% LEAVE ATTENDANCE SIMULATOR
  * Calculates if taking leave from date X to date Y will drop any subject below 80%.
  */
-async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, sendTelegram, fetchAttendanceFn = null) {
+async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, sendTelegram, fetchAttendanceFn = null, options = {}) {
     const page = await session.context.newPage();
     try {
         await ensurePortalSession(page, session);
@@ -1053,7 +1107,9 @@ async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, 
         const fromStr = formatPortalDateTime(dFrom, 8, 0, 'AM');
         const toStr = formatPortalDateTime(dTo, 8, 0, 'PM');
 
-        await sendTelegram(`⏳ *Simulating leave from ${fromStr} to ${toStr} against your timetable and 80% attendance rule...*`, chatId);
+        const isOd = Boolean(options.isOd || options.odCount > 0);
+        const actionLabel = isOd ? 'On-Duty (OD) credit' : 'leave impact';
+        await sendTelegram(`⏳ *Simulating ${actionLabel} from ${fromStr} to ${toStr} against your timetable and 80% rule...*`, chatId);
 
         // 1. Fetch live attendance records
         let attendanceRecords = [];
@@ -1093,17 +1149,20 @@ async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, 
         // Scrape overlapping schedules directly and via DOM
         const overlappingClasses = await fetchLeaveSchedulesFromPortal(page, fromStr, toStr);
 
-        // 3. Run impact calculation
-        const impact = calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses);
+        // 3. Run impact calculation with OD options
+        const impact = calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses, options);
         const report = formatAttendanceImpactMessage(impact, fromStr, toStr);
+
+        const reportTitle = isOd ? 'On-Duty (OD) Attendance Simulation Report' : 'Leave Attendance Simulation Report';
+        const classesHeader = isOd ? 'Scheduled Classes Under OD' : 'Scheduled Classes Covered';
 
         let classSnippet = '';
         if (overlappingClasses.length > 0) {
-            classSnippet = `📚 *Scheduled Classes Covered (${overlappingClasses.length}):*\n` +
+            classSnippet = `📚 *${classesHeader} (${overlappingClasses.length}):*\n` +
                 overlappingClasses.map(c => simplifyScheduleRow(c)).join('\n') + '\n\n';
         }
 
-        const finalMsg = `🗓️ *Leave Attendance Simulation Report*\n` +
+        const finalMsg = `🗓️ *${reportTitle}*\n` +
             `• *Duration:* \`${fromStr}\` ➔ \`${toStr}\`\n` +
             `• *Classes Covered:* ${overlappingClasses.length}\n\n` +
             classSnippet +
