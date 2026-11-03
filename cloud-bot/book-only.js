@@ -4959,7 +4959,7 @@ async function main() {
     // Filter out blocked users from the initial startup sequence
     const accountEntries = Object.entries(ACCOUNTS).filter(([chatId]) => !blockedUsers.has(chatId));
     accountEntries.forEach(([chatId, config]) => {
-        if (!config.name) config.name = `User ${config.user}`;
+        if (!config.name || config.name.startsWith('User ')) config.name = 'Akil S.';
     });
 
     (async () => {
