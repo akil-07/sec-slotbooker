@@ -251,7 +251,7 @@ function simplifyScheduleRow(row) {
     const codeNameMatch = str.match(/\b([0-9]{2}[A-Z]{2,4}[0-9]{3}[A-Z]?|[A-Z]+-[A-Z]+-[A-Z0-9]+|[A-Z]{3,4})\s*[-—–]\s*([A-Za-z0-9&/ ]+?)(?=\s+[0-9]{2}[A-Z0-9]{4,8}|\s+Student|\s+Nov|\s+Dec|\s+Jan|\s+Feb|\s+Mar|\s+Apr|\s+May|\s+Jun|\s+Jul|\s+Aug|\s+Sep|\s+Oct|$)/i);
 
     if (codeNameMatch) {
-        
+
         subject = `${codeNameMatch[1].toUpperCase()} — ${codeNameMatch[2].trim()}`;
     } else {
         // Fallback: strip noise words
@@ -629,6 +629,7 @@ function formatAttendanceImpactMessage(impact, fromStr = '', toStr = '') {
  */
 async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, sendTelegramPhoto, pendingConfirmations, callSmartAI = null, fetchAttendanceFn = null) {
     const page = await session.context.newPage();
+    await page.setViewportSize({ width: 1400, height: 900 }).catch(() => { });
     const screenshotPath = path.join(__dirname, `_leave_draft_${Date.now()}.png`);
 
     try {
@@ -920,7 +921,16 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             await page.waitForTimeout(2000);
         }
 
-        // Capture full page screenshot of the verified draft application!
+        // Clean up screenshot view: dismiss overlapping sidebar and hide irrelevant staff-only alteration box
+        await page.evaluate(() => {
+            document.body.classList.remove('sb-sidenav-toggled');
+            const nav = document.querySelector('#layoutSidenav_nav');
+            if (nav) nav.style.display = 'none';
+            const alterationSec = document.querySelector('#staff-leave-alteration-section');
+            if (alterationSec) alterationSec.style.display = 'none';
+        }).catch(() => { });
+
+        // Capture clean full page screenshot of the verified draft application!
         await page.screenshot({ path: screenshotPath, fullPage: true });
 
         // 8. 80% Attendance Impact Analysis
