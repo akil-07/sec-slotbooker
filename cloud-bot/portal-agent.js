@@ -73,15 +73,53 @@ function resolveLeaveType(inputStr) {
     return 'Leave-Students';
 }
 
+const MONTH_NAMES = {
+    january: 0, jan: 0,
+    february: 1, feb: 1,
+    march: 2, mar: 2,
+    april: 3, apr: 3,
+    may: 4,
+    june: 5, jun: 5,
+    july: 6, jul: 6,
+    august: 7, aug: 7,
+    september: 8, sept: 8, sep: 8,
+    october: 9, oct: 9,
+    november: 10, nov: 10,
+    december: 11, dec: 11
+};
+
 /**
- * Helper to parse Indian DD/MM/YYYY date strings into JS Date objects
+ * Normalizes time strings like "6pm", "10 pm", "6:00 pm", "18:00" into "06:00 PM"
+ */
+function parseTimeString(str) {
+    if (!str) return null;
+    const s = String(str).trim().toLowerCase();
+    const m = s.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+    if (!m) return null;
+    let hour = parseInt(m[1], 10);
+    const minute = m[2] ? parseInt(m[2], 10) : 0;
+    const ampm = m[3] ? m[3].toUpperCase() : null;
+
+    if (ampm) {
+        if (ampm === 'PM' && hour < 12) hour += 12;
+        if (ampm === 'AM' && hour === 12) hour = 0;
+    }
+    const h12 = (hour % 12) === 0 ? 12 : (hour % 12);
+    const resolvedAmPm = hour >= 12 ? 'PM' : 'AM';
+    return `${String(h12).padStart(2, '0')}:${String(minute).padStart(2, '0')} ${resolvedAmPm}`;
+}
+
+/**
+ * Helper to parse Indian DD/MM/YYYY date strings and named month dates (e.g. "6th november", "nov 10") into JS Date objects
  */
 function parseIndianDate(dateStr) {
     if (!dateStr) return null;
     if (dateStr instanceof Date && !isNaN(dateStr.getTime())) return dateStr;
-    const s = String(dateStr).trim().toLowerCase();
+    const s = String(dateStr).trim().toLowerCase().replace(/(st|nd|rd|th)/g, '');
 
     const now = new Date();
+    const curYear = now.getFullYear();
+
     if (s === 'today') {
         return new Date(now.getFullYear(), now.getMonth(), now.getDate());
     }
@@ -96,14 +134,33 @@ function parseIndianDate(dateStr) {
         return d;
     }
 
+    // Match "6 november [2026]" or "6 nov"
+    const dmMatch = s.match(/(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?/i);
+    if (dmMatch && MONTH_NAMES[dmMatch[2].toLowerCase()] !== undefined) {
+        const day = parseInt(dmMatch[1], 10);
+        const month = MONTH_NAMES[dmMatch[2].toLowerCase()];
+        const year = dmMatch[3] ? parseInt(dmMatch[3], 10) : curYear;
+        return new Date(year, month, day);
+    }
+
+    // Match "november 6 [2026]" or "nov 6"
+    const mdMatch = s.match(/([a-z]+)\s+(\d{1,2})(?:\s+(\d{4}))?/i);
+    if (mdMatch && MONTH_NAMES[mdMatch[1].toLowerCase()] !== undefined) {
+        const month = MONTH_NAMES[mdMatch[1].toLowerCase()];
+        const day = parseInt(mdMatch[2], 10);
+        const year = mdMatch[3] ? parseInt(mdMatch[3], 10) : curYear;
+        return new Date(year, month, day);
+    }
+
     // Match DD/MM/YYYY or DD-MM-YYYY
-    const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?/);
     if (dmy) {
         const day = parseInt(dmy[1], 10);
         const month = parseInt(dmy[2], 10) - 1;
-        const year = parseInt(dmy[3], 10);
+        const year = dmy[3] ? parseInt(dmy[3], 10) : curYear;
         return new Date(year, month, day);
     }
+
     // Match YYYY-MM-DD
     const ymd = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
     if (ymd) {
@@ -112,23 +169,43 @@ function parseIndianDate(dateStr) {
         const day = parseInt(ymd[3], 10);
         return new Date(year, month, day);
     }
-    // Match DD/MM e.g. 06/11 (assume current year)
-    const dm = s.match(/^(\d{1,2})[\/\-](\d{1,2})$/);
-    if (dm) {
-        const day = parseInt(dm[1], 10);
-        const month = parseInt(dm[2], 10) - 1;
-        return new Date(now.getFullYear(), month, day);
-    }
+
     const d = new Date(dateStr);
     return isNaN(d.getTime()) ? null : d;
 }
 
 /**
- * Extracts date range from text (e.g. "Leave 06/11/2026 to 11/11/2026" or "06/11 to 11/11")
+ * Extracts date range and custom times from text
+ * Supports natural patterns: "from 6th november 6pm to 10th november 10 pm" or "06/11/2026 to 10/11/2026"
  */
 function extractDateRangeFromText(text) {
     if (!text) return null;
     const str = String(text);
+
+    const monthKeys = Object.keys(MONTH_NAMES);
+    monthKeys.sort((a, b) => b.length - a.length); // Longer month words match first
+    const monthWords = monthKeys.join('|');
+
+    const datePattern = `(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthWords})(?:\\s+\\d{4})?|\\d{1,2}[\\/\\-]\\d{1,2}(?:[\\/\\-]\\d{4})?)`;
+    const timePattern = `(?:\\d{1,2}(?::\\d{2})?\\s*(?:am|pm))`;
+
+    const naturalRangeRegex = new RegExp(
+        `(?:from\\s+)?(${datePattern})(?:\\s+(${timePattern}))?\\s+(?:to|-|until)\\s+(${datePattern})(?:\\s+(${timePattern}))?`,
+        'i'
+    );
+
+    const nm = str.match(naturalRangeRegex);
+    if (nm) {
+        const d1 = parseIndianDate(nm[1]);
+        const d2 = parseIndianDate(nm[3]);
+        const t1 = nm[2] ? parseTimeString(nm[2]) : null;
+        const t2 = nm[4] ? parseTimeString(nm[4]) : null;
+        if (d1 && d2) {
+            return { from: d1, to: d2, fromTime: t1, toTime: t2 };
+        }
+    }
+
+    // Standard DD/MM/YYYY to DD/MM/YYYY fallback
     const rangeMatch = str.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\s*(?:to|-|until)\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
     if (rangeMatch) {
         const d1 = parseIndianDate(rangeMatch[1]);
@@ -147,6 +224,25 @@ function extractDateRangeFromText(text) {
         if (d) return { from: d, to: d };
     }
     return null;
+}
+
+/**
+ * Formats a Date object with custom or default time: DD/MM/YYYY hh:mm AM/PM
+ */
+function formatDateTimeWithCustomTime(dateObj, timeStr, defaultHour = 8, defaultMinute = 0, defaultAmPm = 'AM') {
+    const d = (dateObj instanceof Date && !isNaN(dateObj.getTime())) ? dateObj : new Date();
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const datePrefix = `${day}/${month}/${year}`;
+
+    if (timeStr) {
+        const parsedTime = parseTimeString(timeStr);
+        if (parsedTime) {
+            return `${datePrefix} ${parsedTime}`;
+        }
+    }
+    return formatPortalDateTime(d, defaultHour, defaultMinute, defaultAmPm);
 }
 
 /**
@@ -675,21 +771,15 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         }
 
         const resolvedType = targetWorkflow;
-        let title = leaveData.title || (isHostel ? 'Hostel Gate Pass' : (isOd ? 'On-Duty Application' : 'Personal Leave'));
-        // Clean title if user passed a raw command string
-        if (title.length > 50) title = title.substring(0, 50);
 
-        let subject = leaveData.subject || (isHostel ? 'Request for Hostel Gate Pass' : (isOd ? 'Request for On-Duty (OD) Attendance' : 'Request for Leave Permission'));
-        let reason = leaveData.reason || leaveData.content || (isHostel ? 'Need permission to leave hostel for personal reasons.' : (isOd ? 'Participating in technical event/symposium representing college.' : 'Unable to attend classes due to personal reasons.'));
-
-        // 3. Parse Dates (support fromDate/toDate and regex extraction from text)
+        // 3. Parse Dates & Times (support fromDate/toDate and natural regex extraction from text)
         const textToScan = `${leaveData.title || ''} ${leaveData.reason || ''} ${leaveData.content || ''} ${leaveData.query || ''} ${leaveData.rawText || ''}`;
         const extractedRange = extractDateRangeFromText(textToScan);
 
         let targetDate = leaveData.fromDate ? parseIndianDate(leaveData.fromDate) : (leaveData.date ? parseIndianDate(leaveData.date) : null);
         let targetDateTo = leaveData.toDate ? parseIndianDate(leaveData.toDate) : null;
 
-        // If user query/text contains an explicit date range (e.g. 06/11/2026 to 11/11/2026), prioritize it
+        // If user query/text contains an explicit date range (e.g. 6th november to 10th november), prioritize it
         if (extractedRange && extractedRange.from && extractedRange.to) {
             targetDate = extractedRange.from;
             targetDateTo = extractedRange.to;
@@ -709,8 +799,33 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
             targetDateTo = targetDate;
         }
 
-        const fromStr = leaveData.fromTime || formatPortalDateTime(targetDate, 8, 0, 'AM');
-        const toStr = leaveData.toTime || formatPortalDateTime(targetDateTo, 8, 0, 'PM');
+        // Custom hours/times support (e.g. 6pm, 10 pm, 18:00)
+        const fromTimeVal = leaveData.fromTime || extractedRange?.fromTime || null;
+        const toTimeVal = leaveData.toTime || extractedRange?.toTime || null;
+
+        const fromStr = formatDateTimeWithCustomTime(targetDate, fromTimeVal, 8, 0, 'AM');
+        const toStr = formatDateTimeWithCustomTime(targetDateTo, toTimeVal, 8, 0, 'PM');
+
+        // Extract clean meaningful reason (e.g. "for diwali" -> "Diwali celebrations with family")
+        let reason = leaveData.reason || leaveData.content || '';
+        const diwaliMatch = textToScan.match(/diwali/i);
+        if (diwaliMatch) {
+            reason = 'Diwali celebrations with family';
+        } else if (!reason || reason.includes('from') || reason.includes('to') || reason.length < 5) {
+            const forMatch = textToScan.match(/(?:for|due to|because of)\s+([a-zA-Z0-9\s]+?)(?:\.|$)/i);
+            if (forMatch && forMatch[1].trim().length > 2) {
+                reason = forMatch[1].trim();
+            } else {
+                reason = isHostel ? 'Need permission to leave hostel for personal reasons.' : (isOd ? 'Participating in technical event/symposium representing college.' : 'Unable to attend classes due to personal reasons.');
+            }
+        }
+
+        const fromDStr = `${String(targetDate.getDate()).padStart(2, '0')}/${String(targetDate.getMonth() + 1).padStart(2, '0')}/${targetDate.getFullYear()}`;
+        const toDStr = `${String(targetDateTo.getDate()).padStart(2, '0')}/${String(targetDateTo.getMonth() + 1).padStart(2, '0')}/${targetDateTo.getFullYear()}`;
+        let title = (isHostel ? `Hostel Gate Pass ${fromDStr}` : (isOd ? `OD ${fromDStr} to ${toDStr}` : `Leave ${fromDStr} to ${toDStr}`));
+        if (title.length > 50) title = title.substring(0, 50);
+
+        let subject = leaveData.subject || (isHostel ? 'Request for Hostel Gate Pass' : (isOd ? 'Request for On-Duty (OD) Attendance' : 'Request for Leave Permission'));
 
         console.log(`[PortalAgent] Filling Leave Form: Type=${formLeaveTypeValue}, Workflow=${targetWorkflow}, From=${fromStr}, To=${toStr}`);
 
@@ -789,19 +904,25 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
 
         // E. Content * (Saveetha uses TinyMCE for #id_content)
         await page.evaluate((text) => {
+            const html = text
+                .split(/\n\s*\n/)
+                .filter(p => p.trim().length > 0)
+                .map(para => `<p>${para.trim().replace(/\n/g, '<br>')}</p>`)
+                .join('');
+
             if (window.tinymce && window.tinymce.get('id_content')) {
-                window.tinymce.get('id_content').setContent(text.replace(/\n/g, '<br>'));
+                window.tinymce.get('id_content').setContent(html);
                 window.tinymce.triggerSave();
             }
             const textarea = document.querySelector('#id_content');
             if (textarea) {
-                textarea.value = text;
+                textarea.value = html;
                 textarea.dispatchEvent(new Event('input', { bubbles: true }));
                 textarea.dispatchEvent(new Event('change', { bubbles: true }));
             }
             const iframe = document.querySelector('#id_content_ifr');
             if (iframe && iframe.contentDocument && iframe.contentDocument.body) {
-                iframe.contentDocument.body.innerHTML = text.replace(/\n/g, '<br>');
+                iframe.contentDocument.body.innerHTML = html;
             }
         }, letterBody);
 
