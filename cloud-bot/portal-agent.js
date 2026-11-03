@@ -192,8 +192,13 @@ async function fetchLeaveSchedulesFromPortal(page, fromStr, toStr) {
                     headers: { 'X-Requested-With': 'XMLHttpRequest' }
                 });
                 if (!res.ok) return { ok: false, status: res.status };
-                const data = await res.json();
-                return { ok: true, html: (data && data.html) ? data.html : '' };
+                const text = await res.text();
+                try {
+                    const data = JSON.parse(text);
+                    return { ok: true, html: (data && data.html) ? data.html : '' };
+                } catch (_) {
+                    return { ok: false, error: 'Non-JSON schedule response from server' };
+                }
             } catch (e) {
                 return { ok: false, error: e.message };
             }
@@ -810,28 +815,70 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         console.log('[PortalAgent] Submitting "Save Draft" button...');
         const saveDraftBtn = page.locator('button[type="submit"]:has-text("Save Draft"), button:has-text("Save Draft"), input[value*="Save Draft"]').first();
         if (await saveDraftBtn.isVisible()) {
+            await page.evaluate(() => {
+                if (window.tinymce) {
+                    try { window.tinymce.triggerSave(); } catch (_) { }
+                }
+            });
+
             await Promise.all([
-                page.waitForURL(url => url.pathname.includes('/leave-applications/') && !url.pathname.includes('/create'), { timeout: 25000 }).catch(e => {
+                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 35000 }).catch(e => {
                     console.warn('[PortalAgent] Navigation wait after Save Draft:', e.message);
                 }),
-                saveDraftBtn.click()
+                saveDraftBtn.click({ force: true })
             ]);
             console.log('[PortalAgent] "Save Draft" submitted. Current URL:', page.url());
-            await page.waitForTimeout(1500);
+            await page.waitForTimeout(2000);
         }
 
         // Verify draft was successfully created and not stopped by validation errors
-        if (page.url().includes('/leave-applications/create/')) {
-            const formErrors = await page.evaluate(() => {
-                const errs = Array.from(document.querySelectorAll('.invalid-feedback, .errorlist, .alert-danger, .has-error'));
-                return errs.map(e => e.innerText ? e.innerText.trim() : '').filter(Boolean);
-            });
-            throw new Error(`Saveetha portal rejected leave draft: ${formErrors.length > 0 ? formErrors.join(' | ') : 'Validation failed on required fields'}`);
-        }
+        let leaveIdMatch = page.url().match(/\/leave-applications\/(\d+)\//);
+        let leaveAppId = leaveIdMatch ? leaveIdMatch[1] : null;
 
-        // 6. STEP 4: Navigate to "Approval Flow" tab on the created draft and assign Workflow
-        const leaveIdMatch = page.url().match(/\/leave-applications\/(\d+)\//);
-        const leaveAppId = leaveIdMatch ? leaveIdMatch[1] : null;
+        if (!leaveAppId && page.url().includes('/leave-applications/create/')) {
+            // Check for REAL Django form validation errors (strictly exclude live schedule preview box)
+            const realFormErrors = await page.evaluate(() => {
+                const previewSec = document.querySelector('#leave-schedule-preview-section');
+                const alterationSec = document.querySelector('#staff-leave-alteration-section');
+
+                const errNodes = Array.from(document.querySelectorAll('.invalid-feedback, ul.errorlist, .alert-danger, .has-error'));
+                return errNodes.filter(node => {
+                    if (previewSec && previewSec.contains(node)) return false;
+                    if (alterationSec && alterationSec.contains(node)) return false;
+                    if (node.getAttribute('data-leave-schedule-error') !== null) return false;
+                    if (node.id === 'alteration-live-error') return false;
+                    const txt = (node.innerText || '').trim();
+                    if (!txt || txt.includes('Unable to load schedules') || txt.includes('not valid JSON')) return false;
+                    return true;
+                }).map(node => node.innerText.trim());
+            });
+
+            if (realFormErrors.length > 0) {
+                throw new Error(`Saveetha portal rejected leave draft: ${realFormErrors.join(' | ')}`);
+            }
+
+            // If no form errors on create page, check if the draft was created on the dashboard
+            console.log('[PortalAgent] Checking dashboard to confirm if draft was saved...');
+            await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(2000);
+
+            const dashboardDraftId = await page.evaluate(() => {
+                const openLinks = Array.from(document.querySelectorAll('a[href*="/leave-applications/"], button[onclick*="/leave-applications/"]'));
+                for (const l of openLinks) {
+                    const href = l.getAttribute('href') || l.getAttribute('onclick') || '';
+                    const m = href.match(/\/leave-applications\/(\d+)\//);
+                    if (m) return m[1];
+                }
+                return null;
+            });
+
+            if (dashboardDraftId) {
+                leaveAppId = dashboardDraftId;
+                console.log(`[PortalAgent] Found saved draft ID #${leaveAppId} on dashboard.`);
+            } else {
+                throw new Error('Saveetha portal server did not respond in time to create the draft. Please try again.');
+            }
+        }
 
         let assignedWorkflow = targetWorkflow;
         if (leaveAppId) {
