@@ -677,13 +677,17 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         let reason = leaveData.reason || leaveData.content || (isHostel ? 'Need permission to leave hostel for personal reasons.' : (isOd ? 'Participating in technical event/symposium representing college.' : 'Unable to attend classes due to personal reasons.'));
 
         // 3. Parse Dates (support fromDate/toDate and regex extraction from text)
-        const textToScan = `${leaveData.title || ''} ${leaveData.reason || ''} ${leaveData.content || ''} ${leaveData.query || ''}`;
+        const textToScan = `${leaveData.title || ''} ${leaveData.reason || ''} ${leaveData.content || ''} ${leaveData.query || ''} ${leaveData.rawText || ''}`;
         const extractedRange = extractDateRangeFromText(textToScan);
 
         let targetDate = leaveData.fromDate ? parseIndianDate(leaveData.fromDate) : (leaveData.date ? parseIndianDate(leaveData.date) : null);
         let targetDateTo = leaveData.toDate ? parseIndianDate(leaveData.toDate) : null;
 
-        if (!targetDate && extractedRange) {
+        // If user query/text contains an explicit date range (e.g. 06/11/2026 to 11/11/2026), prioritize it
+        if (extractedRange && extractedRange.from && extractedRange.to) {
+            targetDate = extractedRange.from;
+            targetDateTo = extractedRange.to;
+        } else if (!targetDate && extractedRange) {
             targetDate = extractedRange.from;
             if (!targetDateTo) targetDateTo = extractedRange.to;
         }
@@ -803,23 +807,39 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         const overlappingClasses = await fetchLeaveSchedulesFromPortal(page, fromStr, toStr);
 
         // 5. STEP 3: Click "Save Draft" button on the Leave Application form!
-        console.log('[PortalAgent] Clicking "Save Draft" button...');
-        const saveDraftBtn = page.locator('button:has-text("Save Draft"), input[value*="Save Draft"]').first();
+        console.log('[PortalAgent] Submitting "Save Draft" button...');
+        const saveDraftBtn = page.locator('button[type="submit"]:has-text("Save Draft"), button:has-text("Save Draft"), input[value*="Save Draft"]').first();
         if (await saveDraftBtn.isVisible()) {
-            await saveDraftBtn.click();
-            console.log('[PortalAgent] "Save Draft" button clicked successfully!');
-            await page.waitForTimeout(4000);
+            await Promise.all([
+                page.waitForURL(url => url.pathname.includes('/leave-applications/') && !url.pathname.includes('/create'), { timeout: 25000 }).catch(e => {
+                    console.warn('[PortalAgent] Navigation wait after Save Draft:', e.message);
+                }),
+                saveDraftBtn.click()
+            ]);
+            console.log('[PortalAgent] "Save Draft" submitted. Current URL:', page.url());
+            await page.waitForTimeout(1500);
         }
 
-        // 6. STEP 4: Switch to "Approval Flow" tab on the created draft and assign Workflow
-        console.log('[PortalAgent] Assigning Approval Flow workflow...');
-        const approvalTab = page.locator('a:has-text("Approval Flow"), button:has-text("Approval Flow"), [data-bs-target*="approval" i], li:has-text("Approval Flow") a').first();
-        let assignedWorkflow = targetWorkflow;
-        if (await approvalTab.isVisible()) {
-            await approvalTab.click();
-            await page.waitForTimeout(2000);
+        // Verify draft was successfully created and not stopped by validation errors
+        if (page.url().includes('/leave-applications/create/')) {
+            const formErrors = await page.evaluate(() => {
+                const errs = Array.from(document.querySelectorAll('.invalid-feedback, .errorlist, .alert-danger, .has-error'));
+                return errs.map(e => e.innerText ? e.innerText.trim() : '').filter(Boolean);
+            });
+            throw new Error(`Saveetha portal rejected leave draft: ${formErrors.length > 0 ? formErrors.join(' | ') : 'Validation failed on required fields'}`);
+        }
 
-            const workflowSelect = page.locator('select[name*="workflow" i], select#id_workflow, select').first();
+        // 6. STEP 4: Navigate to "Approval Flow" tab on the created draft and assign Workflow
+        const leaveIdMatch = page.url().match(/\/leave-applications\/(\d+)\//);
+        const leaveAppId = leaveIdMatch ? leaveIdMatch[1] : null;
+
+        let assignedWorkflow = targetWorkflow;
+        if (leaveAppId) {
+            console.log(`[PortalAgent] Navigating to Approval Flow tab for draft #${leaveAppId}...`);
+            await page.goto(`https://learner.saveetha.in/academics/workflow-requests/leave-applications/${leaveAppId}/?tab=workflow`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(1500);
+
+            const workflowSelect = page.locator('#id_approval_workflow, select[name="approval_workflow"]').first();
             if (await workflowSelect.isVisible()) {
                 const availableWorkflows = (await workflowSelect.locator('option').allTextContents()).map(o => o.trim());
                 console.log('[PortalAgent] Available Approval Workflows:', availableWorkflows);
@@ -830,24 +850,30 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
                     await workflowSelect.selectOption({ value: matched }).catch(() => { });
                 });
                 assignedWorkflow = matched;
-                await page.waitForTimeout(1000);
+                await page.waitForTimeout(800);
 
                 // Click "Save Workflow" button on Approval Flow tab
-                const saveWorkflowBtn = page.locator('button:has-text("Save Workflow"), input[value*="Save Workflow"]').first();
+                const saveWorkflowBtn = page.locator('button[type="submit"][value="select_workflow"], button:has-text("Save Workflow")').first();
                 if (await saveWorkflowBtn.isVisible()) {
                     console.log('[PortalAgent] Clicking "Save Workflow" button...');
-                    await saveWorkflowBtn.click();
-                    await page.waitForTimeout(2500);
+                    await Promise.all([
+                        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
+                        saveWorkflowBtn.click()
+                    ]);
+                    await page.waitForTimeout(1500);
                 }
             }
+
+            // Return to confirmed draft view (?tab=leave) displaying complete details & "Leave draft saved" alert
+            await page.goto(`https://learner.saveetha.in/academics/workflow-requests/leave-applications/${leaveAppId}/?tab=leave`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(1500);
+        } else {
+            console.log('[PortalAgent] Navigating to Workflow Requests dashboard...');
+            await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(2000);
         }
 
-        // 7. STEP 5: Return to Workflow Requests dashboard to verify draft card appears
-        console.log('[PortalAgent] Navigating to Workflow Requests dashboard to verify draft...');
-        await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(2500);
-
-        // Capture full page screenshot of the Workflow Requests dashboard showing the new draft card!
+        // Capture full page screenshot of the verified draft application!
         await page.screenshot({ path: screenshotPath, fullPage: true });
 
         // 8. 80% Attendance Impact Analysis
@@ -916,17 +942,18 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         }
         await sendTelegram(fullReportMsg, chatId);
 
-        // Store pending submission context
+        // Store pending submission context with exact draft ID
         if (pendingConfirmations) {
             pendingConfirmations.set(chatId, {
                 action: 'confirm_leave_submission',
                 resolvedType,
                 title,
+                draftId: leaveAppId,
                 targetUrl: page.url()
             });
         }
 
-        return { success: true, type: resolvedType, classesCount: overlappingClasses.length };
+        return { success: true, type: resolvedType, classesCount: overlappingClasses.length, draftId: leaveAppId };
     } catch (err) {
         console.error('[PortalAgent] Error drafting leave application:', err);
         await sendTelegram(`⚠️ Error preparing leave application: ${err.message}`, chatId);
@@ -940,7 +967,7 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
 /**
  * 2. SUBMIT / APPLY CONFIRMED DRAFT
  */
-async function officiallySubmitLeave(session, chatId, sendTelegram, sendTelegramPhoto) {
+async function officiallySubmitLeave(session, chatId, sendTelegram, sendTelegramPhoto, draftId = null) {
     const page = await session.context.newPage();
     const screenshotPath = path.join(__dirname, `_leave_submitted_${Date.now()}.png`);
 
@@ -948,28 +975,38 @@ async function officiallySubmitLeave(session, chatId, sendTelegram, sendTelegram
         await ensurePortalSession(page, session);
         await sendTelegram(`🚀 *Submitting your leave application to the approval flow...*`, chatId);
 
-        await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForTimeout(2000);
-
-        // Click on the most recent draft item [Open] button
-        const draftItem = page.locator('.card:has-text("Draft") button:has-text("Open"), .card:has-text("Draft") a:has-text("Open"), button:has-text("Open"), a:has-text("Open"), a:has-text("Draft"), tr:has-text("Draft") a').first();
-        if (await draftItem.isVisible()) {
-            await draftItem.click();
+        if (draftId) {
+            console.log(`[PortalAgent] Directly opening draft #${draftId} workflow tab...`);
+            await page.goto(`https://learner.saveetha.in/academics/workflow-requests/leave-applications/${draftId}/?tab=workflow`, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await page.waitForTimeout(2000);
-        }
+        } else {
+            console.log('[PortalAgent] Navigating to Workflow Requests dashboard...');
+            await page.goto(MODULE_URLS.workflow_requests, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForTimeout(2000);
 
-        // Go to Approval Flow tab
-        const approvalTab = page.locator('a:has-text("Approval Flow"), button:has-text("Approval Flow")').first();
-        if (await approvalTab.isVisible()) {
-            await approvalTab.click();
-            await page.waitForTimeout(1500);
+            // Click on the most recent draft item [Open] button
+            const draftItem = page.locator('.card:has-text("Draft") button:has-text("Open"), .card:has-text("Draft") a:has-text("Open"), button:has-text("Open"), a:has-text("Open"), a:has-text("Draft"), tr:has-text("Draft") a').first();
+            if (await draftItem.isVisible()) {
+                await draftItem.click();
+                await page.waitForTimeout(2000);
+            }
+
+            // Go to Approval Flow tab
+            const approvalTab = page.locator('a:has-text("Approval Flow"), a[href*="tab=workflow"], button:has-text("Approval Flow")').first();
+            if (await approvalTab.isVisible()) {
+                await approvalTab.click();
+                await page.waitForTimeout(1500);
+            }
         }
 
         // Click "Apply" button
-        const applyBtn = page.locator('button:has-text("Apply"), input[value="Apply"]').first();
+        const applyBtn = page.locator('button[type="submit"][value="apply_workflow"], button:has-text("Apply"), input[value="Apply"]').first();
         if (await applyBtn.isVisible()) {
-            await applyBtn.click();
-            await page.waitForTimeout(3000);
+            await Promise.all([
+                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null),
+                applyBtn.click()
+            ]);
+            await page.waitForTimeout(2500);
         }
 
         await page.screenshot({ path: screenshotPath, fullPage: false });

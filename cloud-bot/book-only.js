@@ -5259,11 +5259,12 @@ async function main() {
                     const isYes = ['yes', 'y', 'submit', 'apply', 'commit', 'confirm', 'ok', 'proceed'].includes(text);
                     const isNo = ['no', 'n', 'cancel', 'abort', 'discard'].includes(text);
                     if (isYes) {
+                        const pendingData = pendingLeaveConfirmations.get(fromChatId);
                         pendingLeaveConfirmations.delete(fromChatId);
                         const session = await getOrSpawnSession(fromChatId, userConfig);
                         if (session) {
                             session.doLogin = doLogin;
-                            await portalAgent.officiallySubmitLeave(session, fromChatId, sendTelegram, sendTelegramPhoto);
+                            await portalAgent.officiallySubmitLeave(session, fromChatId, sendTelegram, sendTelegramPhoto, pendingData?.draftId);
                         }
                         continue;
                     } else if (isNo) {
@@ -5625,6 +5626,7 @@ JSON Schema:
                                 const session = await getOrSpawnSession(fromChatId, userConfig);
                                 if (!session) continue;
                                 session.doLogin = doLogin;
+                                aiData.rawText = rawText;
                                 await portalAgent.draftLeaveApplication(session, aiData, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations, callSmartAI, fetchAttendance);
                                 continue;
                             } else if (aiData.action === 'leave_impact') {
@@ -5686,10 +5688,14 @@ JSON Schema:
                     session.doLogin = doLogin;
                     const isOd = text.startsWith('!od') || text.includes('od');
                     const reason = rawText.replace(/^!(leave|od|applyleave)\s*/i, '').trim();
+                    const range = portalAgent.extractDateRangeFromText(reason);
                     const leavePayload = {
                         type: isOd ? 'OnDuty-Students' : 'Leave-Students',
                         reason: reason || (isOd ? 'Attending symposium / official college event.' : 'Personal leave.'),
-                        isTomorrow: text.includes('tomorrow')
+                        rawText,
+                        isTomorrow: text.includes('tomorrow'),
+                        fromDate: range?.from ? portalAgent.formatPortalDateTime(range.from).split(' ')[0] : null,
+                        toDate: range?.to ? portalAgent.formatPortalDateTime(range.to).split(' ')[0] : null
                     };
                     await portalAgent.draftLeaveApplication(session, leavePayload, fromChatId, sendTelegram, sendTelegramPhoto, pendingLeaveConfirmations, callSmartAI, fetchAttendance);
                     continue;
