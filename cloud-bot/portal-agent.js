@@ -733,7 +733,14 @@ function formatAttendanceImpactMessage(impact, fromStr = '', toStr = '') {
  * 1. AUTOMATED LEAVE & OD APPLICATION DRAFTING & SUBMISSION
  */
 async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, sendTelegramPhoto, pendingConfirmations, callSmartAI = null, fetchAttendanceFn = null) {
-    const page = await session.context.newPage();
+    let page;
+    try {
+        page = await session.context.newPage();
+    } catch (err) {
+        console.error('[PortalAgent] Failed to open new tab:', err.message);
+        await sendTelegram(`⚠️ Could not open browser tab: ${err.message}`, chatId);
+        return { success: false, error: err.message };
+    }
     await page.setViewportSize({ width: 1400, height: 900 }).catch(() => { });
     const screenshotPath = path.join(__dirname, `_leave_draft_${Date.now()}.png`);
 
@@ -1150,7 +1157,9 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         return { success: false, error: err.message };
     } finally {
         try { fs.unlinkSync(screenshotPath); } catch (_) { }
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -1158,7 +1167,14 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
  * 2. SUBMIT / APPLY CONFIRMED DRAFT
  */
 async function officiallySubmitLeave(session, chatId, sendTelegram, sendTelegramPhoto, draftId = null) {
-    const page = await session.context.newPage();
+    let page;
+    try {
+        page = await session.context.newPage();
+    } catch (err) {
+        console.error('[PortalAgent] Failed to open new tab:', err.message);
+        await sendTelegram(`⚠️ Could not open browser tab: ${err.message}`, chatId);
+        return { success: false, error: err.message };
+    }
     const screenshotPath = path.join(__dirname, `_leave_submitted_${Date.now()}.png`);
 
     try {
@@ -1219,7 +1235,9 @@ async function officiallySubmitLeave(session, chatId, sendTelegram, sendTelegram
         return { success: false, error: err.message };
     } finally {
         try { fs.unlinkSync(screenshotPath); } catch (_) { }
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -1227,7 +1245,14 @@ async function officiallySubmitLeave(session, chatId, sendTelegram, sendTelegram
  * 3. UNIVERSITY CIRCULARS & NOTICES SCRAPER
  */
 async function browseCirculars(session, query, chatId, sendTelegram, callSmartAI) {
-    const page = await session.context.newPage();
+    let page;
+    try {
+        page = await session.context.newPage();
+    } catch (err) {
+        console.error('[PortalAgent] Failed to open new tab:', err.message);
+        await sendTelegram(`⚠️ Could not open browser tab: ${err.message}`, chatId);
+        return;
+    }
     try {
         await ensurePortalSession(page, session);
         await sendTelegram(`📢 *Fetching latest University Circulars & Notices...*`, chatId);
@@ -1272,7 +1297,9 @@ Provide a clear, direct answer with dates, holiday info, exam details, or whatev
         console.error('[PortalAgent] Error browsing circulars:', err);
         await sendTelegram(`⚠️ Error reading circulars: ${err.message}`, chatId);
     } finally {
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -1280,7 +1307,14 @@ Provide a clear, direct answer with dates, holiday info, exam details, or whatev
  * 4. REWARD POINTS & COIN WALLET
  */
 async function checkRewardPoints(session, chatId, sendTelegram, sendTelegramPhoto) {
-    const page = await session.context.newPage();
+    let page;
+    try {
+        page = await session.context.newPage();
+    } catch (err) {
+        console.error('[PortalAgent] Failed to open new tab:', err.message);
+        await sendTelegram(`⚠️ Could not open browser tab: ${err.message}`, chatId);
+        return;
+    }
     const screenshotPath = path.join(__dirname, `_rewards_${Date.now()}.png`);
     try {
         await ensurePortalSession(page, session);
@@ -1316,7 +1350,9 @@ async function checkRewardPoints(session, chatId, sendTelegram, sendTelegramPhot
         await sendTelegram(`⚠️ Error checking reward points: ${err.message}`, chatId);
     } finally {
         try { fs.unlinkSync(screenshotPath); } catch (_) { }
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -1325,7 +1361,14 @@ async function checkRewardPoints(session, chatId, sendTelegram, sendTelegramPhot
  * Calculates if taking leave from date X to date Y will drop any subject below 80%.
  */
 async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, sendTelegram, fetchAttendanceFn = null, options = {}) {
-    const page = await session.context.newPage();
+    let page;
+    try {
+        page = await session.context.newPage();
+    } catch (err) {
+        console.error('[PortalAgent] Failed to open new tab:', err.message);
+        await sendTelegram(`⚠️ Could not open browser tab: ${err.message}`, chatId);
+        return { success: false, error: err.message };
+    }
     try {
         await ensurePortalSession(page, session);
 
@@ -1402,7 +1445,9 @@ async function simulateLeaveAttendanceImpact(session, fromDate, toDate, chatId, 
         await sendTelegram(`⚠️ Could not simulate leave impact: ${err.message}`, chatId);
         return { success: false, error: err.message };
     } finally {
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 

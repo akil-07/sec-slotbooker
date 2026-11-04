@@ -5,7 +5,7 @@ process.on('uncaughtException', (error) => {
     console.error('UNCAUGHT EXCEPTION:', error);
 });
 
-const { chromium } = require('playwright');
+const { chromium, request } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const portalAgent = require('./portal-agent');
@@ -35,11 +35,52 @@ const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || process.env.CHAT_ID || '63748
 // User Registry
 let ACCOUNTS = {};
 let USER_SESSIONS = new Map(); // chatId -> { context, config, persistentPage, isBusy }
-let apiRequest = null; // Playwright request context for bypassing Node fetch blocks
+let globalBrowser = null;
+let apiRequest = null; // Playwright standalone request context (independent of browser)
 let superAdminNotificationsEnabled = true; // Added for super admin notifications toggle
 const pendingOtpRequests = new Map(); // chatId -> callback function
 const pendingTimeConfirmations = new Map();
 const pendingLeaveConfirmations = new Map(); // chatId -> { params, unusualTime, isTooEarly }
+
+async function getApiRequest() {
+    if (!apiRequest) {
+        try {
+            apiRequest = await request.newContext();
+        } catch (e) {
+            console.error('[Bot] Failed to create standalone apiRequest context:', e.message);
+        }
+    }
+    return apiRequest;
+}
+
+async function ensureBrowser() {
+    if (!globalBrowser || !globalBrowser.isConnected()) {
+        console.log('[Bot] Launching (or re-launching) multi-user browser...');
+        USER_SESSIONS.clear();
+        globalBrowser = await chromium.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+        globalBrowser.on('disconnected', () => {
+            console.warn('[Bot] Chromium browser disconnected or crashed! Clearing sessions.');
+            USER_SESSIONS.clear();
+            globalBrowser = null;
+        });
+    }
+    return globalBrowser;
+}
+
+function isSessionAlive(session) {
+    if (!session || !session.context) return false;
+    try {
+        const b = session.context.browser();
+        if (!b || !b.isConnected()) return false;
+        session.context.pages();
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
 
 function isSuperAdmin(chatId) {
     if (!chatId) return false;
@@ -807,34 +848,57 @@ async function fetchGistCommands() {
 // ─── Telegram Helpers ────────────────────────────────────────────────────────
 
 async function sendTelegram(text, chatId = CHAT_ID) {
-    if (!apiRequest) return;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    const payload = { chat_id: chatId, text, parse_mode: 'Markdown' };
     try {
-        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-        const res = await apiRequest.post(url, {
-            data: { chat_id: chatId, text, parse_mode: 'Markdown' }
-        });
-        const data = await res.json();
-        if (!data.ok) {
-            console.error('[Telegram] Error:', data.description);
-            // Fallback: Retry sending as plain text if Markdown entity parsing failed
-            if (data.description && data.description.toLowerCase().includes('can\'t parse entities')) {
-                await apiRequest.post(url, {
-                    data: { chat_id: chatId, text }
-                }).catch(() => { });
+        const req = await getApiRequest();
+        if (req) {
+            try {
+                const res = await req.post(url, { data: payload });
+                const data = await res.json();
+                if (!data.ok) {
+                    console.error('[Telegram] Error:', data.description);
+                    if (data.description && data.description.toLowerCase().includes('can\'t parse entities')) {
+                        await req.post(url, { data: { chat_id: chatId, text } }).catch(() => { });
+                    }
+                } else {
+                    console.log('[Telegram] Message sent.');
+                    return;
+                }
+            } catch (postErr) {
+                if (String(postErr.message).includes('closed') || String(postErr.message).includes('disposed')) {
+                    apiRequest = null;
+                }
+                throw postErr;
             }
-        } else {
-            console.log('[Telegram] Message sent.');
         }
     } catch (e) {
-        console.error('[Telegram] Failed to send:', e.message);
+        console.error('[Telegram] Failed to send via Playwright, trying fallback fetch:', e.message);
+        try {
+            if (typeof fetch !== 'undefined') {
+                const fetchRes = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await fetchRes.json();
+                if (data && data.ok) {
+                    console.log('[Telegram] Message sent via fallback fetch.');
+                    return;
+                }
+            }
+        } catch (fetchErr) {
+            console.error('[Telegram] Fallback fetch also failed:', fetchErr.message);
+        }
     }
 }
 
 async function sendTelegramPhoto(photoPath, caption, chatId = CHAT_ID) {
-    if (!apiRequest) return;
     try {
+        const req = await getApiRequest();
+        if (!req) return;
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
-        const res = await apiRequest.post(url, {
+        const res = await req.post(url, {
             multipart: {
                 chat_id: chatId,
                 caption: caption,
@@ -850,6 +914,9 @@ async function sendTelegramPhoto(photoPath, caption, chatId = CHAT_ID) {
         else console.log('[Telegram] Photo sent.');
     } catch (e) {
         console.error('[Telegram] Failed to send photo:', e.message);
+        if (String(e.message).includes('closed') || String(e.message).includes('disposed')) {
+            apiRequest = null;
+        }
     }
 }
 
@@ -857,10 +924,18 @@ async function downloadTelegramFile(fileId) {
     try {
         const getFileUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`;
         let resData = null;
-        if (apiRequest) {
-            const res = await apiRequest.get(getFileUrl);
-            resData = await res.json();
-        } else if (typeof fetch !== 'undefined') {
+        const req = await getApiRequest();
+        if (req) {
+            try {
+                const res = await req.get(getFileUrl);
+                resData = await res.json();
+            } catch (err) {
+                if (String(err.message).includes('closed') || String(err.message).includes('disposed')) {
+                    apiRequest = null;
+                }
+            }
+        }
+        if (!resData && typeof fetch !== 'undefined') {
             const res = await fetch(getFileUrl);
             resData = await res.json();
         }
@@ -871,10 +946,18 @@ async function downloadTelegramFile(fileId) {
         }
 
         const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${resData.result.file_path}`;
-        if (apiRequest) {
-            const fRes = await apiRequest.get(downloadUrl);
-            return await fRes.body();
-        } else if (typeof fetch !== 'undefined') {
+        const activeReq = await getApiRequest();
+        if (activeReq) {
+            try {
+                const fRes = await activeReq.get(downloadUrl);
+                return await fRes.body();
+            } catch (err) {
+                if (String(err.message).includes('closed') || String(err.message).includes('disposed')) {
+                    apiRequest = null;
+                }
+            }
+        }
+        if (typeof fetch !== 'undefined') {
             const fRes = await fetch(downloadUrl);
             const ab = await fRes.arrayBuffer();
             return Buffer.from(ab);
@@ -1169,37 +1252,39 @@ Keep formatting clean with bullet points and emojis. Do NOT wrap in markdown cod
 }
 
 async function getTelegramUpdates(offset) {
-    if (!apiRequest) return [];
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&offset=${offset}`;
     try {
-        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&offset=${offset}`;
-        const res = await apiRequest.get(url, { timeout: 40000 });
-        const data = await res.json();
-        if (!data.ok) {
-            console.error('[Telegram] API Error:', data);
-            return [];
+        const req = await getApiRequest();
+        if (req) {
+            const res = await req.get(url, { timeout: 40000 });
+            const data = await res.json();
+            if (!data.ok) {
+                console.error('[Telegram] API Error:', data);
+                return [];
+            }
+            return data.result || [];
         }
-        return data.result || [];
     } catch (e) {
         console.error('[Telegram] getUpdates error:', e.message);
-
+        if (String(e.message).includes('closed') || String(e.message).includes('disposed')) {
+            apiRequest = null;
+        }
         // Sleep to prevent infinite loop spam if context crashes
         await new Promise(resolve => setTimeout(resolve, 3000));
-
-        // Attempt native fetch fallback if Playwright context died
-        try {
-            if (typeof fetch !== 'undefined') {
-                const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&offset=${offset}`;
-                const fetchRes = await fetch(url);
-                const data = await fetchRes.json();
-                if (!data.ok) return [];
-                return data.result || [];
-            }
-        } catch (fallbackErr) {
-            // Silently ignore fallback fetch errors to avoid more console spam
-        }
-
-        return [];
     }
+
+    // Attempt native fetch fallback if Playwright context died
+    try {
+        if (typeof fetch !== 'undefined') {
+            const fetchRes = await fetch(url);
+            const data = await fetchRes.json();
+            if (data && data.ok) return data.result || [];
+        }
+    } catch (fallbackErr) {
+        // Silently ignore fallback fetch errors to avoid more console spam
+    }
+
+    return [];
 }
 
 // ─── Time Helper ─────────────────────────────────────────────────────────────
@@ -2172,14 +2257,27 @@ async function waitForOtpWindow(page, timeoutMs = 15 * 60 * 1000, phase = 'start
 
             const secsLeft = Math.round((deadline - Date.now()) / 1000);
             console.log(`[OTP] ${otpLabel} not yet open (${secsLeft}s left). Reloading page in 5s...`);
+            if (page.isClosed()) {
+                return { open: false, alreadyMarked: false, reason: 'Page closed' };
+            }
             await page.waitForTimeout(5000);
 
+            if (page.isClosed()) {
+                return { open: false, alreadyMarked: false, reason: 'Page closed' };
+            }
             // Reload page so Django server-rendered HTML reflects when faculty generates OTP
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => { });
 
         } catch (e) {
             console.error(`[OTP] Polling error: ${e.message}`);
-            await page.waitForTimeout(5000);
+            if (page.isClosed() || (e.message && e.message.includes('Target page, context or browser has been closed'))) {
+                return { open: false, alreadyMarked: false, reason: 'Page or browser closed' };
+            }
+            try {
+                await page.waitForTimeout(5000);
+            } catch (_) {
+                return { open: false, alreadyMarked: false, reason: 'Page closed during timeout' };
+            }
         }
     }
 
@@ -2337,7 +2435,18 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
         console.log(`[OTP] Skipped attendance monitor for non-superadmin: ${chatId}`);
         return;
     }
-    const page = await session.context.newPage();
+    if (!isSessionAlive(session)) {
+        await sendTelegram(`⚠️ Session is not active or browser closed. Please run !login or retry in a few moments.`, chatId);
+        return;
+    }
+    let page;
+    try {
+        page = await session.context.newPage();
+    } catch (err) {
+        console.error('[AttendanceOTP] Failed to open new page:', err.message);
+        await sendTelegram(`⚠️ Could not open attendance page: ${err.message}`, chatId);
+        return;
+    }
     const phaseLabel = phase === 'start' ? 'IN OTP (Class Start)' : 'OUT OTP (Class End)';
     const emoji = phase === 'start' ? '📥' : '📤';
 
@@ -2469,7 +2578,9 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
         console.error('[AttendanceOTP] Error:', e);
         await sendTelegram(`⚠️ Attendance monitor error: ${e.message}`, chatId);
     } finally {
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -2792,7 +2903,18 @@ async function checkAttendanceStatus(session, targetKeyword, chatId = CHAT_ID) {
         await sendTelegram(`⛔ The OTP attendance feature is restricted to Super Admin only.`, chatId);
         return;
     }
-    const page = await session.context.newPage();
+    if (!isSessionAlive(session)) {
+        await sendTelegram(`⚠️ Session is not active or browser closed. Please run !login or retry in a few moments.`, chatId);
+        return;
+    }
+    let page;
+    try {
+        page = await session.context.newPage();
+    } catch (err) {
+        console.error('[AttendanceStatus] Failed to open new page:', err.message);
+        await sendTelegram(`⚠️ Could not open status checker: ${err.message}`, chatId);
+        return;
+    }
     try {
         await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         if (page.url().includes('/login')) {
@@ -2877,7 +2999,9 @@ async function checkAttendanceStatus(session, targetKeyword, chatId = CHAT_ID) {
         console.error('[AttendanceStatus] Error:', e);
         await sendTelegram(`⚠️ Error checking attendance status: ${e.message}`, chatId);
     } finally {
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -3296,7 +3420,13 @@ async function selectDateOnSchedulePage(page, targetDateInfo) {
  * If wantScreenshot=true, returns { slots, screenshotPath }.
  */
 async function fetchTimetable(context, config, targetDateInfo = null, wantScreenshot = false) {
-    const page = await context.newPage();
+    let page;
+    try {
+        page = await context.newPage();
+    } catch (err) {
+        console.error(`[Timetable] Failed to open new tab: ${err.message}`);
+        return [];
+    }
     try {
         console.log(`[Timetable] Fetching schedule for ${config.name}${targetDateInfo ? ` (${targetDateInfo.displayDate})` : ''}...`);
         await page.goto('https://learner.saveetha.in/academics/people_schedule/', {
@@ -3513,7 +3643,9 @@ async function fetchTimetable(context, config, targetDateInfo = null, wantScreen
         if (wantScreenshot) return { slots: [], screenshotPath: null };
         return [];
     } finally {
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -3550,7 +3682,13 @@ function formatTimetable(slots, name, targetDateInfo = null) {
  * Scrapes workflow requests from the learner portal.
  */
 async function fetchWorkflowRequests(context, config, keyword = '') {
-    const page = await context.newPage();
+    let page;
+    try {
+        page = await context.newPage();
+    } catch (err) {
+        console.error(`[Workflow] Failed to open new tab: ${err.message}`);
+        return [];
+    }
     try {
         console.log(`[Workflow] Fetching workflow requests for ${config.name}...`);
         await page.goto('https://learner.saveetha.in/academics/workflow-requests/', {
@@ -3663,7 +3801,13 @@ async function fetchWorkflowRequests(context, config, keyword = '') {
  * Scrapes attendance from studentsubjects page.
  */
 async function fetchAttendance(context, config) {
-    const page = await context.newPage();
+    let page;
+    try {
+        page = await context.newPage();
+    } catch (err) {
+        console.error(`[Attendance] Failed to open new tab: ${err.message}`);
+        return [];
+    }
     try {
         console.log(`[Attendance] Fetching attendance for ${config.name}...`);
         await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
@@ -3805,7 +3949,9 @@ async function fetchAttendance(context, config) {
         console.error(`[Attendance] Error fetching for ${config.name}:`, err.message);
         throw err;
     } finally {
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -3856,7 +4002,13 @@ function formatAttendance(data, userName) {
 // ─── Bunk Calculator ──────────────────────────────────────────────────────────
 
 async function fetchBunkStatsForSubject(context, config, targetSubject, subjectSummary = null, odCount = 0) {
-    const page = await context.newPage();
+    let page;
+    try {
+        page = await context.newPage();
+    } catch (err) {
+        console.error(`[Bunk] Failed to open new tab: ${err.message}`);
+        return null;
+    }
     try {
         console.log(`[Bunk] Fetching bunk stats for: ${targetSubject}...`);
         await page.goto('https://learner.saveetha.in/academics/studentsubjects/', {
@@ -4040,7 +4192,9 @@ async function fetchBunkStatsForSubject(context, config, targetSubject, subjectS
         console.error(`[Bunk] Error for ${config.name}:`, err.message);
         throw err;
     } finally {
-        await page.close().catch(() => { });
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
     }
 }
 
@@ -4193,8 +4347,9 @@ function startTimetableSchedulers(userSessions) {
 
 async function spawnUserSession(browser, chatId, config) {
     try {
+        const activeBrowser = (browser && browser.isConnected()) ? browser : await ensureBrowser();
         console.log(`[Bot] Spawning session for ${config.name} (${chatId})...`);
-        const userContext = await browser.newContext();
+        const userContext = await activeBrowser.newContext();
         const hotPage = await userContext.newPage();
 
         await doLogin(hotPage, config.user, config.pass);
@@ -4372,7 +4527,19 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
 
         state.isScanning = true;
         console.log('[Hostel Scan] Checking hostel attendance status in portal (30s interval)...');
-        const page = await session.context.newPage();
+        if (!isSessionAlive(session)) {
+            console.warn('[Hostel Scan] Session not alive, skipping scan iteration.');
+            state.isScanning = false;
+            return false;
+        }
+        let page;
+        try {
+            page = await session.context.newPage();
+        } catch (err) {
+            console.error('[Hostel Scan] Could not open new page:', err.message);
+            state.isScanning = false;
+            return false;
+        }
         try {
             await page.goto('https://learner.saveetha.in/academics/people_schedule/', { waitUntil: 'domcontentloaded', timeout: 60000 });
             if (page.url().includes('/login')) {
@@ -4507,7 +4674,9 @@ async function startHostelAttendanceWorkflow(session, slot, chatId) {
             return false;
         } finally {
             state.isScanning = false;
-            await page.close().catch(() => { });
+            if (page && !page.isClosed()) {
+                await page.close().catch(() => { });
+            }
         }
     };
 
@@ -4942,15 +5111,12 @@ async function main() {
         process.exit(1);
     }
 
-    // Launch browser ONCE and keep it alive
+    // Launch browser and keep it alive (with auto-reconnect)
     console.log('[Bot] Launching multi-user browser...');
-    const browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-    });
+    const browser = await ensureBrowser();
 
-    // Initialize global API request context to bypass Node's fetch blocks
-    apiRequest = await browser.newContext().then(ctx => ctx.request);
+    // Initialize standalone API request context (independent of browser)
+    apiRequest = await request.newContext().catch(() => null);
 
     // Pre-login each user and keep a "Hot Tab" ready on the booking page
     await initAccounts();
@@ -5125,9 +5291,15 @@ async function main() {
 
     async function getOrSpawnSession(chatId, config) {
         let session = USER_SESSIONS.get(chatId);
-        if (!session) {
-            await sendTelegram(`⏳ Your session was not found (bot may have restarted). Attempting to log you in now, please wait...`, chatId);
-            const success = await spawnUserSession(browser, chatId, config);
+        if (!isSessionAlive(session)) {
+            if (session) {
+                console.warn(`[Bot] Session for ${chatId} was closed or disconnected. Cleaning up...`);
+                try { await session.context.close().catch(() => {}); } catch (_) {}
+                USER_SESSIONS.delete(chatId);
+            }
+            await sendTelegram(`⏳ Your session was not found (or browser reconnected). Attempting to log you in now, please wait...`, chatId);
+            const activeBrowser = await ensureBrowser();
+            const success = await spawnUserSession(activeBrowser, chatId, config);
             if (success) {
                 session = USER_SESSIONS.get(chatId);
                 await sendTelegram(`✅ Session successfully initialized! Please send your command again if needed.`, chatId);
@@ -6123,7 +6295,9 @@ JSON Schema:
                     if (!session) continue;
                     const kw = text.split(' ').slice(1).join(' ').trim();
                     await sendTelegram(`🔍 Checking attendance status for *${kw || 'current class'}*...`, fromChatId);
-                    checkAttendanceStatus(session, kw, fromChatId);
+                    checkAttendanceStatus(session, kw, fromChatId).catch(err => {
+                        console.error('[Bot] checkAttendanceStatus unhandled error:', err.message);
+                    });
                     continue;
                 }
 
@@ -6143,7 +6317,9 @@ JSON Schema:
                     } else {
                         await sendTelegram(`🔍 Checking & scanning *${phase === 'start' ? 'IN' : 'OUT'} OTP* for *${kw || 'current class'}*...`, fromChatId);
                     }
-                    handleAttendanceOtp(session, kw, phase, fromChatId, directOtp);
+                    handleAttendanceOtp(session, kw, phase, fromChatId, directOtp).catch(err => {
+                        console.error('[Bot] handleAttendanceOtp unhandled error:', err.message);
+                    });
                     continue;
                 }
 
@@ -6762,9 +6938,14 @@ JSON Schema:
 
             // Get user's pre-authenticated session
             let session = USER_SESSIONS.get(fromChatId);
-            if (!session) {
+            if (!isSessionAlive(session)) {
+                if (session) {
+                    try { await session.context.close().catch(() => {}); } catch (_) {}
+                    USER_SESSIONS.delete(fromChatId);
+                }
                 await sendTelegram(`⏳ Your session was not found (bot may have restarted). Attempting to log you in now, please wait...`, fromChatId);
-                const success = await spawnUserSession(browser, fromChatId, userConfig);
+                const activeBrowser = await ensureBrowser();
+                const success = await spawnUserSession(activeBrowser, fromChatId, userConfig);
                 if (!success) {
                     await sendTelegram(`❌ Failed to initialize session. The portal might be down. Please try again later.`, fromChatId);
                     return;
@@ -6772,16 +6953,22 @@ JSON Schema:
                 session = USER_SESSIONS.get(fromChatId);
             }
 
-            // Use the "Hot Tab" if it's not busy, otherwise open a temporary one
+            // Use the "Hot Tab" if it's not busy and still open, otherwise open a temporary one
             let isUsingPersistent = false;
-            if (!session.isBusy) {
+            if (!session.isBusy && session.persistentPage && !session.persistentPage.isClosed()) {
                 taskPage = session.persistentPage;
                 session.isBusy = true;
                 isUsingPersistent = true;
                 console.log(`[Bot] Using Hot Tab for ${userConfig.name}`);
             } else {
-                taskPage = await session.context.newPage();
-                console.log(`[Bot] Hot Tab busy, opened temp tab for ${userConfig.name}`);
+                try {
+                    taskPage = await session.context.newPage();
+                    console.log(`[Bot] Hot Tab busy or closed, opened temp tab for ${userConfig.name}`);
+                } catch (newPageErr) {
+                    console.error(`[Bot] Failed to create new page for task:`, newPageErr.message);
+                    await sendTelegram(`⚠️ Failed to open browser tab for task: ${newPageErr.message}`, fromChatId);
+                    return;
+                }
             }
 
             taskPage._userConfig = userConfig;
