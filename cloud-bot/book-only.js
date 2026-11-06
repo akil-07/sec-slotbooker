@@ -6161,9 +6161,12 @@ JSON Schema:
                             // Immediately log them in if authorized
                             if (ACCOUNTS[targetId] && !USER_SESSIONS.has(targetId)) {
                                 await sendTelegram(`⏳ Spawning session for \`${targetId}\`...`, fromChatId);
-                                spawnUserSession(browser, targetId, ACCOUNTS[targetId]).then(success => {
+                                const activeBrowser = await ensureBrowser();
+                                spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
                                     if (success) sendTelegram(`✅ Session ready for \`${targetId}\`.`, fromChatId);
                                     else sendTelegram(`❌ Failed to start session for \`${targetId}\`.`, fromChatId);
+                                }).catch(err => {
+                                    console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
                                 });
                             }
                         } else {
@@ -6172,32 +6175,67 @@ JSON Schema:
                         continue;
                     }
 
-                    if (text.startsWith('!adduser ')) {
-                        const parts = text.split(' ');
+                    if (text.startsWith('!adduser')) {
+                        const parts = text.trim().split(/\s+/);
                         if (parts.length < 4) {
                             await sendTelegram('Usage: `!adduser <chat_id> <saveetha_user> <saveetha_pass> [name]`', fromChatId);
-                        } else {
-                            const targetChatId = parts[1];
-                            const targetUser = parts[2];
-                            const targetPass = parts[3];
-                            const targetName = parts.length > 4 ? parts.slice(4).join(' ') : `User ${targetUser}`;
-                            ACCOUNTS[targetChatId] = { user: targetUser, pass: targetPass, name: targetName };
-                            await syncAccountsToGist();
-                            await sendTelegram(`✅ Added user ${targetUser} (Name: ${targetName}) with Chat ID ${targetChatId} and saved to Gist.`, fromChatId);
+                            continue;
+                        }
+                        let targetChatId = parts[1];
+                        let targetUser = parts[2];
+                        let targetPass = parts[3];
+                        let targetName = parts.length > 4 ? parts.slice(4).join(' ') : null;
 
-                            if (!USER_SESSIONS.has(targetChatId) && !blockedUsers.has(targetChatId)) {
-                                await sendTelegram(`⏳ Spawning session for \`${targetChatId}\`...`, fromChatId);
-                                spawnUserSession(browser, targetChatId, ACCOUNTS[targetChatId]).then(success => {
-                                    if (success) sendTelegram(`✅ Session ready for \`${targetChatId}\`.`, fromChatId);
-                                    else sendTelegram(`❌ Failed to start session for \`${targetChatId}\`.`, fromChatId);
-                                });
-                            }
+                        // Smart Auto-Detection:
+                        // Saveetha roll numbers are 8 digits starting with 2 (e.g. 25011374, 25018612)
+                        // Telegram chat IDs are 9-11 digits (e.g. 8828206606, 8581009274, 1491274412)
+                        // If user sent: !adduser <roll_number> <pass> <chat_id>
+                        if (/^2[0-9]{7}$/.test(targetChatId) && /^[0-9]{9,11}$/.test(targetPass)) {
+                            const actualUser = targetChatId;
+                            const actualPass = targetUser;
+                            const actualChatId = targetPass;
+                            targetUser = actualUser;
+                            targetPass = actualPass;
+                            targetChatId = actualChatId;
+                        } else if (/^2[0-9]{7}$/.test(targetChatId) && /^[0-9]{9,11}$/.test(targetUser)) {
+                            // If user sent: !adduser <roll_number> <chat_id> <pass>
+                            const actualUser = targetChatId;
+                            const actualChatId = targetUser;
+                            targetUser = actualUser;
+                            targetChatId = actualChatId;
+                        }
+
+                        if (!targetChatId || !targetUser || !targetPass) {
+                            await sendTelegram('❌ Invalid arguments! Chat ID, username, and password cannot be empty.\nUsage: `!adduser <chat_id> <saveetha_user> <saveetha_pass> [name]`', fromChatId);
+                            continue;
+                        }
+
+                        if (!targetName) targetName = `User ${targetUser}`;
+
+                        ACCOUNTS[targetChatId] = { user: targetUser, pass: targetPass, name: targetName };
+                        // If user was previously marked blocked, unblock them
+                        if (blockedUsers.has(targetChatId)) {
+                            blockedUsers.delete(targetChatId);
+                            saveBlockedUsers();
+                        }
+                        await syncAccountsToGist();
+                        await sendTelegram(`✅ Added user *${targetUser}* (Name: *${targetName}*) with Chat ID \`${targetChatId}\` and saved to Gist.`, fromChatId);
+
+                        if (!USER_SESSIONS.has(targetChatId) && !blockedUsers.has(targetChatId)) {
+                            await sendTelegram(`⏳ Spawning session for \`${targetChatId}\`...`, fromChatId);
+                            const activeBrowser = await ensureBrowser();
+                            spawnUserSession(activeBrowser, targetChatId, ACCOUNTS[targetChatId]).then(success => {
+                                if (success) sendTelegram(`✅ Session ready for \`${targetChatId}\`.`, fromChatId);
+                                else sendTelegram(`❌ Failed to start session for \`${targetChatId}\`.`, fromChatId);
+                            }).catch(err => {
+                                console.error(`[Bot] spawnUserSession unhandled error for ${targetChatId}:`, err.message);
+                            });
                         }
                         continue;
                     }
 
-                    if (text.startsWith('!setname ')) {
-                        const parts = text.split(' ');
+                    if (text.startsWith('!setname')) {
+                        const parts = text.trim().split(/\s+/);
                         if (parts.length < 3) {
                             await sendTelegram('Usage: `!setname <chat_id> <new_name>`', fromChatId);
                         } else {
@@ -6206,9 +6244,9 @@ JSON Schema:
                             if (ACCOUNTS[targetChatId]) {
                                 ACCOUNTS[targetChatId].name = targetName;
                                 await syncAccountsToGist();
-                                await sendTelegram(`✅ Updated name for Chat ID ${targetChatId} to: ${targetName}`, fromChatId);
+                                await sendTelegram(`✅ Updated name for Chat ID \`${targetChatId}\` to: *${targetName}*`, fromChatId);
                             } else {
-                                await sendTelegram(`⚠️ User with Chat ID ${targetChatId} not found.`, fromChatId);
+                                await sendTelegram(`⚠️ User with Chat ID \`${targetChatId}\` not found.`, fromChatId);
                             }
                         }
                         continue;
@@ -6293,7 +6331,7 @@ JSON Schema:
                     }
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
-                    const kw = text.split(' ').slice(1).join(' ').trim();
+                    const kw = text.trim().split(/\s+/).slice(1).join(' ').trim();
                     await sendTelegram(`🔍 Checking attendance status for *${kw || 'current class'}*...`, fromChatId);
                     checkAttendanceStatus(session, kw, fromChatId).catch(err => {
                         console.error('[Bot] checkAttendanceStatus unhandled error:', err.message);
@@ -6308,7 +6346,7 @@ JSON Schema:
                     }
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
-                    const parts = text.split(' ').slice(1);
+                    const parts = text.trim().split(/\s+/).slice(1);
                     const phase = text.includes('out') ? 'end' : 'start';
                     const directOtp = parts.find(p => /^\d{6}$/.test(p)) || null;
                     const kw = parts.filter(p => !['in', 'out'].includes(p.toLowerCase()) && !/^\d{6}$/.test(p)).join(' ').trim();
@@ -6611,7 +6649,7 @@ JSON Schema:
                 if (text.startsWith('!workflow') || text.startsWith('!requests')) {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
-                    const args = text.split(' ').slice(1).join(' ').trim();
+                    const args = text.trim().split(/\s+/).slice(1).join(' ').trim();
                     await sendTelegram(`⏳ Fetching your workflow requests, please wait...`, fromChatId);
                     try {
                         const msg = await fetchWorkflowRequests(session.context, session.config, args);
