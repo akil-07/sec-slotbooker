@@ -1261,6 +1261,92 @@ Keep formatting clean with bullet points and emojis. Do NOT wrap in markdown cod
     }
 }
 
+async function analyzeScreenshotWithAI(screenshotPath, issueDesc, contextInfo = {}) {
+    if (!screenshotPath || !fs.existsSync(screenshotPath)) return null;
+    let imgBuf;
+    try {
+        imgBuf = fs.readFileSync(screenshotPath);
+    } catch (_) {
+        return null;
+    }
+    const base64 = imgBuf.toString('base64');
+
+    const prompt = `You are an expert diagnostic AI for Saveetha University Student Portal ("Learner" / accounts.saveetha.in / learner.saveetha.in).
+A student or admin encountered an error and triggered an automated diagnostic report.
+
+Context:
+- Student Name: ${contextInfo.userName || 'Unknown'}
+- Roll Number: ${contextInfo.rollNo || 'Unknown'}
+- Page URL: ${contextInfo.url || 'Unknown'}
+- Page Title: ${contextInfo.title || 'Unknown'}
+- Last Command: ${contextInfo.lastCommand || 'None'}
+- Last Bot Error: ${contextInfo.lastError || 'None'}
+- User Reported Note: "${issueDesc || 'None'}"
+
+Inspect the screenshot carefully and provide a concise, high-accuracy diagnosis formatted for Telegram Markdown:
+1. 🔍 *Visual Screen State*: What is shown on screen? (e.g. Saveetha Change Password page, 503 Service Unavailable, Cloudflare challenge, 404 Not Found, Invalid credentials banner, Timetable, etc.)
+2. ⚠️ *Root Cause*: Why did this occur?
+3. 🛠️ *Actionable Fix*:
+   - If password change needed: specify command \`!changepass <new_password>\` or portal change with \`!setpass <new_password>\`.
+   - If session disconnected: advise running \`!login\` or \`!fix\`.
+   - If Saveetha server is down/503: clarify that Saveetha University portal is temporarily unresponsive.
+   - For Admin: mention \`!fixuser <id>\` if applicable.
+
+Keep it concise (3-4 bullet points). Do NOT wrap your whole response in markdown code blocks.`;
+
+    let diagnosis = null;
+    if (aiClient) {
+        try {
+            diagnosis = await callGemini([
+                {
+                    role: 'user',
+                    parts: [
+                        { inlineData: { mimeType: 'image/png', data: base64 } },
+                        { text: prompt }
+                    ]
+                }
+            ]);
+        } catch (e) {
+            console.warn(`[Diagnostic AI] Gemini vision failed: ${e.message}`);
+        }
+    }
+
+    if (!diagnosis && GROK_API_KEY) {
+        try {
+            const res = await fetch('https://api.x.ai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${GROK_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'grok-2-vision-1212',
+                    messages: [
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: prompt },
+                                { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } }
+                            ]
+                        }
+                    ],
+                    temperature: 0.2
+                })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data && data.choices && data.choices[0] && data.choices[0].message) {
+                    diagnosis = data.choices[0].message.content;
+                }
+            }
+        } catch (e) {
+            console.warn(`[Diagnostic AI] Grok vision failed: ${e.message}`);
+        }
+    }
+
+    return diagnosis;
+}
+
 async function getTelegramUpdates(offset) {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&offset=${offset}`;
     try {
@@ -6497,7 +6583,7 @@ JSON Schema:
 
                 // ── !setpass (Available to all registered users) ────────────
                 if (text.startsWith('!setpass')) {
-                    const parts = text.trim().split(/\s+/);
+                    const parts = rawText.trim().split(/\s+/);
                     if (parts.length < 2) {
                         await sendTelegram('Usage:\n• `!setpass <new_password>` (update your own password)\n• `!setpass <chat_id_or_user> <new_password>` (admin)', fromChatId);
                         continue;
@@ -6543,18 +6629,20 @@ JSON Schema:
                         USER_SESSIONS.delete(targetId);
                     }
                     const activeBrowser = await ensureBrowser();
-                    spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
-                        if (success) sendTelegram(`✅ Session successfully logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
-                        else sendTelegram(`❌ Login still failed with the new password for *${ACCOUNTS[targetId].name}*. Please check credentials.`, fromChatId);
-                    }).catch(err => {
+                    try {
+                        const success = await spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]);
+                        if (success) await sendTelegram(`✅ Session successfully logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
+                        else await sendTelegram(`❌ Login still failed with the new password for *${ACCOUNTS[targetId].name}*. Please check credentials.`, fromChatId);
+                    } catch (err) {
                         console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
-                    });
+                        await sendTelegram(`⚠️ Session start encountered an error: ${err.message}`, fromChatId);
+                    }
                     continue;
                 }
 
                 // ── !changepass (Available to all registered users) ─────────
                 if (text.startsWith('!changepass')) {
-                    const parts = text.trim().split(/\s+/);
+                    const parts = rawText.trim().split(/\s+/);
                     if (parts.length < 2) {
                         await sendTelegram('Usage:\n• `!changepass <new_password>` (change for yourself)\n• `!changepass <chat_id_or_user> <new_password>` (admin)\n\n_Note: New password must have at least 8 characters with letters & numbers._', fromChatId);
                         continue;
@@ -6606,12 +6694,14 @@ JSON Schema:
                             USER_SESSIONS.delete(targetId);
                         }
                         const activeBrowser = await ensureBrowser();
-                        spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
-                            if (success) sendTelegram(`✅ Session ready and logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
-                            else sendTelegram(`⚠️ Password changed on portal and saved to Gist, but session spawn failed. Try !login in a moment.`, fromChatId);
-                        }).catch(err => {
+                        try {
+                            const success = await spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]);
+                            if (success) await sendTelegram(`✅ Session ready and logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
+                            else await sendTelegram(`⚠️ Password changed on portal and saved to Gist, but session spawn failed. Try !login in a moment.`, fromChatId);
+                        } catch (err) {
                             console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
-                        });
+                            await sendTelegram(`⚠️ Password changed on portal and saved to Gist, but session spawn failed. Try !login in a moment.`, fromChatId);
+                        }
                     } catch (err) {
                         await sendTelegram(`❌ Password change failed: ${err.message}`, fromChatId);
                     }
@@ -6654,29 +6744,47 @@ JSON Schema:
                     let pageTitle = 'None';
                     let screenshotPath = null;
 
-                    // Check if user has an active page to screenshot
-                    if (session && session.persistentPage && !session.persistentPage.isClosed()) {
+                    // If user uploaded a screenshot directly with the command
+                    if (hasPhoto) {
                         try {
-                            pageUrl = session.persistentPage.url();
-                            pageTitle = await session.persistentPage.title().catch(() => 'Unknown');
-                            screenshotPath = path.join(__dirname, `report_${fromChatId}_${Date.now()}.png`);
-                            await session.persistentPage.screenshot({ path: screenshotPath, fullPage: false }).catch(() => null);
-                        } catch (_) { }
-                    } else {
-                        // Open a quick diagnostic page to capture portal state
-                        try {
-                            const activeBrowser = await ensureBrowser();
-                            const diagPage = await activeBrowser.newPage();
-                            try {
-                                await diagPage.goto('https://learner.saveetha.in/', { waitUntil: 'domcontentloaded', timeout: 15000 });
-                                pageUrl = diagPage.url();
-                                pageTitle = await diagPage.title();
-                                screenshotPath = path.join(__dirname, `report_${fromChatId}_${Date.now()}.png`);
-                                await diagPage.screenshot({ path: screenshotPath }).catch(() => null);
-                            } finally {
-                                await diagPage.close().catch(() => { });
+                            const fileId = msg.photo[msg.photo.length - 1].file_id;
+                            const photoFileUrl = await getTelegramFileUrl(fileId);
+                            if (photoFileUrl) {
+                                const photoRes = await fetch(photoFileUrl);
+                                const photoBuf = Buffer.from(await photoRes.arrayBuffer());
+                                screenshotPath = path.join(__dirname, `report_user_${fromChatId}_${Date.now()}.png`);
+                                fs.writeFileSync(screenshotPath, photoBuf);
                             }
-                        } catch (_) { }
+                        } catch (e) {
+                            console.warn('[Report] Failed to download uploaded photo:', e.message);
+                        }
+                    }
+
+                    // Otherwise capture from active portal page
+                    if (!screenshotPath) {
+                        if (session && session.persistentPage && !session.persistentPage.isClosed()) {
+                            try {
+                                pageUrl = session.persistentPage.url();
+                                pageTitle = await session.persistentPage.title().catch(() => 'Unknown');
+                                screenshotPath = path.join(__dirname, `report_${fromChatId}_${Date.now()}.png`);
+                                await session.persistentPage.screenshot({ path: screenshotPath, fullPage: false }).catch(() => null);
+                            } catch (_) { }
+                        } else {
+                            // Open a quick diagnostic page to capture portal state
+                            try {
+                                const activeBrowser = await ensureBrowser();
+                                const diagPage = await activeBrowser.newPage();
+                                try {
+                                    await diagPage.goto('https://learner.saveetha.in/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+                                    pageUrl = diagPage.url();
+                                    pageTitle = await diagPage.title();
+                                    screenshotPath = path.join(__dirname, `report_${fromChatId}_${Date.now()}.png`);
+                                    await diagPage.screenshot({ path: screenshotPath }).catch(() => null);
+                                } finally {
+                                    await diagPage.close().catch(() => { });
+                                }
+                            } catch (_) { }
+                        }
                     }
 
                     const lastErr = lastUserErrors.get(fromChatId);
@@ -6693,16 +6801,38 @@ JSON Schema:
                         });
                     } catch (_) { }
 
-                    const reportMsg =
-                        `🚨 *NEW USER ISSUE REPORT*\n\n` +
+                    // AI Vision Diagnosis
+                    let aiDiagnosis = null;
+                    if (screenshotPath && fs.existsSync(screenshotPath)) {
+                        try {
+                            await sendTelegram(`🧠 Analyzing error screenshot with AI Vision...`, fromChatId);
+                            aiDiagnosis = await analyzeScreenshotWithAI(screenshotPath, issueDesc, {
+                                userName: config.name,
+                                rollNo: config.user,
+                                url: pageUrl,
+                                title: pageTitle,
+                                lastCommand: lastErr ? lastErr.command : 'None',
+                                lastError: lastErr ? lastErr.error : 'None'
+                            });
+                        } catch (e) {
+                            console.warn('[Report] analyzeScreenshotWithAI error:', e.message);
+                        }
+                    }
+
+                    let reportMsg =
+                        `🚨 *USER ISSUE & DIAGNOSTIC REPORT*\n\n` +
                         `👤 *User:* ${config.name} (\`${config.user}\`)\n` +
                         `🆔 *Chat ID:* \`${fromChatId}\`\n` +
                         `📝 *User Note:* "${issueDesc}"\n\n` +
                         `🌐 *Portal Status:* \`${portalPing}\`\n` +
                         `🔗 *Current URL:* ${pageUrl}\n` +
                         `📑 *Page Title:* ${pageTitle}\n` +
-                        `⚠️ *Last Bot Error:*\n${lastErrText}\n\n` +
-                        `🛠️ *Quick Admin Fix:* \`!fixuser ${fromChatId}\``;
+                        `⚠️ *Last Bot Error:*\n${lastErrText}\n\n`;
+
+                    if (aiDiagnosis) {
+                        reportMsg += `🧠 *AI Vision Analysis:*\n${aiDiagnosis}\n\n`;
+                    }
+                    reportMsg += `🛠️ *Quick Admin Fix:* \`!fixuser ${fromChatId}\``;
 
                     // Send to admin
                     const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id] && ACCOUNTS[id].user === '25013635');
@@ -6724,13 +6854,13 @@ JSON Schema:
                         try { fs.unlinkSync(screenshotPath); } catch (_) { }
                     }
 
-                    await sendTelegram(
-                        `✅ *Your Error Report has been sent to the Admin!*\n\n` +
-                        `Diagnostics and a portal screenshot have been forwarded to our team.\n\n` +
-                        `💡 *Want to auto-fix now?*\n` +
-                        `Send \`!fix\` to automatically rebuild your browser session and restart connections!`,
-                        fromChatId
-                    );
+                    let userMsg = `✅ *Your Error Report has been analyzed and sent to Admin!*\n\n`;
+                    if (aiDiagnosis) {
+                        userMsg += `🧠 *AI Vision Diagnosis:*\n${aiDiagnosis}\n\n`;
+                    }
+                    userMsg += `💡 *Want to auto-fix now?*\nSend \`!fix\` to automatically rebuild your browser session and restart connections!`;
+
+                    await sendTelegram(userMsg, fromChatId);
                     continue;
                 }
                 if (text.startsWith('!timetable') || text.startsWith('!tt')) {
