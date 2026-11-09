@@ -42,6 +42,16 @@ const pendingOtpRequests = new Map(); // chatId -> callback function
 const pendingTimeConfirmations = new Map();
 const pendingLeaveConfirmations = new Map(); // chatId -> { params, unusualTime, isTooEarly }
 const passwordResetPendingUsers = new Set(); // Users waiting for password reset, do not retry automatically
+const lastUserErrors = new Map(); // chatId -> { time, command, error }
+
+function recordUserError(chatId, command, errorMsg) {
+    if (!chatId) return;
+    lastUserErrors.set(String(chatId), {
+        time: new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata' }),
+        command: command || 'general',
+        error: String(errorMsg || 'Unknown error').substring(0, 300)
+    });
+}
 
 async function getApiRequest() {
     if (!apiRequest) {
@@ -4484,6 +4494,88 @@ async function spawnUserSession(browser, chatId, config) {
                 );
             }
         }
+        recordUserError(chatId, 'spawnUserSession', err.message);
+        return false;
+    }
+}
+
+async function autoRepairSession(chatId, requesterChatId = chatId) {
+    const config = ACCOUNTS[chatId];
+    if (!config) {
+        await sendTelegram(`⚠️ No account found for Chat ID \`${chatId}\`.`, requesterChatId);
+        return false;
+    }
+
+    await sendTelegram(`🔧 *Starting Auto-Repair Diagnostics for ${config.name} (${config.user})...*\n\n1️⃣ Testing Saveetha portal reachability...`, requesterChatId);
+
+    // Step 1: Connectivity check
+    const https = require('https');
+    let portalStatus = 'Unknown';
+    try {
+        portalStatus = await new Promise((resolve) => {
+            const req = https.get('https://learner.saveetha.in/', { timeout: 8000 }, (res) => {
+                resolve(`${res.statusCode} ${res.statusMessage || ''}`);
+            });
+            req.on('error', (e) => resolve(`Failed (${e.message})`));
+            req.on('timeout', () => { req.destroy(); resolve('Timeout'); });
+        });
+    } catch (_) { }
+
+    const isPortalUp = portalStatus.startsWith('200') || portalStatus.startsWith('302');
+    if (!isPortalUp) {
+        await sendTelegram(`⚠️ *Saveetha Portal Reachability Warning* (Status: \`${portalStatus}\`)\nThe college server may be experiencing downtime or maintenance. Attempting repair anyway...`, requesterChatId);
+    }
+
+    // Step 2: Clean up any old context
+    await sendTelegram(`2️⃣ Purging stale browser session & clearing cached cookies...`, requesterChatId);
+    if (USER_SESSIONS.has(chatId)) {
+        const oldSession = USER_SESSIONS.get(chatId);
+        try { if (oldSession.persistentPage) await oldSession.persistentPage.close().catch(() => {}); } catch (_) {}
+        try { if (oldSession.context) await oldSession.context.close().catch(() => {}); } catch (_) {}
+        USER_SESSIONS.delete(chatId);
+    }
+    passwordResetPendingUsers.delete(chatId);
+
+    // Step 3: Launch fresh browser & authenticate
+    await sendTelegram(`3️⃣ Launching clean session & authenticating with Saveetha SSO...`, requesterChatId);
+    try {
+        const activeBrowser = await ensureBrowser();
+        const success = await spawnUserSession(activeBrowser, chatId, config);
+
+        if (success) {
+            await sendTelegram(
+                `🎉 *Auto-Repair Complete & Verified!* ✅\n\n` +
+                `• Portal Network: 🟢 ${portalStatus}\n` +
+                `• Credentials: 🟢 Verified (*${config.user}*)\n` +
+                `• Hot Tab: 🟢 Online on Booking Page\n` +
+                `• Schedulers: 🟢 Timetable & Reminders Active\n\n` +
+                `Your session is completely refreshed and 100% ready to book! 🚀`,
+                requesterChatId
+            );
+            return true;
+        } else {
+            if (passwordResetPendingUsers.has(chatId)) {
+                await sendTelegram(
+                    `🔐 *Auto-Repair Halted: Password Change Required!*\n\n` +
+                    `Saveetha has placed *${config.name}* on mandatory password reset.\n` +
+                    `👉 To fix:\n` +
+                    `• Send \`!changepass <new_password>\` to let the bot change it and save to Gist\n` +
+                    `• Or change it on https://accounts.saveetha.in and send \`!setpass <new_password>\``,
+                    requesterChatId
+                );
+            } else {
+                await sendTelegram(
+                    `❌ *Auto-Repair could not authenticate with current credentials.*\n\n` +
+                    `Please check your password. If it was recently updated, send:\n` +
+                    `\`!setpass <new_password>\` to save the new password in Gist and retry.`,
+                    requesterChatId
+                );
+            }
+            return false;
+        }
+    } catch (err) {
+        recordUserError(chatId, '!fix', err.message);
+        await sendTelegram(`❌ Auto-repair encountered an error: ${err.message}`, requesterChatId);
         return false;
     }
 }
@@ -5931,6 +6023,10 @@ JSON Schema:
                                 continue;
                             } else if (aiData.action === 'stopcall') {
                                 text = '!stopcall';
+                            } else if (aiData.action === 'fix' || aiData.action === 'repair') {
+                                text = '!fix';
+                            } else if (aiData.action === 'report' || aiData.action === 'bug') {
+                                text = '!report ' + (aiData.issue || aiData.keyword || '');
                             } else if (aiData.action === 'help') {
                                 text = '!help';
                             } else {
@@ -6030,6 +6126,9 @@ JSON Schema:
                         `\`!callreminders\` — View active class call reminder\n\n` +
                         `*System Commands:*\n` +
                         `\`!status\` — Check if bot is alive\n` +
+                        `\`!login\` — Refresh & verify your portal login\n` +
+                        `\`!fix\` — 🔧 Auto-repair & rebuild your session\n` +
+                        `\`!report [issue]\` — 🚨 Report a bug with screenshot to admin\n` +
                         `\`!progress\` — View active background tasks\n` +
                         `\`!stop <keyword>\` — Stop your specific task\n` +
                         `\`!stop all\` — Stop all your tasks\n`;
@@ -6037,6 +6136,7 @@ JSON Schema:
                     if (fromChatId === ADMIN_CHAT_ID) {
                         helpMsg += `\n*👑 Admin Commands:*\n` +
                             `\`!listusers\` — Show all users\n` +
+                            `\`!fixuser <chatId>\` — 🔧 Remotely auto-repair any user's session\n` +
                             `\`!allprogress\` — View all active tasks from all users\n` +
                             `\`!cleartasks\` — Wipe all stuck tasks instantly\n` +
                             `\`!stopuser <chatId> [keyword]\` — Stop all/specific tasks for a user\n` +
@@ -6281,6 +6381,19 @@ JSON Schema:
                         continue;
                     }
 
+                    if (text.startsWith('!fixuser ')) {
+                        const target = text.substring(9).trim();
+                        const foundId = Object.keys(ACCOUNTS).find(id => id === target || ACCOUNTS[id].user === target);
+                        const targetChatId = foundId || target;
+                        if (!ACCOUNTS[targetChatId]) {
+                            await sendTelegram(`⚠️ User \`${target}\` not found in registered accounts.`, fromChatId);
+                            continue;
+                        }
+                        await sendTelegram(`⏳ Admin requested auto-repair for *${ACCOUNTS[targetChatId].name}* (\`${targetChatId}\`)...`, fromChatId);
+                        await autoRepairSession(targetChatId, fromChatId);
+                        continue;
+                    }
+
                     if (text.startsWith('!adduser')) {
                         const parts = text.trim().split(/\s+/);
                         if (parts.length < 4) {
@@ -6521,6 +6634,103 @@ JSON Schema:
                     } else if (!passwordResetPendingUsers.has(fromChatId)) {
                         await sendTelegram(`❌ Login failed. If you changed your password on the portal, send:\n\`!setpass <new_password>\` to save it in Gist and retry.`, fromChatId);
                     }
+                    continue;
+                }
+
+                // ── !fix / !autorepair / !repair ───────────────────────────
+                if (text === '!fix' || text === '!autorepair' || text === '!repair') {
+                    await autoRepairSession(fromChatId, fromChatId);
+                    continue;
+                }
+
+                // ── !report / !bug / !issue ────────────────────────────────
+                if (text.startsWith('!report') || text.startsWith('!bug') || text.startsWith('!issue')) {
+                    const issueDesc = rawText.replace(/^!(report|bug|issue)\s*/i, '').trim() || 'No description provided';
+                    await sendTelegram(`⏳ Generating diagnostic error report and capturing a screenshot...`, fromChatId);
+
+                    const config = userConfig || { name: 'Unknown', user: 'Unknown' };
+                    const session = USER_SESSIONS.get(fromChatId);
+                    let pageUrl = 'No active page';
+                    let pageTitle = 'None';
+                    let screenshotPath = null;
+
+                    // Check if user has an active page to screenshot
+                    if (session && session.persistentPage && !session.persistentPage.isClosed()) {
+                        try {
+                            pageUrl = session.persistentPage.url();
+                            pageTitle = await session.persistentPage.title().catch(() => 'Unknown');
+                            screenshotPath = path.join(__dirname, `report_${fromChatId}_${Date.now()}.png`);
+                            await session.persistentPage.screenshot({ path: screenshotPath, fullPage: false }).catch(() => null);
+                        } catch (_) { }
+                    } else {
+                        // Open a quick diagnostic page to capture portal state
+                        try {
+                            const activeBrowser = await ensureBrowser();
+                            const diagPage = await activeBrowser.newPage();
+                            try {
+                                await diagPage.goto('https://learner.saveetha.in/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+                                pageUrl = diagPage.url();
+                                pageTitle = await diagPage.title();
+                                screenshotPath = path.join(__dirname, `report_${fromChatId}_${Date.now()}.png`);
+                                await diagPage.screenshot({ path: screenshotPath }).catch(() => null);
+                            } finally {
+                                await diagPage.close().catch(() => { });
+                            }
+                        } catch (_) { }
+                    }
+
+                    const lastErr = lastUserErrors.get(fromChatId);
+                    const lastErrText = lastErr ? `\`${lastErr.command}\` at ${lastErr.time}:\n  ${lastErr.error}` : 'None recorded';
+
+                    // Ping Saveetha
+                    const https = require('https');
+                    let portalPing = 'Unknown';
+                    try {
+                        portalPing = await new Promise(res => {
+                            const r = https.get('https://learner.saveetha.in/', { timeout: 5000 }, resp => res(`${resp.statusCode} ${resp.statusMessage || ''}`));
+                            r.on('error', e => res(e.message));
+                            r.on('timeout', () => { r.destroy(); res('Timeout'); });
+                        });
+                    } catch (_) { }
+
+                    const reportMsg =
+                        `🚨 *NEW USER ISSUE REPORT*\n\n` +
+                        `👤 *User:* ${config.name} (\`${config.user}\`)\n` +
+                        `🆔 *Chat ID:* \`${fromChatId}\`\n` +
+                        `📝 *User Note:* "${issueDesc}"\n\n` +
+                        `🌐 *Portal Status:* \`${portalPing}\`\n` +
+                        `🔗 *Current URL:* ${pageUrl}\n` +
+                        `📑 *Page Title:* ${pageTitle}\n` +
+                        `⚠️ *Last Bot Error:*\n${lastErrText}\n\n` +
+                        `🛠️ *Quick Admin Fix:* \`!fixuser ${fromChatId}\``;
+
+                    // Send to admin
+                    const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id] && ACCOUNTS[id].user === '25013635');
+                    const adminTargets = new Set([ADMIN_CHAT_ID, '8581009274', superAdminChatId].filter(Boolean));
+
+                    for (const adminId of adminTargets) {
+                        if (screenshotPath && fs.existsSync(screenshotPath)) {
+                            try {
+                                await sendTelegramPhoto(screenshotPath, reportMsg, adminId);
+                            } catch (_) {
+                                await sendTelegram(reportMsg, adminId);
+                            }
+                        } else {
+                            await sendTelegram(reportMsg, adminId);
+                        }
+                    }
+
+                    if (screenshotPath && fs.existsSync(screenshotPath)) {
+                        try { fs.unlinkSync(screenshotPath); } catch (_) { }
+                    }
+
+                    await sendTelegram(
+                        `✅ *Your Error Report has been sent to the Admin!*\n\n` +
+                        `Diagnostics and a portal screenshot have been forwarded to our team.\n\n` +
+                        `💡 *Want to auto-fix now?*\n` +
+                        `Send \`!fix\` to automatically rebuild your browser session and restart connections!`,
+                        fromChatId
+                    );
                     continue;
                 }
                 if (text.startsWith('!timetable') || text.startsWith('!tt')) {
