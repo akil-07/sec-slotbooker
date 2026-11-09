@@ -741,7 +741,6 @@ async function syncAccountsToGist() {
     try {
         const https = require('https');
         const dataToSync = Object.assign({}, ACCOUNTS);
-        if (CHAT_ID) delete dataToSync[CHAT_ID];
 
         const body = JSON.stringify({
             files: {
@@ -3018,14 +3017,15 @@ async function changeSaveethaPassword(user, oldPass, newPass) {
     const activeBrowser = await ensureBrowser();
     const page = await activeBrowser.newPage();
     try {
-        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto('https://learner.saveetha.in/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForSelector('#id_username', { timeout: 15000 });
         await page.fill('#id_username, input[name="username"]', String(user));
         await page.fill('input[type="password"]', String(oldPass));
         await page.click('button[type="submit"], input[type="submit"]');
         await page.waitForTimeout(4000);
 
         if (!page.url().includes('/change-password')) {
-            if (!page.url().includes('/login') && !page.url().includes('/authorize')) {
+            if (page.url().includes('learner.saveetha.in')) {
                 return { success: true, message: 'Password change was not requested; login succeeded directly.' };
             }
             const errOnPage = await page.evaluate(() => {
@@ -3040,7 +3040,7 @@ async function changeSaveethaPassword(user, oldPass, newPass) {
         await page.fill('#id_new_password1, input[name="new_password1"]', String(newPass));
         await page.fill('#id_new_password2, input[name="new_password2"]', String(newPass));
 
-        const updateBtn = page.locator('button:has-text("Update password"), input[type="submit"]').first();
+        const updateBtn = page.locator('button:has-text("Update password"), button[type="submit"], input[type="submit"]').first();
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null),
             updateBtn.click({ force: true })
@@ -3076,15 +3076,15 @@ async function doLogin(page, user, pass) {
     while (attempts < maxAttempts) {
         attempts++;
         try {
-            if (!page.url().includes('/login') && !page.url().includes('/authorize')) {
-                await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+            if (!page.url().includes('accounts.saveetha.in')) {
+                await page.goto('https://learner.saveetha.in/', { waitUntil: 'domcontentloaded', timeout: 60000 });
             }
 
             let pageTitle = (await page.title().catch(() => '')) || '';
             if (/50[234]|temporarily unavailable|gateway time/i.test(pageTitle)) {
                 console.warn(`[Login] Saveetha server error "${pageTitle}" (attempt ${attempts}/${maxAttempts}). Waiting 4s to retry...`);
                 await page.waitForTimeout(4000);
-                await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+                await page.goto('https://learner.saveetha.in/', { waitUntil: 'domcontentloaded', timeout: 60000 });
                 pageTitle = (await page.title().catch(() => '')) || '';
             }
 
@@ -3151,7 +3151,7 @@ async function doLogin(page, user, pass) {
 
             // Wait for SSO redirects to complete
             try {
-                await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
+                await page.waitForURL(url => !url.href.includes('accounts.saveetha.in'), { timeout: 15000 });
             } catch (e) {
                 // ignore timeout, we'll validate the URL next
             }
@@ -3167,7 +3167,7 @@ async function doLogin(page, user, pass) {
                 throw err;
             }
 
-            if (finalUrl.includes('/login') || finalUrl.includes('/authorize')) {
+            if (finalUrl.includes('accounts.saveetha.in')) {
                 const errorMsg = await page.evaluate(() => {
                     const el = document.querySelector('.alert-danger, .errorlist, .invalid-feedback, #error-message, .error, p.help-block-error');
                     return el ? el.innerText.trim() : '';
@@ -4437,8 +4437,8 @@ async function spawnUserSession(browser, chatId, config) {
             timeout: 60000
         });
 
-        // Verify Hot Tab actually reached portal and wasn't bounced to login or change-password
-        if (hotPage.url().includes('/login') || hotPage.url().includes('change-password')) {
+        // Verify Hot Tab actually reached portal and wasn't bounced to SSO login or change-password
+        if (hotPage.url().includes('accounts.saveetha.in')) {
             throw new Error(`Session redirected to ${hotPage.url()} (not authenticated)`);
         }
 
@@ -5219,12 +5219,10 @@ async function main() {
     // Filter out blocked users from the initial startup sequence
     const accountEntries = Object.entries(ACCOUNTS).filter(([chatId]) => !blockedUsers.has(chatId));
     accountEntries.forEach(([chatId, config]) => {
-        if (!config.name || config.name.startsWith('User ')) {
-            if (config.user === '25013635' || chatId === String(ADMIN_CHAT_ID) || chatId === String(CHAT_ID)) {
-                config.name = 'Akil S.';
-            } else {
-                config.name = `User ${config.user}`;
-            }
+        if (config.user === '25013635' || chatId === String(ADMIN_CHAT_ID) || chatId === String(CHAT_ID)) {
+            config.name = 'Akil S.';
+        } else if (!config.name || config.name === 'Akil S.' || config.name.startsWith('User ')) {
+            config.name = `User ${config.user}`;
         }
     });
 
