@@ -41,6 +41,7 @@ let superAdminNotificationsEnabled = true; // Added for super admin notification
 const pendingOtpRequests = new Map(); // chatId -> callback function
 const pendingTimeConfirmations = new Map();
 const pendingLeaveConfirmations = new Map(); // chatId -> { params, unusualTime, isTooEarly }
+const passwordResetPendingUsers = new Set(); // Users waiting for password reset, do not retry automatically
 
 async function getApiRequest() {
     if (!apiRequest) {
@@ -4465,16 +4466,23 @@ async function spawnUserSession(browser, chatId, config) {
     } catch (err) {
         console.error(`[Bot] Failed to spawn session for ${config.name} (${config.user}):`, err.message);
         if (err.code === 'PASSWORD_CHANGE_REQUIRED' || err.message.includes('mandatory password reset') || err.message.includes('change-password')) {
-            await sendTelegram(
-                `🔐 *Password Reset Required for ${config.name} (${config.user})*\n\n` +
-                `Saveetha University has enforced a mandatory password change on your account at \`accounts.saveetha.in\`.\n\n` +
-                `👉 *Options to resolve:*\n` +
-                `1. Log in to https://accounts.saveetha.in in your browser and set a new password, then send:\n` +
-                `   \`!setpass <new_password>\`\n` +
-                `2. Or tell the bot to change it for you right now:\n` +
-                `   \`!changepass <new_password>\``,
-                chatId
-            );
+            const isFirstNotice = !passwordResetPendingUsers.has(chatId);
+            passwordResetPendingUsers.add(chatId);
+            if (isFirstNotice) {
+                await sendTelegram(
+                    `🔐 *Password Reset Required for ${config.name} (${config.user})*\n\n` +
+                    `Saveetha University has enforced a mandatory password change on your account at \`accounts.saveetha.in\`.\n\n` +
+                    `👉 *How to resolve:*\n` +
+                    `1️⃣ *Option A — Bot changes it & saves to Gist (Fastest):*\n` +
+                    `   Send: \`!changepass <new_password>\`\n` +
+                    `   _(The bot will change it on Saveetha portal, save your new password in Gist, and start your session.)_\n\n` +
+                    `2️⃣ *Option B — You change it on the website:*\n` +
+                    `   Change your password at https://accounts.saveetha.in\n` +
+                    `   ⚠️ *CRITICAL:* Once changed, send \`!setpass <new_password>\` to save it in Gist so the bot can log you in!\n\n` +
+                    `_Note: New password must be at least 8 characters with letters & numbers._`,
+                    chatId
+                );
+            }
         }
         return false;
     }
@@ -5234,10 +5242,10 @@ async function main() {
             await spawnUserSession(browser, chatId, config);
         }));
 
-        // Retry failed logins up to 2 more times before declaring online
+        // Retry failed logins up to 2 more times before declaring online (skipping accounts waiting for password reset)
         const MAX_STARTUP_RETRIES = 2;
         for (let retry = 1; retry <= MAX_STARTUP_RETRIES; retry++) {
-            const failedAccounts = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId));
+            const failedAccounts = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId) && !blockedUsers.has(chatId) && !passwordResetPendingUsers.has(chatId));
             if (failedAccounts.length === 0) break;
             console.log(`[Bot] Retry ${retry}/${MAX_STARTUP_RETRIES}: ${failedAccounts.length} account(s) failed to login, retrying in 10s...`);
             await new Promise(r => setTimeout(r, 10000));
@@ -5275,9 +5283,9 @@ async function main() {
         }
     }, 600000); // Every 10 mins
 
-    // Background retry: keep trying to spawn any sessions that still failed
+    // Background retry: keep trying to spawn any sessions that still failed (skipping accounts waiting for password reset)
     const bgRetryInterval = setInterval(async () => {
-        const remaining = Object.entries(ACCOUNTS).filter(([chatId]) => !USER_SESSIONS.has(chatId) && !blockedUsers.has(chatId));
+        const remaining = Object.entries(ACCOUNTS).filter(([chatId]) => !USER_SESSIONS.has(chatId) && !blockedUsers.has(chatId) && !passwordResetPendingUsers.has(chatId));
         if (remaining.length > 0) {
             console.log(`[Bot] Background retry: ${remaining.length} account(s) offline, retrying...`);
             for (const [chatId, config] of remaining) {
@@ -6411,6 +6419,7 @@ JSON Schema:
                     }
 
                     ACCOUNTS[targetId].pass = newPass;
+                    passwordResetPendingUsers.delete(targetId);
                     await syncAccountsToGist();
                     await sendTelegram(`✅ Password updated for *${ACCOUNTS[targetId].name}* (${ACCOUNTS[targetId].user}) and saved to Gist.\n⏳ Spawning session now...`, fromChatId);
 
@@ -6474,8 +6483,9 @@ JSON Schema:
                     try {
                         await changeSaveethaPassword(targetUser, currentPass, newPass);
                         ACCOUNTS[targetId].pass = newPass;
+                        passwordResetPendingUsers.delete(targetId);
                         await syncAccountsToGist();
-                        await sendTelegram(`🎉 *Password Successfully Changed on Saveetha Portal!*\nNew password saved for *${ACCOUNTS[targetId].name}*.\n⏳ Spawning session...`, fromChatId);
+                        await sendTelegram(`🎉 *Password Successfully Changed on Saveetha Portal!*\nNew password saved for *${ACCOUNTS[targetId].name}* in Gist.\n⏳ Spawning session...`, fromChatId);
 
                         if (USER_SESSIONS.has(targetId)) {
                             const oldSession = USER_SESSIONS.get(targetId);
@@ -6485,12 +6495,31 @@ JSON Schema:
                         const activeBrowser = await ensureBrowser();
                         spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
                             if (success) sendTelegram(`✅ Session ready and logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
-                            else sendTelegram(`⚠️ Password changed on portal, but session spawn failed. Try !login in a moment.`, fromChatId);
+                            else sendTelegram(`⚠️ Password changed on portal and saved to Gist, but session spawn failed. Try !login in a moment.`, fromChatId);
                         }).catch(err => {
                             console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
                         });
                     } catch (err) {
                         await sendTelegram(`❌ Password change failed: ${err.message}`, fromChatId);
+                    }
+                    continue;
+                }
+
+                // ── !login / !relogin ──────────────────────────────────────
+                if (text === '!login' || text === '!relogin') {
+                    passwordResetPendingUsers.delete(fromChatId);
+                    await sendTelegram(`⏳ Attempting to log you in now, please wait...`, fromChatId);
+                    if (USER_SESSIONS.has(fromChatId)) {
+                        const oldSession = USER_SESSIONS.get(fromChatId);
+                        try { await oldSession.context.close().catch(() => { }); } catch (_) { }
+                        USER_SESSIONS.delete(fromChatId);
+                    }
+                    const activeBrowser = await ensureBrowser();
+                    const ok = await spawnUserSession(activeBrowser, fromChatId, userConfig);
+                    if (ok) {
+                        await sendTelegram(`✅ *Session ready and logged in for ${userConfig.name}!*`, fromChatId);
+                    } else if (!passwordResetPendingUsers.has(fromChatId)) {
+                        await sendTelegram(`❌ Login failed. If you changed your password on the portal, send:\n\`!setpass <new_password>\` to save it in Gist and retry.`, fromChatId);
                     }
                     continue;
                 }
