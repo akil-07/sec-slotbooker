@@ -4470,9 +4470,9 @@ async function spawnUserSession(browser, chatId, config) {
                 `Saveetha University has enforced a mandatory password change on your account at \`accounts.saveetha.in\`.\n\n` +
                 `👉 *Options to resolve:*\n` +
                 `1. Log in to https://accounts.saveetha.in in your browser and set a new password, then send:\n` +
-                `   \`!setpass ${chatId} <new_password>\`\n` +
+                `   \`!setpass <new_password>\`\n` +
                 `2. Or tell the bot to change it for you right now:\n` +
-                `   \`!changepass ${chatId} <new_password>\``,
+                `   \`!changepass <new_password>\``,
                 chatId
             );
         }
@@ -5470,9 +5470,9 @@ async function main() {
                 const fromChatId = String(msg.chat.id);
                 const userConfig = getUserConfig(fromChatId);
 
-                if (!userConfig && fromChatId !== ADMIN_CHAT_ID) {
-                    console.log(`[Bot] Ignoring message from unauthorized chat: ${fromChatId}`);
-                    // Optional: await sendTelegram(`⚠️ Your Chat ID (${fromChatId}) is not authorized for this bot.`);
+                if (!userConfig && fromChatId !== ADMIN_CHAT_ID && !isSuperAdmin(fromChatId)) {
+                    console.log(`[Bot] Message from unregistered chat: ${fromChatId}`);
+                    await sendTelegram(`⚠️ Your Chat ID (\`${fromChatId}\`) is not registered.\nPlease ask the bot admin to add you using:\n\`!adduser ${fromChatId} <roll_no> <password>\``, fromChatId);
                     continue;
                 }
 
@@ -6350,101 +6350,6 @@ JSON Schema:
                         continue;
                     }
 
-                    if (text.startsWith('!setpass')) {
-                        const parts = text.trim().split(/\s+/);
-                        if (parts.length < 2) {
-                            await sendTelegram('Usage:\n• `!setpass <new_password>` (update your own password)\n• `!setpass <chat_id_or_user> <new_password>` (admin)', fromChatId);
-                            continue;
-                        }
-
-                        let targetId = fromChatId;
-                        let newPass = parts[1];
-
-                        if (parts.length >= 3) {
-                            const lookup = parts[1];
-                            newPass = parts[2];
-                            const foundId = Object.keys(ACCOUNTS).find(id => id === lookup || ACCOUNTS[id].user === lookup);
-                            if (foundId) targetId = foundId;
-                            else targetId = lookup;
-                        }
-
-                        if (!ACCOUNTS[targetId]) {
-                            await sendTelegram(`⚠️ Account \`${targetId}\` not found in registered accounts.`, fromChatId);
-                            continue;
-                        }
-
-                        ACCOUNTS[targetId].pass = newPass;
-                        await syncAccountsToGist();
-                        await sendTelegram(`✅ Password updated for *${ACCOUNTS[targetId].name}* (${ACCOUNTS[targetId].user}) and saved to Gist.\n⏳ Spawning session now...`, fromChatId);
-
-                        // Restart their session
-                        if (USER_SESSIONS.has(targetId)) {
-                            const oldSession = USER_SESSIONS.get(targetId);
-                            try { await oldSession.context.close().catch(() => { }); } catch (_) { }
-                            USER_SESSIONS.delete(targetId);
-                        }
-                        const activeBrowser = await ensureBrowser();
-                        spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
-                            if (success) sendTelegram(`✅ Session successfully logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
-                            else sendTelegram(`❌ Login still failed with the new password for *${ACCOUNTS[targetId].name}*. Please check credentials.`, fromChatId);
-                        }).catch(err => {
-                            console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
-                        });
-                        continue;
-                    }
-
-                    if (text.startsWith('!changepass')) {
-                        const parts = text.trim().split(/\s+/);
-                        if (parts.length < 2) {
-                            await sendTelegram('Usage:\n• `!changepass <new_password>` (change for yourself)\n• `!changepass <chat_id_or_user> <new_password>` (admin)\n\n_Note: New password must have at least 8 characters with letters & numbers._', fromChatId);
-                            continue;
-                        }
-
-                        let targetId = fromChatId;
-                        let newPass = parts[1];
-
-                        if (parts.length >= 3) {
-                            const lookup = parts[1];
-                            newPass = parts[2];
-                            const foundId = Object.keys(ACCOUNTS).find(id => id === lookup || ACCOUNTS[id].user === lookup);
-                            if (foundId) targetId = foundId;
-                            else targetId = lookup;
-                        }
-
-                        if (!ACCOUNTS[targetId]) {
-                            await sendTelegram(`⚠️ Account \`${targetId}\` not found in registered accounts.`, fromChatId);
-                            continue;
-                        }
-
-                        const targetUser = ACCOUNTS[targetId].user;
-                        const currentPass = ACCOUNTS[targetId].pass;
-
-                        await sendTelegram(`⏳ Submitting password change on Saveetha portal for *${ACCOUNTS[targetId].name}* (${targetUser})...`, fromChatId);
-
-                        try {
-                            await changeSaveethaPassword(targetUser, currentPass, newPass);
-                            ACCOUNTS[targetId].pass = newPass;
-                            await syncAccountsToGist();
-                            await sendTelegram(`🎉 *Password Successfully Changed on Saveetha Portal!*\nNew password saved for *${ACCOUNTS[targetId].name}*.\n⏳ Spawning session...`, fromChatId);
-
-                            if (USER_SESSIONS.has(targetId)) {
-                                const oldSession = USER_SESSIONS.get(targetId);
-                                try { await oldSession.context.close().catch(() => { }); } catch (_) { }
-                                USER_SESSIONS.delete(targetId);
-                            }
-                            const activeBrowser = await ensureBrowser();
-                            spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
-                                if (success) sendTelegram(`✅ Session ready and logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
-                                else sendTelegram(`⚠️ Password changed, but session spawn failed. Try !login in a moment.`, fromChatId);
-                            }).catch(err => {
-                                console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
-                            });
-                        } catch (err) {
-                            await sendTelegram(`❌ Password change failed: ${err.message}`, fromChatId);
-                        }
-                        continue;
-                    }
-
                     if (text.startsWith('!removeuser ')) {
                         const targetChatId = text.substring(12).trim();
                         if (!targetChatId) {
@@ -6467,6 +6372,127 @@ JSON Schema:
                         await sendTelegram(msgStr, fromChatId);
                         continue;
                     }
+                }
+
+                // ── !setpass (Available to all registered users) ────────────
+                if (text.startsWith('!setpass')) {
+                    const parts = text.trim().split(/\s+/);
+                    if (parts.length < 2) {
+                        await sendTelegram('Usage:\n• `!setpass <new_password>` (update your own password)\n• `!setpass <chat_id_or_user> <new_password>` (admin)', fromChatId);
+                        continue;
+                    }
+
+                    let targetId = fromChatId;
+                    let newPass = parts[1];
+
+                    if (parts.length >= 3) {
+                        const lookup = parts[1];
+                        newPass = parts[2];
+                        const isTargetingSelf = (lookup === fromChatId || (ACCOUNTS[fromChatId] && ACCOUNTS[fromChatId].user === lookup));
+                        const isAdmin = (fromChatId === ADMIN_CHAT_ID || fromChatId === '8581009274' || isSuperAdmin(fromChatId));
+
+                        if (!isTargetingSelf && !isAdmin) {
+                            await sendTelegram('⛔ Only admins can change passwords for other users.\nTo update your own password, use: `!setpass <new_password>`', fromChatId);
+                            continue;
+                        }
+
+                        if (isTargetingSelf) {
+                            targetId = fromChatId;
+                        } else {
+                            const foundId = Object.keys(ACCOUNTS).find(id => id === lookup || ACCOUNTS[id].user === lookup);
+                            if (foundId) targetId = foundId;
+                            else targetId = lookup;
+                        }
+                    }
+
+                    if (!ACCOUNTS[targetId]) {
+                        await sendTelegram(`⚠️ Account \`${targetId}\` not found in registered accounts.`, fromChatId);
+                        continue;
+                    }
+
+                    ACCOUNTS[targetId].pass = newPass;
+                    await syncAccountsToGist();
+                    await sendTelegram(`✅ Password updated for *${ACCOUNTS[targetId].name}* (${ACCOUNTS[targetId].user}) and saved to Gist.\n⏳ Spawning session now...`, fromChatId);
+
+                    // Restart their session
+                    if (USER_SESSIONS.has(targetId)) {
+                        const oldSession = USER_SESSIONS.get(targetId);
+                        try { await oldSession.context.close().catch(() => { }); } catch (_) { }
+                        USER_SESSIONS.delete(targetId);
+                    }
+                    const activeBrowser = await ensureBrowser();
+                    spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
+                        if (success) sendTelegram(`✅ Session successfully logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
+                        else sendTelegram(`❌ Login still failed with the new password for *${ACCOUNTS[targetId].name}*. Please check credentials.`, fromChatId);
+                    }).catch(err => {
+                        console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
+                    });
+                    continue;
+                }
+
+                // ── !changepass (Available to all registered users) ─────────
+                if (text.startsWith('!changepass')) {
+                    const parts = text.trim().split(/\s+/);
+                    if (parts.length < 2) {
+                        await sendTelegram('Usage:\n• `!changepass <new_password>` (change for yourself)\n• `!changepass <chat_id_or_user> <new_password>` (admin)\n\n_Note: New password must have at least 8 characters with letters & numbers._', fromChatId);
+                        continue;
+                    }
+
+                    let targetId = fromChatId;
+                    let newPass = parts[1];
+
+                    if (parts.length >= 3) {
+                        const lookup = parts[1];
+                        newPass = parts[2];
+                        const isTargetingSelf = (lookup === fromChatId || (ACCOUNTS[fromChatId] && ACCOUNTS[fromChatId].user === lookup));
+                        const isAdmin = (fromChatId === ADMIN_CHAT_ID || fromChatId === '8581009274' || isSuperAdmin(fromChatId));
+
+                        if (!isTargetingSelf && !isAdmin) {
+                            await sendTelegram('⛔ Only admins can change passwords for other users.\nTo update your own password, use: `!changepass <new_password>`', fromChatId);
+                            continue;
+                        }
+
+                        if (isTargetingSelf) {
+                            targetId = fromChatId;
+                        } else {
+                            const foundId = Object.keys(ACCOUNTS).find(id => id === lookup || ACCOUNTS[id].user === lookup);
+                            if (foundId) targetId = foundId;
+                            else targetId = lookup;
+                        }
+                    }
+
+                    if (!ACCOUNTS[targetId]) {
+                        await sendTelegram(`⚠️ Account \`${targetId}\` not found in registered accounts.`, fromChatId);
+                        continue;
+                    }
+
+                    const targetUser = ACCOUNTS[targetId].user;
+                    const currentPass = ACCOUNTS[targetId].pass;
+
+                    await sendTelegram(`⏳ Submitting password change on Saveetha portal for *${ACCOUNTS[targetId].name}* (${targetUser})...`, fromChatId);
+
+                    try {
+                        await changeSaveethaPassword(targetUser, currentPass, newPass);
+                        ACCOUNTS[targetId].pass = newPass;
+                        await syncAccountsToGist();
+                        await sendTelegram(`🎉 *Password Successfully Changed on Saveetha Portal!*\nNew password saved for *${ACCOUNTS[targetId].name}*.\n⏳ Spawning session...`, fromChatId);
+
+                        if (USER_SESSIONS.has(targetId)) {
+                            const oldSession = USER_SESSIONS.get(targetId);
+                            try { await oldSession.context.close().catch(() => { }); } catch (_) { }
+                            USER_SESSIONS.delete(targetId);
+                        }
+                        const activeBrowser = await ensureBrowser();
+                        spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
+                            if (success) sendTelegram(`✅ Session ready and logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
+                            else sendTelegram(`⚠️ Password changed on portal, but session spawn failed. Try !login in a moment.`, fromChatId);
+                        }).catch(err => {
+                            console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
+                        });
+                    } catch (err) {
+                        await sendTelegram(`❌ Password change failed: ${err.message}`, fromChatId);
+                    }
+                    continue;
                 }
                 if (text.startsWith('!timetable') || text.startsWith('!tt')) {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
