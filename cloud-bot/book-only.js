@@ -3011,7 +3011,61 @@ async function startAttendanceMonitor(context, config, targetKeyword, startTimeS
     return handleAttendanceOtp(session, targetKeyword, 'start', chatId);
 }
 
-// ─── Login ────────────────────────────────────────────────────────────────────
+// ─── Login & Password Management ─────────────────────────────────────────────
+
+async function changeSaveethaPassword(user, oldPass, newPass) {
+    console.log(`[PasswordChange] Starting automated password change on Saveetha portal for ${user}...`);
+    const activeBrowser = await ensureBrowser();
+    const page = await activeBrowser.newPage();
+    try {
+        await page.goto('https://learner.saveetha.in/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.fill('#id_username, input[name="username"]', String(user));
+        await page.fill('input[type="password"]', String(oldPass));
+        await page.click('button[type="submit"], input[type="submit"]');
+        await page.waitForTimeout(4000);
+
+        if (!page.url().includes('/change-password')) {
+            if (!page.url().includes('/login') && !page.url().includes('/authorize')) {
+                return { success: true, message: 'Password change was not requested; login succeeded directly.' };
+            }
+            const errOnPage = await page.evaluate(() => {
+                const el = document.querySelector('.alert-danger, .errorlist, .invalid-feedback, #error-message');
+                return el ? el.innerText.trim() : '';
+            });
+            throw new Error(`Did not reach change password page. ${errOnPage || `Current URL: ${page.url()}`}`);
+        }
+
+        // Fill old password, new password, confirm new password
+        await page.fill('#id_old_password, input[name="old_password"]', String(oldPass));
+        await page.fill('#id_new_password1, input[name="new_password1"]', String(newPass));
+        await page.fill('#id_new_password2, input[name="new_password2"]', String(newPass));
+
+        const updateBtn = page.locator('button:has-text("Update password"), input[type="submit"]').first();
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null),
+            updateBtn.click({ force: true })
+        ]);
+
+        await page.waitForTimeout(3000);
+
+        // Check if error appeared
+        const errorMsg = await page.evaluate(() => {
+            const el = document.querySelector('.alert-danger, .errorlist, .invalid-feedback, #error-message');
+            return el ? el.innerText.trim() : '';
+        });
+
+        if (errorMsg) {
+            throw new Error(`Saveetha rejected new password: ${errorMsg}`);
+        }
+
+        console.log('[PasswordChange] Successfully changed password on Saveetha portal! URL:', page.url());
+        return { success: true };
+    } finally {
+        if (page && !page.isClosed()) {
+            await page.close().catch(() => { });
+        }
+    }
+}
 
 async function doLogin(page, user, pass) {
     console.log(`[Bot] Logging in as ${user}...`);
@@ -3099,13 +3153,36 @@ async function doLogin(page, user, pass) {
             try {
                 await page.waitForURL(url => !url.href.includes('/login') && !url.href.includes('/authorize'), { timeout: 15000 });
             } catch (e) {
-                // ignore timeout, we'll just log the URL anyway
+                // ignore timeout, we'll validate the URL next
             }
-            await page.waitForTimeout(500);
-            console.log('[Bot] Logged in. Current URL:', page.url());
+            await page.waitForTimeout(1000);
+
+            const finalUrl = page.url();
+
+            if (finalUrl.includes('/change-password')) {
+                const title = await page.title().catch(() => '');
+                console.error(`[Login] Account ${user} is blocked by Saveetha mandatory password reset: ${finalUrl} (${title})`);
+                const err = new Error(`Account ${user} must change password on Saveetha portal (Saveetha enforced a mandatory password reset on accounts.saveetha.in). Use !changepass <new_pass> or change it on https://accounts.saveetha.in and use !setpass <new_pass>.`);
+                err.code = 'PASSWORD_CHANGE_REQUIRED';
+                throw err;
+            }
+
+            if (finalUrl.includes('/login') || finalUrl.includes('/authorize')) {
+                const errorMsg = await page.evaluate(() => {
+                    const el = document.querySelector('.alert-danger, .errorlist, .invalid-feedback, #error-message, .error, p.help-block-error');
+                    return el ? el.innerText.trim() : '';
+                });
+                const fullErr = errorMsg || 'Invalid credentials or login rejected by Saveetha portal';
+                console.error(`[Login] Failed to log in as ${user}. URL: ${finalUrl}. Error: ${fullErr}`);
+                const err = new Error(`Login failed for ${user}: ${fullErr}`);
+                err.code = 'INVALID_CREDENTIALS';
+                throw err;
+            }
+
+            console.log(`[Bot] Logged in successfully as ${user}. Current URL:`, finalUrl);
             return; // Login succeeded
         } catch (err) {
-            if (attempts >= maxAttempts) throw err;
+            if (err.code === 'PASSWORD_CHANGE_REQUIRED' || attempts >= maxAttempts) throw err;
             console.warn(`[Login] Error on attempt ${attempts}: ${err.message}. Retrying in 3s...`);
             await page.waitForTimeout(3000);
         }
@@ -4360,6 +4437,11 @@ async function spawnUserSession(browser, chatId, config) {
             timeout: 60000
         });
 
+        // Verify Hot Tab actually reached portal and wasn't bounced to login or change-password
+        if (hotPage.url().includes('/login') || hotPage.url().includes('change-password')) {
+            throw new Error(`Session redirected to ${hotPage.url()} (not authenticated)`);
+        }
+
         const session = {
             context: userContext,
             config,
@@ -4381,7 +4463,19 @@ async function spawnUserSession(browser, chatId, config) {
         console.log(`[Bot] Session Ready: ${config.name}`);
         return true;
     } catch (err) {
-        console.error(`[Bot] Failed to spawn session for ${config.name}:`, err.message);
+        console.error(`[Bot] Failed to spawn session for ${config.name} (${config.user}):`, err.message);
+        if (err.code === 'PASSWORD_CHANGE_REQUIRED' || err.message.includes('mandatory password reset') || err.message.includes('change-password')) {
+            await sendTelegram(
+                `🔐 *Password Reset Required for ${config.name} (${config.user})*\n\n` +
+                `Saveetha University has enforced a mandatory password change on your account at \`accounts.saveetha.in\`.\n\n` +
+                `👉 *Options to resolve:*\n` +
+                `1. Log in to https://accounts.saveetha.in in your browser and set a new password, then send:\n` +
+                `   \`!setpass ${chatId} <new_password>\`\n` +
+                `2. Or tell the bot to change it for you right now:\n` +
+                `   \`!changepass ${chatId} <new_password>\``,
+                chatId
+            );
+        }
         return false;
     }
 }
@@ -5125,7 +5219,13 @@ async function main() {
     // Filter out blocked users from the initial startup sequence
     const accountEntries = Object.entries(ACCOUNTS).filter(([chatId]) => !blockedUsers.has(chatId));
     accountEntries.forEach(([chatId, config]) => {
-        if (!config.name || config.name.startsWith('User ')) config.name = 'Akil S.';
+        if (!config.name || config.name.startsWith('User ')) {
+            if (config.user === '25013635' || chatId === String(ADMIN_CHAT_ID) || chatId === String(CHAT_ID)) {
+                config.name = 'Akil S.';
+            } else {
+                config.name = `User ${config.user}`;
+            }
+        }
     });
 
     (async () => {
@@ -6248,6 +6348,101 @@ JSON Schema:
                             } else {
                                 await sendTelegram(`⚠️ User with Chat ID \`${targetChatId}\` not found.`, fromChatId);
                             }
+                        }
+                        continue;
+                    }
+
+                    if (text.startsWith('!setpass')) {
+                        const parts = text.trim().split(/\s+/);
+                        if (parts.length < 2) {
+                            await sendTelegram('Usage:\n• `!setpass <new_password>` (update your own password)\n• `!setpass <chat_id_or_user> <new_password>` (admin)', fromChatId);
+                            continue;
+                        }
+
+                        let targetId = fromChatId;
+                        let newPass = parts[1];
+
+                        if (parts.length >= 3) {
+                            const lookup = parts[1];
+                            newPass = parts[2];
+                            const foundId = Object.keys(ACCOUNTS).find(id => id === lookup || ACCOUNTS[id].user === lookup);
+                            if (foundId) targetId = foundId;
+                            else targetId = lookup;
+                        }
+
+                        if (!ACCOUNTS[targetId]) {
+                            await sendTelegram(`⚠️ Account \`${targetId}\` not found in registered accounts.`, fromChatId);
+                            continue;
+                        }
+
+                        ACCOUNTS[targetId].pass = newPass;
+                        await syncAccountsToGist();
+                        await sendTelegram(`✅ Password updated for *${ACCOUNTS[targetId].name}* (${ACCOUNTS[targetId].user}) and saved to Gist.\n⏳ Spawning session now...`, fromChatId);
+
+                        // Restart their session
+                        if (USER_SESSIONS.has(targetId)) {
+                            const oldSession = USER_SESSIONS.get(targetId);
+                            try { await oldSession.context.close().catch(() => { }); } catch (_) { }
+                            USER_SESSIONS.delete(targetId);
+                        }
+                        const activeBrowser = await ensureBrowser();
+                        spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
+                            if (success) sendTelegram(`✅ Session successfully logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
+                            else sendTelegram(`❌ Login still failed with the new password for *${ACCOUNTS[targetId].name}*. Please check credentials.`, fromChatId);
+                        }).catch(err => {
+                            console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
+                        });
+                        continue;
+                    }
+
+                    if (text.startsWith('!changepass')) {
+                        const parts = text.trim().split(/\s+/);
+                        if (parts.length < 2) {
+                            await sendTelegram('Usage:\n• `!changepass <new_password>` (change for yourself)\n• `!changepass <chat_id_or_user> <new_password>` (admin)\n\n_Note: New password must have at least 8 characters with letters & numbers._', fromChatId);
+                            continue;
+                        }
+
+                        let targetId = fromChatId;
+                        let newPass = parts[1];
+
+                        if (parts.length >= 3) {
+                            const lookup = parts[1];
+                            newPass = parts[2];
+                            const foundId = Object.keys(ACCOUNTS).find(id => id === lookup || ACCOUNTS[id].user === lookup);
+                            if (foundId) targetId = foundId;
+                            else targetId = lookup;
+                        }
+
+                        if (!ACCOUNTS[targetId]) {
+                            await sendTelegram(`⚠️ Account \`${targetId}\` not found in registered accounts.`, fromChatId);
+                            continue;
+                        }
+
+                        const targetUser = ACCOUNTS[targetId].user;
+                        const currentPass = ACCOUNTS[targetId].pass;
+
+                        await sendTelegram(`⏳ Submitting password change on Saveetha portal for *${ACCOUNTS[targetId].name}* (${targetUser})...`, fromChatId);
+
+                        try {
+                            await changeSaveethaPassword(targetUser, currentPass, newPass);
+                            ACCOUNTS[targetId].pass = newPass;
+                            await syncAccountsToGist();
+                            await sendTelegram(`🎉 *Password Successfully Changed on Saveetha Portal!*\nNew password saved for *${ACCOUNTS[targetId].name}*.\n⏳ Spawning session...`, fromChatId);
+
+                            if (USER_SESSIONS.has(targetId)) {
+                                const oldSession = USER_SESSIONS.get(targetId);
+                                try { await oldSession.context.close().catch(() => { }); } catch (_) { }
+                                USER_SESSIONS.delete(targetId);
+                            }
+                            const activeBrowser = await ensureBrowser();
+                            spawnUserSession(activeBrowser, targetId, ACCOUNTS[targetId]).then(success => {
+                                if (success) sendTelegram(`✅ Session ready and logged in for *${ACCOUNTS[targetId].name}*!`, fromChatId);
+                                else sendTelegram(`⚠️ Password changed, but session spawn failed. Try !login in a moment.`, fromChatId);
+                            }).catch(err => {
+                                console.error(`[Bot] spawnUserSession unhandled error for ${targetId}:`, err.message);
+                            });
+                        } catch (err) {
+                            await sendTelegram(`❌ Password change failed: ${err.message}`, fromChatId);
                         }
                         continue;
                     }
