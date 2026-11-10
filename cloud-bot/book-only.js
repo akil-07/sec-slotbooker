@@ -42,6 +42,7 @@ const pendingOtpRequests = new Map(); // chatId -> callback function
 const pendingTimeConfirmations = new Map();
 const pendingLeaveConfirmations = new Map(); // chatId -> { params, unusualTime, isTooEarly }
 const passwordResetPendingUsers = new Set(); // Users waiting for password reset, do not retry automatically
+const invalidCredentialsUsers = new Set(); // Users with invalid login credentials, do not retry automatically
 const lastUserErrors = new Map(); // chatId -> { time, command, error }
 
 function recordUserError(chatId, command, errorMsg) {
@@ -3279,7 +3280,7 @@ async function doLogin(page, user, pass) {
             console.log(`[Bot] Logged in successfully as ${user}. Current URL:`, finalUrl);
             return; // Login succeeded
         } catch (err) {
-            if (err.code === 'PASSWORD_CHANGE_REQUIRED' || attempts >= maxAttempts) throw err;
+            if (err.code === 'PASSWORD_CHANGE_REQUIRED' || err.code === 'INVALID_CREDENTIALS' || attempts >= maxAttempts) throw err;
             console.warn(`[Login] Error on attempt ${attempts}: ${err.message}. Retrying in 3s...`);
             await page.waitForTimeout(3000);
         }
@@ -4579,6 +4580,36 @@ async function spawnUserSession(browser, chatId, config) {
                     chatId
                 );
             }
+        } else if (err.code === 'INVALID_CREDENTIALS' || err.message.includes('Invalid username or password') || err.message.includes('Invalid credentials')) {
+            const isFirstNotice = !invalidCredentialsUsers.has(chatId);
+            invalidCredentialsUsers.add(chatId);
+            if (isFirstNotice) {
+                await sendTelegram(
+                    `⚠️ *Login Failed for ${config.name} (${config.user})*\n\n` +
+                    `Saveetha portal rejected your saved credentials with:\n` +
+                    `\`Invalid username or password\`\n\n` +
+                    `👉 *Did you recently update your password on the college portal?*\n` +
+                    `Please update the bot with your new password by sending:\n` +
+                    `\`!setpass <your_new_password>\`\n\n` +
+                    `The bot will save your new password in Gist and immediately log you in! 🚀`,
+                    chatId
+                );
+
+                // Notify admin of stale user credentials
+                const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id] && ACCOUNTS[id].user === '25013635');
+                const adminTargets = new Set([ADMIN_CHAT_ID, '8581009274', superAdminChatId].filter(Boolean));
+                for (const aId of adminTargets) {
+                    if (aId !== chatId) {
+                        await sendTelegram(
+                            `⚠️ *User Credentials Outdated / Invalid*\n\n` +
+                            `👤 *User:* ${config.name} (\`${config.user}\`)\n` +
+                            `🆔 *Chat ID:* \`${chatId}\`\n` +
+                            `💬 Bot notified student to send \`!setpass <new_password>\`.`,
+                            aId
+                        );
+                    }
+                }
+            }
         }
         recordUserError(chatId, 'spawnUserSession', err.message);
         return false;
@@ -4621,6 +4652,7 @@ async function autoRepairSession(chatId, requesterChatId = chatId) {
         USER_SESSIONS.delete(chatId);
     }
     passwordResetPendingUsers.delete(chatId);
+    invalidCredentialsUsers.delete(chatId);
 
     // Step 3: Launch fresh browser & authenticate
     await sendTelegram(`3️⃣ Launching clean session & authenticating with Saveetha SSO...`, requesterChatId);
@@ -5420,10 +5452,10 @@ async function main() {
             await spawnUserSession(browser, chatId, config);
         }));
 
-        // Retry failed logins up to 2 more times before declaring online (skipping accounts waiting for password reset)
+        // Retry failed logins up to 2 more times before declaring online (skipping accounts waiting for password reset or invalid credentials)
         const MAX_STARTUP_RETRIES = 2;
         for (let retry = 1; retry <= MAX_STARTUP_RETRIES; retry++) {
-            const failedAccounts = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId) && !blockedUsers.has(chatId) && !passwordResetPendingUsers.has(chatId));
+            const failedAccounts = accountEntries.filter(([chatId]) => !USER_SESSIONS.has(chatId) && !blockedUsers.has(chatId) && !passwordResetPendingUsers.has(chatId) && !invalidCredentialsUsers.has(chatId));
             if (failedAccounts.length === 0) break;
             console.log(`[Bot] Retry ${retry}/${MAX_STARTUP_RETRIES}: ${failedAccounts.length} account(s) failed to login, retrying in 10s...`);
             await new Promise(r => setTimeout(r, 10000));
@@ -5461,9 +5493,9 @@ async function main() {
         }
     }, 600000); // Every 10 mins
 
-    // Background retry: keep trying to spawn any sessions that still failed (skipping accounts waiting for password reset)
+    // Background retry: keep trying to spawn any sessions that still failed (skipping accounts waiting for password reset or invalid credentials)
     const bgRetryInterval = setInterval(async () => {
-        const remaining = Object.entries(ACCOUNTS).filter(([chatId]) => !USER_SESSIONS.has(chatId) && !blockedUsers.has(chatId) && !passwordResetPendingUsers.has(chatId));
+        const remaining = Object.entries(ACCOUNTS).filter(([chatId]) => !USER_SESSIONS.has(chatId) && !blockedUsers.has(chatId) && !passwordResetPendingUsers.has(chatId) && !invalidCredentialsUsers.has(chatId));
         if (remaining.length > 0) {
             console.log(`[Bot] Background retry: ${remaining.length} account(s) offline, retrying...`);
             for (const [chatId, config] of remaining) {
@@ -6411,11 +6443,18 @@ JSON Schema:
                     if (text === '!listusers') {
                         let list = `👥 *Authorized Users*\n\n`;
                         for (const [id, config] of Object.entries(ACCOUNTS)) {
-                            const status = USER_SESSIONS.has(id) ? '🟢 Online' : '🔴 Offline';
+                            let status = '🔴 Offline';
+                            if (USER_SESSIONS.has(id)) {
+                                status = '🟢 Online';
+                            } else if (passwordResetPendingUsers.has(id)) {
+                                status = '🟡 Password Reset Required';
+                            } else if (invalidCredentialsUsers.has(id)) {
+                                status = '⚠️ Wrong Password (Need !setpass)';
+                            }
                             const blockStatus = blockedUsers.has(id) ? ' [BLOCKED]' : '';
                             list += `• *${config.name}* (\`${id}\`)${blockStatus}\n  └ User: ${config.user} | ${status}\n\n`;
                         }
-                        await sendTelegram(list, ADMIN_CHAT_ID);
+                        await sendTelegram(list, fromChatId);
                         continue;
                     }
 
@@ -6570,15 +6609,6 @@ JSON Schema:
                         }
                         continue;
                     }
-
-                    if (text === '!listusers') {
-                        let msgStr = '👥 *Registered Users:*\n\n';
-                        for (const [uid, udata] of Object.entries(ACCOUNTS)) {
-                            msgStr += `• ID: \`${uid}\` | User: ${udata.user}\n`;
-                        }
-                        await sendTelegram(msgStr, fromChatId);
-                        continue;
-                    }
                 }
 
                 // ── !setpass (Available to all registered users) ────────────
@@ -6619,6 +6649,7 @@ JSON Schema:
 
                     ACCOUNTS[targetId].pass = newPass;
                     passwordResetPendingUsers.delete(targetId);
+                    invalidCredentialsUsers.delete(targetId);
                     await syncAccountsToGist();
                     await sendTelegram(`✅ Password updated for *${ACCOUNTS[targetId].name}* (${ACCOUNTS[targetId].user}) and saved to Gist.\n⏳ Spawning session now...`, fromChatId);
 
@@ -6685,6 +6716,7 @@ JSON Schema:
                         await changeSaveethaPassword(targetUser, currentPass, newPass);
                         ACCOUNTS[targetId].pass = newPass;
                         passwordResetPendingUsers.delete(targetId);
+                        invalidCredentialsUsers.delete(targetId);
                         await syncAccountsToGist();
                         await sendTelegram(`🎉 *Password Successfully Changed on Saveetha Portal!*\nNew password saved for *${ACCOUNTS[targetId].name}* in Gist.\n⏳ Spawning session...`, fromChatId);
 
@@ -6711,6 +6743,7 @@ JSON Schema:
                 // ── !login / !relogin ──────────────────────────────────────
                 if (text === '!login' || text === '!relogin') {
                     passwordResetPendingUsers.delete(fromChatId);
+                    invalidCredentialsUsers.delete(fromChatId);
                     await sendTelegram(`⏳ Attempting to log you in now, please wait...`, fromChatId);
                     if (USER_SESSIONS.has(fromChatId)) {
                         const oldSession = USER_SESSIONS.get(fromChatId);
@@ -6721,7 +6754,7 @@ JSON Schema:
                     const ok = await spawnUserSession(activeBrowser, fromChatId, userConfig);
                     if (ok) {
                         await sendTelegram(`✅ *Session ready and logged in for ${userConfig.name}!*`, fromChatId);
-                    } else if (!passwordResetPendingUsers.has(fromChatId)) {
+                    } else if (!passwordResetPendingUsers.has(fromChatId) && !invalidCredentialsUsers.has(fromChatId)) {
                         await sendTelegram(`❌ Login failed. If you changed your password on the portal, send:\n\`!setpass <new_password>\` to save it in Gist and retry.`, fromChatId);
                     }
                     continue;
