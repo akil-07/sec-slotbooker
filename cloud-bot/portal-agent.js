@@ -612,12 +612,12 @@ function calculateAttendanceLeaveImpact(attendanceRecords, overlappingClasses, o
             recoveryClassesNeeded,
             bufferRemaining,
             // Whole semester stats
-            semTotal,
+            semTotal: semTotalClasses,
             remainingSemClasses,
-            pastMissed,
-            totalMissedWithLeave,
+            pastMissed: pastMissedHours,
+            totalMissedWithLeave: totalMissedHoursWithLeave,
             endOfSemMaxPercent,
-            maxAllowedSemAbsences,
+            maxAllowedSemAbsences: maxAllowedSemAbsenceHours,
             willDropBelow80WholeSem,
             minRequiredToAttendTillSemEnd,
             semBunkCushion
