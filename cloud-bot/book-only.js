@@ -5425,9 +5425,9 @@ async function main() {
     // Filter out blocked users from the initial startup sequence
     const accountEntries = Object.entries(ACCOUNTS).filter(([chatId]) => !blockedUsers.has(chatId));
     accountEntries.forEach(([chatId, config]) => {
-        if (config.user === '25013635' || chatId === String(ADMIN_CHAT_ID) || chatId === String(CHAT_ID)) {
+        if (config.user === '25013635') {
             config.name = 'Akil S.';
-        } else if (!config.name || config.name === 'Akil S.' || config.name.startsWith('User ')) {
+        } else if (config.name === 'Akil S.' || !config.name) {
             config.name = `User ${config.user}`;
         }
     });

@@ -432,8 +432,8 @@ function buildOfficialLeaveLetter({ leaveType, rawReason, fromDate, toDate, stud
 
     const p3 = 'I shall be grateful for your kind consideration and approval.';
 
-    let formattedName = studentName || 'Akil S.';
-    if (!formattedName || formattedName.toLowerCase().startsWith('user') || formattedName.includes('25013635') || formattedName.toLowerCase().includes('akil')) {
+    let formattedName = studentName || 'Student';
+    if (formattedName.toLowerCase().includes('akil') || studentName === '25013635') {
         formattedName = 'Akil S.';
     }
     const deptLine = department || 'B.Tech – Information Technology';
@@ -892,8 +892,8 @@ async function draftLeaveApplication(session, leaveData, chatId, sendTelegram, s
         }
 
         // Generate exact official letter matching Saveetha format
-        let studentName = session.config ? (session.config.name || 'Akil S.') : 'Akil S.';
-        if (!studentName || studentName.toLowerCase().startsWith('user') || studentName.includes('25013635')) {
+        let studentName = session.config ? (session.config.name || `User ${session.config.user}`) : 'Student';
+        if (session.config && session.config.user === '25013635') {
             studentName = 'Akil S.';
         }
         const department = session.config ? (session.config.department || 'B.Tech – Information Technology') : 'B.Tech – Information Technology';
