@@ -603,7 +603,7 @@ async function saveTasksToGist(tasksData) {
 }
 
 // Load tasks from Gist first (cross-runner), fall back to local file
-async function loadTasksFromGist() {
+async function loadTasksFromGist(silent = false) {
     // Try Gist first
     if (GIST_TOKEN && GIST_ID) {
         try {
@@ -636,11 +636,13 @@ async function loadTasksFromGist() {
             const gist = JSON.parse(data);
             if (gist.files && gist.files[GIST_FILENAME] && gist.files[GIST_FILENAME].content) {
                 const tasks = JSON.parse(gist.files[GIST_FILENAME].content);
-                console.log(`[Persist] Loaded tasks from Gist: counter=${tasks.counter}, ${(tasks.tasks || []).length} task(s).`);
+                if (!silent) {
+                    console.log(`[Persist] Loaded tasks from Gist: counter=${tasks.counter}, ${(tasks.tasks || []).length} task(s).`);
+                }
                 return tasks;
             }
         } catch (e) {
-            console.error('[Persist] Failed to load from Gist:', e.message);
+            if (!silent) console.error('[Persist] Failed to load from Gist:', e.message);
         }
     }
 
@@ -649,11 +651,13 @@ async function loadTasksFromGist() {
         if (fs.existsSync(TASKS_FILE)) {
             const raw = fs.readFileSync(TASKS_FILE, 'utf-8');
             const tasks = JSON.parse(raw);
-            console.log(`[Persist] Loaded tasks from local file: counter=${tasks.counter}, ${(tasks.tasks || []).length} task(s).`);
+            if (!silent) {
+                console.log(`[Persist] Loaded tasks from local file: counter=${tasks.counter}, ${(tasks.tasks || []).length} task(s).`);
+            }
             return tasks;
         }
     } catch (e) {
-        console.error('[Persist] Failed to load tasks locally:', e.message);
+        if (!silent) console.error('[Persist] Failed to load tasks locally:', e.message);
     }
     return null;
 }
@@ -873,7 +877,6 @@ async function sendTelegram(text, chatId = CHAT_ID) {
                         await req.post(url, { data: { chat_id: chatId, text } }).catch(() => { });
                     }
                 } else {
-                    console.log('[Telegram] Message sent.');
                     return;
                 }
             } catch (postErr) {
@@ -894,7 +897,6 @@ async function sendTelegram(text, chatId = CHAT_ID) {
                 });
                 const data = await fetchRes.json();
                 if (data && data.ok) {
-                    console.log('[Telegram] Message sent via fallback fetch.');
                     return;
                 }
             }
@@ -3258,8 +3260,7 @@ async function doLogin(page, user, pass) {
             const finalUrl = page.url();
 
             if (finalUrl.includes('/change-password')) {
-                const title = await page.title().catch(() => '');
-                console.error(`[Login] Account ${user} is blocked by Saveetha mandatory password reset: ${finalUrl} (${title})`);
+                console.warn(`[Login] 🔐 ${user}: Password reset required on Saveetha portal`);
                 const err = new Error(`Account ${user} must change password on Saveetha portal (Saveetha enforced a mandatory password reset on accounts.saveetha.in). Use !changepass <new_pass> or change it on https://accounts.saveetha.in and use !setpass <new_pass>.`);
                 err.code = 'PASSWORD_CHANGE_REQUIRED';
                 throw err;
@@ -3271,13 +3272,13 @@ async function doLogin(page, user, pass) {
                     return el ? el.innerText.trim() : '';
                 });
                 const fullErr = errorMsg || 'Invalid credentials or login rejected by Saveetha portal';
-                console.error(`[Login] Failed to log in as ${user}. URL: ${finalUrl}. Error: ${fullErr}`);
+                console.warn(`[Login] ❌ ${user}: ${fullErr}`);
                 const err = new Error(`Login failed for ${user}: ${fullErr}`);
                 err.code = 'INVALID_CREDENTIALS';
                 throw err;
             }
 
-            console.log(`[Bot] Logged in successfully as ${user}. Current URL:`, finalUrl);
+            console.log(`[Bot] ✅ ${user} logged in successfully.`);
             return; // Login succeeded
         } catch (err) {
             if (err.code === 'PASSWORD_CHANGE_REQUIRED' || err.code === 'INVALID_CREDENTIALS' || attempts >= maxAttempts) throw err;
@@ -4561,7 +4562,9 @@ async function spawnUserSession(browser, chatId, config) {
         console.log(`[Bot] Session Ready: ${config.name}`);
         return true;
     } catch (err) {
-        console.error(`[Bot] Failed to spawn session for ${config.name} (${config.user}):`, err.message);
+        if (err.code !== 'PASSWORD_CHANGE_REQUIRED' && err.code !== 'INVALID_CREDENTIALS') {
+            console.error(`[Bot] Failed to spawn session for ${config.name} (${config.user}):`, err.message);
+        }
         if (err.code === 'PASSWORD_CHANGE_REQUIRED' || err.message.includes('mandatory password reset') || err.message.includes('change-password')) {
             const isFirstNotice = !passwordResetPendingUsers.has(chatId);
             passwordResetPendingUsers.add(chatId);
@@ -5614,7 +5617,7 @@ async function main() {
 
     async function checkGistForNewTasks() {
         if (!GIST_TOKEN || !GIST_ID) return;
-        const data = await loadTasksFromGist();
+        const data = await loadTasksFromGist(true);
         if (data && data.counter > taskIdCounter) {
             taskIdCounter = data.counter;
             for (let t of data.tasks) {
