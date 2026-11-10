@@ -4594,21 +4594,6 @@ async function spawnUserSession(browser, chatId, config) {
                     `The bot will save your new password in Gist and immediately log you in! 🚀`,
                     chatId
                 );
-
-                // Notify admin of stale user credentials
-                const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id] && ACCOUNTS[id].user === '25013635');
-                const adminTargets = new Set([ADMIN_CHAT_ID, '8581009274', superAdminChatId].filter(Boolean));
-                for (const aId of adminTargets) {
-                    if (aId !== chatId) {
-                        await sendTelegram(
-                            `⚠️ *User Credentials Outdated / Invalid*\n\n` +
-                            `👤 *User:* ${config.name} (\`${config.user}\`)\n` +
-                            `🆔 *Chat ID:* \`${chatId}\`\n` +
-                            `💬 Bot notified student to send \`!setpass <new_password>\`.`,
-                            aId
-                        );
-                    }
-                }
             }
         }
         recordUserError(chatId, 'spawnUserSession', err.message);
