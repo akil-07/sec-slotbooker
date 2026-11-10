@@ -6145,11 +6145,11 @@ JSON Schema:
                 }
 
                 // ── !leaveimpact / !odimpact (Calculate 80% Attendance / OD Impact for Dates) ───
-                if (text.toLowerCase().startsWith('!leaveimpact') || text.toLowerCase().startsWith('!odimpact') || text.toLowerCase().startsWith('!impact')) {
+                if (text.toLowerCase().startsWith('!leaveimpact') || text.toLowerCase().startsWith('!odimpact') || text.toLowerCase().startsWith('!impact') || text.toLowerCase().startsWith('!imapct') || text.toLowerCase().startsWith('!impct') || text.toLowerCase().startsWith('!impack')) {
                     const session = await getOrSpawnSession(fromChatId, userConfig);
                     if (!session) continue;
                     session.doLogin = doLogin;
-                    const args = rawText.replace(/^!(leaveimpact|odimpact|impact)\s*/i, '').trim();
+                    const args = rawText.replace(/^!(leaveimpact|odimpact|impact|imapct|impct|impack)\s*/i, '').trim();
                     const isOd = text.toLowerCase().startsWith('!odimpact') || /\b(?:od|on-?duty)\b/i.test(args);
                     const odMatch = args.match(/(\d+)\s*(?:od|on-?duty)/i) || args.match(/(?:od|on-?duty)\s*(\d+)/i);
                     const odCount = odMatch ? parseInt(odMatch[1], 10) : 0;
@@ -7385,7 +7385,13 @@ JSON Schema:
                 // ── !book / !unbook / !scan ──────────────────────────────
                 const isUnbook = text.toLowerCase().startsWith('!unbook');
                 const isScan = text.toLowerCase().startsWith('!scan');
-                if (!text.toLowerCase().startsWith('!book') && !isUnbook && !isScan) continue;
+                if (!text.toLowerCase().startsWith('!book') && !isUnbook && !isScan) {
+                    if (text.startsWith('!')) {
+                        const cmd = rawText.split(/\s+/)[0];
+                        await sendTelegram(`⚠️ Unrecognized command: \`${cmd}\`\n\n👉 *Available Commands:*\n• \`!impact <from> to <to>\` — Calculate attendance impact of leave/OD\n• \`!att\` or \`!attendance\` — View live attendance stats\n• \`!bunk [subject]\` — Calculate bunk & cutoff classes\n• \`!tt\` or \`!timetable\` — View timetable\n• \`!book <subject> @ <time>\` — Auto-book slots\n• \`!report <issue>\` — Report a problem to admin`, fromChatId);
+                    }
+                    continue;
+                }
 
                 // Parse command
                 let rawParams = text.substring(isUnbook ? 7 : (isScan ? 5 : 5)).trim();
