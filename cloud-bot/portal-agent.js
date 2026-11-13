@@ -344,7 +344,7 @@ function simplifyScheduleRow(row) {
 
     // 1. Extract course code & name: e.g. "19AI305 — Advanced C Programming"
     let subject = '';
-    const codeNameMatch = str.match(/\b([0-9]{2}[A-Z]{2,4}[0-9]{3}[A-Z]?|[A-Z]+-[A-Z]+-[A-Z0-9]+|[A-Z]{3,4})\s*[-—–]\s*([A-Za-z0-9&/ ]+?)(?=\s+[0-9]{2}[A-Z0-9]{4,8}|\s+Student|\s+Nov|\s+Dec|\s+Jan|\s+Feb|\s+Mar|\s+Apr|\s+May|\s+Jun|\s+Jul|\s+Aug|\s+Sep|\s+Oct|$)/i);
+    const codeNameMatch = str.match(/\b([0-9]{2}[A-Z]{2,4}[0-9]{3}[A-Z]?|[A-Z]+-[A-Z]+-[A-Z0-9]+|[A-Z]{3,6})\s*[-—–]\s*([A-Za-z0-9&/ ]+?)(?=\s+[0-9]{2}[A-Z0-9]{4,8}|\s+Student|\s+Nov|\s+Dec|\s+Jan|\s+Feb|\s+Mar|\s+Apr|\s+May|\s+Jun|\s+Jul|\s+Aug|\s+Sep|\s+Oct|$)/i);
 
     if (codeNameMatch) {
 

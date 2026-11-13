@@ -1668,9 +1668,129 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
             return false;
         }
 
+        const MONTHS = {
+            jan: 1, january: 1,
+            feb: 2, february: 2,
+            mar: 3, march: 3,
+            apr: 4, april: 4,
+            may: 5,
+            jun: 6, june: 6,
+            jul: 7, july: 7,
+            aug: 8, august: 8,
+            sep: 9, sept: 9, september: 9,
+            oct: 10, october: 10,
+            nov: 11, november: 11,
+            dec: 12, december: 12
+        };
+
+        function extractSlotDate(fullTextRaw) {
+            if (!fullTextRaw) return null;
+            // Exclude administrative dates (booking window, cancellation ends/closes)
+            const timingPortion = fullTextRaw.split(/booking\s*window|cancellation\s*ends|cancellation\s*closed|cancellation\s*closes/i)[0] || fullTextRaw;
+
+            // 1. "Nov 14, 2026" or "Nov 14"
+            const m1 = timingPortion.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b/i);
+            if (m1) {
+                return {
+                    month: MONTHS[m1[1].toLowerCase()],
+                    day: parseInt(m1[2], 10),
+                    year: m1[3] ? parseInt(m1[3], 10) : null
+                };
+            }
+
+            // 2. "14 Nov 2026" or "14 Nov"
+            const m2 = timingPortion.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*(?:\s*,?\s*(\d{4}))?\b/i);
+            if (m2) {
+                return {
+                    month: MONTHS[m2[2].toLowerCase()],
+                    day: parseInt(m2[1], 10),
+                    year: m2[3] ? parseInt(m2[3], 10) : null
+                };
+            }
+
+            // 3. "14/11/2026" or "14-11-2026"
+            const m3 = timingPortion.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/);
+            if (m3) {
+                return {
+                    day: parseInt(m3[1], 10),
+                    month: parseInt(m3[2], 10),
+                    year: m3[3] ? parseInt(m3[3], 10) : null
+                };
+            }
+
+            return null;
+        }
+
+        function parseTargetDate(dateStr) {
+            if (!dateStr) return null;
+            const str = dateStr.trim().toLowerCase();
+
+            if (str === 'today') {
+                const now = new Date();
+                return { day: now.getDate(), month: now.getMonth() + 1, year: now.getFullYear() };
+            }
+            if (str === 'tomorrow') {
+                const d = new Date();
+                d.setDate(d.getDate() + 1);
+                return { day: d.getDate(), month: d.getMonth() + 1, year: d.getFullYear() };
+            }
+
+            const m1 = str.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*(?:\s*,?\s*(\d{4}))?\b/i);
+            if (m1) {
+                return {
+                    day: parseInt(m1[1], 10),
+                    month: MONTHS[m1[2].toLowerCase()],
+                    year: m1[3] ? parseInt(m1[3], 10) : null
+                };
+            }
+
+            const m2 = str.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b/i);
+            if (m2) {
+                return {
+                    month: MONTHS[m2[1].toLowerCase()],
+                    day: parseInt(m2[2], 10),
+                    year: m2[3] ? parseInt(m2[3], 10) : null
+                };
+            }
+
+            const m3 = str.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/);
+            if (m3) {
+                return {
+                    day: parseInt(m3[1], 10),
+                    month: parseInt(m3[2], 10),
+                    year: m3[3] ? parseInt(m3[3], 10) : null
+                };
+            }
+
+            const mDayOnly = str.match(/^(\d{1,2})(?:st|nd|rd|th)?$/);
+            if (mDayOnly) {
+                return { day: parseInt(mDayOnly[1], 10), month: null, year: null };
+            }
+
+            return null;
+        }
+
+        function doesDateMatch(cardRaw, targetDateStr) {
+            if (!targetDateStr) return true;
+            const target = parseTargetDate(targetDateStr);
+            const slotDate = extractSlotDate(cardRaw);
+
+            if (target && slotDate) {
+                if (target.day && slotDate.day && target.day !== slotDate.day) return false;
+                if (target.month && slotDate.month && target.month !== slotDate.month) return false;
+                if (target.year && slotDate.year && target.year !== slotDate.year) return false;
+                return true;
+            }
+
+            // Fallback: strictly check timing/event portion of the card (excluding cancellation/booking window)
+            const timingPortion = cardRaw.split(/booking\s*window|cancellation\s*ends|cancellation\s*closed|cancellation\s*closes/i)[0] || cardRaw;
+            const timingNorm = normalize(timingPortion);
+            const dateWords = normalize(targetDateStr).split(' ').filter(Boolean);
+            return dateWords.every(w => new RegExp('\\b' + w + '\\b').test(timingNorm));
+        }
+
         const kwNorm = normalize(kw);
         const venueNorm = normalize(venue);
-        const dateNorm = normalize(date);
 
         for (let i = 0; i < btns.length; i++) {
             const btn = btns[i];
@@ -1723,11 +1843,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                 matchVenue = fullTextNorm.includes(venueNorm) || (cleanV && fullTextNorm.includes(cleanV));
             }
 
-            let matchDate = true;
-            if (dateNorm) {
-                const dateWords = dateNorm.split(' ').filter(Boolean);
-                matchDate = dateWords.every(w => fullTextNorm.includes(w) || titleTextNorm.includes(w));
-            }
+            let matchDate = doesDateMatch(fullTextRaw, date);
 
             // ⛔ Check "Already Booked" or "Opening Soon" status
             const isAlreadyBooked = /booked|registered|enrolled|joined/i.test(btnText) && !btnText.includes('book');
@@ -1808,10 +1924,10 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                 });
 
                 let suggestionMsg = '';
-                if (keywordMatches.length > 0 && (targetTime || targetVenue)) {
-                    suggestionMsg = `\n\n💡 *Found matching slot at a different time/venue:*\n` +
+                if (keywordMatches.length > 0 && (targetTime || targetVenue || targetDate)) {
+                    suggestionMsg = `\n\n💡 *Found matching slot at a different date/time/venue:*\n` +
                         keywordMatches.map(s => `👉 \`${s}\``).join('\n') +
-                        `\n_Tip: To book it, use the time/room shown above!_\n`;
+                        `\n_Tip: To book it, use the exact date/time shown above!_\n`;
                 }
 
                 const displayedSlots = availableSlots.slice(0, 15);
@@ -1821,7 +1937,7 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
                     : '\n\nNo slots are currently available on the page.');
             }
 
-            await sendTelegram(`⚠️ No bookable slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}.${reasonMsg}`, chatId);
+            await sendTelegram(`⚠️ No bookable slot found for *"${targetKeyword}"*${targetTime ? ` at *${targetTime}*` : ''}${targetDate ? ` on *${targetDate}*` : ''}${targetVenue ? ` in venue *${targetVenue}*` : ''}.${reasonMsg}`, chatId);
         }
         return false;
     }
@@ -2000,21 +2116,30 @@ async function runBookingOnPage(page, targetKeyword, targetTime, targetVenue, ta
     const finalUrl = page.url();
     console.log(`[Bot] Final URL: ${finalUrl}`);
 
+    const studentName = page._userConfig?.name || (ACCOUNTS[chatId] && ACCOUNTS[chatId].name) || 'Student';
+    const studentUser = page._userConfig?.user || (ACCOUNTS[chatId] && ACCOUNTS[chatId].user) || '';
+
     const actionStr = bookableSlots[0].isWaitlist ? '📋 Waitlisted' : '✅ Booked';
     const tmpPath = path.join(__dirname, '_tmp_screenshot.png');
     await page.screenshot({ path: tmpPath, fullPage: false });
     await sendTelegramPhoto(
         tmpPath,
-        `${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}\n🔗 URL: ${finalUrl}\n\nBooking complete! 🎉`,
+        `🎉 *${actionStr} Successfully!*\n\n` +
+        `👤 *Booked By:* ${studentName}${studentUser ? ` (\`${studentUser}\`)` : ''}\n` +
+        `🎯 *Slot:* ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}${targetDate ? ` on ${targetDate}` : ''}\n` +
+        `🔗 *URL:* ${finalUrl}\n\n` +
+        `Booking complete! 🚀`,
         chatId
     );
 
     const superAdminChatId = Object.keys(ACCOUNTS).find(id => ACCOUNTS[id].user === '25013635');
     if (superAdminNotificationsEnabled && superAdminChatId && String(chatId) !== String(superAdminChatId)) {
-        const userName = (ACCOUNTS[chatId] && ACCOUNTS[chatId].name) ? ACCOUNTS[chatId].name : chatId;
         await sendTelegramPhoto(
             tmpPath,
-            `🔔 *User Successfully Booked!*\nUser: ${userName}\n${actionStr} Successfully!\n\n🎯 Slot: ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}`,
+            `🔔 *User Successfully Booked!*\n\n` +
+            `👤 *Booked By:* ${studentName} (\`${studentUser || chatId}\`)\n` +
+            `🎯 *Slot:* ${targetKeyword}${targetTime ? ` at ${targetTime}` : ''}${targetDate ? ` on ${targetDate}` : ''}\n` +
+            `📋 *Status:* ${actionStr} Successfully!`,
             superAdminChatId
         );
     }
@@ -2570,6 +2695,16 @@ async function handleAttendanceOtp(session, targetKeyword, phase = 'start', chat
         // 2. Find attendance link for targetKeyword (or current active class)
         const attendanceTarget = await findAttendanceTarget(page, targetKeyword);
 
+        if (attendanceTarget && attendanceTarget.isAlreadyPresent) {
+            await sendTelegram(
+                `✅ *Attendance Already Marked!*\n\n` +
+                `Attendance for *${attendanceTarget.name}* is already marked as *Present* on your schedule! 🎓🎉\n\n` +
+                `No OTP entry needed.`,
+                chatId
+            );
+            return;
+        }
+
         if (!attendanceTarget || !attendanceTarget.href) {
             await sendTelegram(`⚠️ No attendance link found on schedule for *${targetKeyword || 'today'}*.`, chatId);
             return;
@@ -2690,17 +2825,41 @@ async function findAttendanceTarget(page, kw) {
     const currentIstMins = nowIST.getHours() * 60 + nowIST.getMinutes();
 
     return await page.evaluate(({ targetKw, nowMins }) => {
+        // Step 0: Check if any card already indicates ClassAttendance: Present marked on schedule
+        const allCandidateCards = Array.from(document.querySelectorAll('div, li, section, article, tr')).filter(el => {
+            const txt = el.innerText || '';
+            return txt.length > 20 && txt.length < 1000 && /ClassAttendance\s*:\s*Present/i.test(txt) && (/\d{1,2}:\d{2}\s*(?:AM|PM)/i.test(txt) || /VENUE\s*:/i.test(txt));
+        });
+
+        if (targetKw) {
+            const tLow = targetKw.toLowerCase();
+            const matchedCard = allCandidateCards.find(el => el.innerText.toLowerCase().includes(tLow));
+            if (matchedCard) {
+                const lines = matchedCard.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+                return { isAlreadyPresent: true, name: lines[0] || targetKw, fullText: matchedCard.innerText };
+            }
+        }
+
         const clickable = Array.from(document.querySelectorAll('a, button, input[type="button"]')).filter(el => {
             const h = (el.getAttribute('href') || '').toLowerCase();
             const t = (el.innerText || el.value || '').trim().toLowerCase();
             return h.includes('attendance_process') ||
+                h.includes('event_attendance') ||
                 h.includes('event_attendance_process') ||
-                (t.includes('view') && t.includes('attendance')) ||
+                (t.includes('view') && (t.includes('attendance') || t.includes('event'))) ||
                 t === 'view attendance' ||
-                t === 'view event';
+                t === 'view event' ||
+                (h.includes('/academicevents/') && (t.includes('event') || t.includes('attendance')));
         });
 
-        if (!clickable.length) return null;
+        if (!clickable.length) {
+            if (allCandidateCards.length > 0) {
+                const firstCard = allCandidateCards[0];
+                const lines = firstCard.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+                return { isAlreadyPresent: true, name: lines[0] || 'Class', fullText: firstCard.innerText };
+            }
+            return null;
+        }
 
         function getCardText(el) {
             let curr = el.parentElement;
@@ -3167,6 +3326,45 @@ async function changeSaveethaPassword(user, oldPass, newPass) {
     }
 }
 
+async function extractStudentProfileFromPage(page) {
+    try {
+        return await page.evaluate(() => {
+            // Strategy 1: Look at elements in the sidebar containing "Logged in as"
+            const allEls = Array.from(document.querySelectorAll('div, aside, nav, footer, p, span, li, a'));
+            const headerEl = allEls.find(e => {
+                const t = (e.innerText || '').trim();
+                return /Logged\s+in\s+as\s*:/i.test(t) && t.length < 250;
+            });
+
+            if (headerEl) {
+                const parent = headerEl.closest('div, aside, nav, footer, section') || headerEl.parentElement;
+                if (parent) {
+                    const lines = parent.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+                    const idx = lines.findIndex(l => /Logged\s+in\s+as\s*:/i.test(l));
+                    if (idx !== -1 && lines[idx + 2]) {
+                        const roll = lines[idx + 1];
+                        const name = lines[idx + 2];
+                        if (name && name.length >= 2 && !/^Ref\d/i.test(name) && !/^\d+$/.test(name)) {
+                            return { roll, name };
+                        }
+                    }
+                }
+            }
+
+            // Strategy 2: Global body innerText regex
+            const bodyTxt = document.body ? document.body.innerText : '';
+            const m = bodyTxt.match(/Logged\s+in\s+as\s*:\s*[\r\n]+([A-Za-z0-9_-]+)[\r\n]+([A-Za-z. ]+?)(?=[\r\n]+Ref|[\r\n]+NOVEMBER|[\r\n]*$)/i);
+            if (m && m[2] && !/^Ref/i.test(m[2])) {
+                return { roll: m[1].trim(), name: m[2].trim() };
+            }
+
+            return null;
+        });
+    } catch (_) {
+        return null;
+    }
+}
+
 async function doLogin(page, user, pass) {
     console.log(`[Bot] Logging in as ${user}...`);
 
@@ -3279,6 +3477,28 @@ async function doLogin(page, user, pass) {
             }
 
             console.log(`[Bot] ✅ ${user} logged in successfully.`);
+
+            // Extract & remember real name from bottom left of the portal
+            try {
+                const profile = await extractStudentProfileFromPage(page);
+                if (profile && profile.name) {
+                    console.log(`[Bot] 👤 Identified user from portal: ${profile.name} (${profile.roll || user})`);
+                    if (page._userConfig) {
+                        page._userConfig.name = profile.name;
+                    }
+                    let changed = false;
+                    for (const [cid, acc] of Object.entries(ACCOUNTS)) {
+                        if (acc && String(acc.user) === String(user)) {
+                            if (acc.name !== profile.name) {
+                                acc.name = profile.name;
+                                changed = true;
+                            }
+                        }
+                    }
+                    if (changed) syncAccountsToGist().catch(() => {});
+                }
+            } catch (_) {}
+
             return; // Login succeeded
         } catch (err) {
             if (err.code === 'PASSWORD_CHANGE_REQUIRED' || err.code === 'INVALID_CREDENTIALS' || attempts >= maxAttempts) throw err;
@@ -3644,7 +3864,22 @@ async function fetchTimetable(context, config, targetDateInfo = null, wantScreen
                 const period = (m[3] || '').toLowerCase();
                 if (period === 'pm' && h < 12) h += 12;
                 if (period === 'am' && h === 12) h = 0;
-                return { hour: h, minute: min, timeStr: timeText.trim() };
+
+                let durationMinutes = null;
+                const rangeMatch = timeText.match(/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?\s*[-–—to]+\s*(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i);
+                if (rangeMatch) {
+                    let eh = parseInt(rangeMatch[4], 10);
+                    const emin = parseInt(rangeMatch[5], 10);
+                    let ePeriod = (rangeMatch[6] || period).toLowerCase();
+                    if (ePeriod === 'pm' && eh < 12) eh += 12;
+                    if (ePeriod === 'am' && eh === 12) eh = 0;
+                    let startMins = h * 60 + min;
+                    let endMins = eh * 60 + emin;
+                    if (endMins < startMins) endMins += 1440;
+                    durationMinutes = endMins - startMins;
+                }
+
+                return { hour: h, minute: min, timeStr: timeText.trim(), durationMinutes };
             }
 
             // ── Strategy 0: Saveetha people_schedule labeled-card format (PRIMARY) ──
@@ -3652,7 +3887,12 @@ async function fetchTimetable(context, config, targetDateInfo = null, wantScreen
             const cardEls = allEls
                 .filter(el => {
                     const txt = el.innerText || '';
-                    return /SLOT\s*:/i.test(txt) && /VENUE\s*:/i.test(txt);
+                    if (txt.length < 15 || txt.length > 1000) return false;
+                    const hasVenue = /VENUE\s*:/i.test(txt);
+                    const hasSlot = /SLOT\s*:/i.test(txt);
+                    const hasEvent = /EVENT\s*[-–—]|TYPE\s*:\s*LEARNING|PURPOSE\s*:/i.test(txt);
+                    const hasTime = /(\d{1,2})[\.:](\d{2})\s*(AM|PM)?/i.test(txt);
+                    return hasVenue && (hasSlot || hasEvent || hasTime);
                 })
                 .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
 
@@ -3666,7 +3906,7 @@ async function fetchTimetable(context, config, targetDateInfo = null, wantScreen
             for (const card of selectedCards) {
                 let lines = (card.innerText || '').split('\n').map(l => l.trim()).filter(Boolean);
 
-                if (lines.length > 0 && (/^SLOT\s*:/i.test(lines[0]) || /^VENUE\s*:/i.test(lines[0]) || /^Lesson\s*:/i.test(lines[0]))) {
+                if (lines.length > 0 && (/^SLOT\s*:/i.test(lines[0]) || /^VENUE\s*:/i.test(lines[0]) || /^Lesson\s*:/i.test(lines[0]) || /^TYPE\s*:/i.test(lines[0]) || /^PURPOSE\s*:/i.test(lines[0]))) {
                     let curr = card;
                     for (let i = 0; i < 3; i++) {
                         if (!curr.parentElement) break;
@@ -3685,29 +3925,59 @@ async function fetchTimetable(context, config, targetDateInfo = null, wantScreen
                     }
                 }
 
-                let venue = '', slotCode = '', timeInfo = null, subject = '';
+                let venue = '', slotCode = '', timeInfo = null, subject = '', purpose = '', attendanceStatus = '';
+                let isEvent = false;
+
+                if (/EVENT\s*[-–—]|TYPE\s*:\s*LEARNING|PURPOSE\s*:/i.test(card.innerText || '')) {
+                    isEvent = true;
+                }
 
                 for (const line of lines) {
                     if (/^VENUE\s*:/i.test(line)) {
                         venue = line.replace(/^VENUE\s*:\s*/i, '').trim();
                     } else if (/^SLOT\s*:/i.test(line)) {
                         slotCode = line.replace(/^SLOT\s*:\s*/i, '').trim();
+                    } else if (/^PURPOSE\s*:/i.test(line)) {
+                        purpose = line.replace(/^PURPOSE\s*:\s*/i, '').trim();
+                    } else if (/ClassAttendance\s*:\s*/i.test(line)) {
+                        const attM = line.match(/ClassAttendance\s*:\s*(Present|Absent|OD|On-Duty|Pending|Not Marked|[A-Za-z]+?)(?=\s*Reward|\s*Points|[A-Z][a-z]+:|\s*$)/i);
+                        if (attM) attendanceStatus = attM[1];
                     } else if (/(\d{1,2})[\.:](\d{2})\s*(AM|PM|am|pm)?/i.test(line) && !timeInfo) {
                         timeInfo = parseTime(line);
-                    } else if (line.length > 5 &&
+                    } else if (line.length > 3 &&
                         !/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i.test(line) &&
                         !/^\d{1,2}\s*(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(line) &&
                         !/^(MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(line) &&
-                        !/VIEW\s*ATTENDANCE/i.test(line)) {
+                        !/^TYPE\s*:/i.test(line) &&
+                        !/^PURPOSE\s*:/i.test(line) &&
+                        !/^CANCELLATION\s*/i.test(line) &&
+                        !/Cancellation Closed/i.test(line) &&
+                        !/Feedback pending/i.test(line) &&
+                        !/ClassAttendance/i.test(line) &&
+                        !/Reward Points/i.test(line) &&
+                        !/VIEW\s*ATTENDANCE/i.test(line) &&
+                        !/VIEW\s*EVENT/i.test(line)) {
                         if (!subject) subject = line;
                     }
                 }
 
-                if (timeInfo && (subject || venue)) {
+                if (isEvent && !slotCode) {
+                    slotCode = 'EVENT';
+                }
+
+                let displaySubject = subject || (isEvent ? 'Academic Event' : 'Class');
+                if (isEvent && purpose && !displaySubject.toLowerCase().includes(purpose.toLowerCase())) {
+                    displaySubject = `${displaySubject} (${purpose})`;
+                }
+
+                if (timeInfo && (displaySubject || venue)) {
                     results.push({
-                        slot: subject || 'Class',
+                        slot: displaySubject,
                         venue: venue || 'N/A',
                         slotCode: slotCode || '',
+                        isEvent,
+                        purpose,
+                        attendanceStatus,
                         ...timeInfo,
                         hasToday: true
                     });
@@ -3844,9 +4114,14 @@ function formatTimetable(slots, name, targetDateInfo = null) {
         const period = s.hour < 12 ? 'AM' : 'PM';
         const minStr = String(s.minute).padStart(2, '0');
         const venueDisplay = (s.venue && s.venue !== 'N/A') ? s.venue : 'N/A (Check Portal)';
+        const icon = s.isEvent ? '🎯' : (/hostel|hos\b/i.test(s.slot) ? '🏨' : '📚');
         msg += `🕐 *${h}:${minStr} ${period}*\n`;
-        msg += `📚 ${s.slot}\n`;
-        msg += `📍 Venue: *${venueDisplay}*\n\n`;
+        msg += `${icon} ${s.slot}\n`;
+        msg += `📍 Venue: *${venueDisplay}*\n`;
+        if (s.attendanceStatus) {
+            msg += `📋 Attendance: *${s.attendanceStatus}*\n`;
+        }
+        msg += '\n';
     }
     msg += `_Have a productive day! 💪_`;
     return msg;
@@ -4541,6 +4816,19 @@ async function spawnUserSession(browser, chatId, config) {
             throw new Error(`Session redirected to ${hotPage.url()} (not authenticated)`);
         }
 
+        // Verify & remember user profile name from bottom left
+        try {
+            const profile = await extractStudentProfileFromPage(hotPage);
+            if (profile && profile.name) {
+                config.name = profile.name;
+                if (ACCOUNTS[chatId] && ACCOUNTS[chatId].name !== profile.name) {
+                    ACCOUNTS[chatId].name = profile.name;
+                    syncAccountsToGist().catch(() => {});
+                }
+                console.log(`[Bot] 👤 Session user verified as: ${profile.name} (${chatId})`);
+            }
+        } catch (_) {}
+
         const session = {
             context: userContext,
             config,
@@ -5126,6 +5414,11 @@ function scheduleSlotReminders(chatId, session, slots) {
 
         // ── Regular Class OTP Attendance (SUPER ADMIN ONLY) ───────────────────
         if (allowOtp) {
+            if (s.attendanceStatus && /present|approved|attended/i.test(s.attendanceStatus)) {
+                console.log(`[Scheduler] "${s.slot}" attendance already marked as ${s.attendanceStatus} on portal. Skipping OTP monitors.`);
+                continue;
+            }
+
             // IN OTP: starts 10 min before class start and stops 5 min after class start
             const inScanStartDelay = msUntilClassStart - 10 * 60 * 1000;
             const inScanStopDelay = msUntilClassStart + 5 * 60 * 1000;

@@ -312,7 +312,72 @@ async function fetchTodaySchedule(page, user, pass) {
             });
         }
 
-        // ── Strategy 2 fallback: scan all divs for time ranges ─────────────
+        // ── Strategy 2: Directly inspect all timetable cards (including EVENT cards) ──
+        const allCardEls = Array.from(document.querySelectorAll('div, li, article, section, tr'))
+            .filter(el => {
+                const txt = el.innerText || '';
+                if (txt.length < 15 || txt.length > 800) return false;
+                const hasTime = parseTimeRange(txt);
+                const hasVenue = /VENUE\s*:/i.test(txt);
+                const hasSlot = /SLOT\s*:/i.test(txt);
+                const hasEvent = /EVENT\s*[-–—]|TYPE\s*:\s*LEARNING|PURPOSE\s*:/i.test(txt);
+                return hasTime && hasVenue && (hasSlot || hasEvent);
+            })
+            .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+
+        for (const card of allCardEls) {
+            const cardText = card.innerText || '';
+            const timeRange = parseTimeRange(cardText);
+            if (!timeRange) continue;
+
+            const isEvent = /EVENT\s*[-–—]|TYPE\s*:\s*LEARNING|PURPOSE\s*:/i.test(cardText);
+            const lines = cardText.split('\n').map(l => l.trim()).filter(l => l.length > 3);
+
+            let name = '';
+            let purpose = '';
+            for (const line of lines) {
+                if (/^PURPOSE\s*:\s*(.+)/i.test(line)) {
+                    purpose = line.replace(/^PURPOSE\s*:\s*/i, '').trim();
+                } else if (
+                    !line.match(/^\d{1,2}:\d{2}/) &&
+                    !line.toUpperCase().startsWith('SLOT') &&
+                    !line.toUpperCase().startsWith('VENUE') &&
+                    !line.toUpperCase().startsWith('TYPE') &&
+                    !line.toUpperCase().startsWith('PURPOSE') &&
+                    !line.toUpperCase().startsWith('CANCELLATION') &&
+                    !line.toUpperCase().startsWith('VIEW') &&
+                    !line.toUpperCase().startsWith('FEEDBACK') &&
+                    !line.toUpperCase().startsWith('CLASSATTENDANCE') &&
+                    !line.toUpperCase().startsWith('REWARD')
+                ) {
+                    if (!name) name = line;
+                }
+            }
+
+            const slotMatch = cardText.match(/SLOT\s*:\s*(\S+)/i);
+            const slot = slotMatch ? slotMatch[1] : (isEvent ? 'EVENT' : '');
+
+            const btn = card.querySelector('a, button');
+            const viewHref = btn && btn.tagName === 'A' ? btn.getAttribute('href') : null;
+            const btnLabel = btn ? (btn.innerText || '').trim() : '';
+
+            let finalName = name || (isEvent ? 'Academic Event' : `Class ${slot}`);
+            if (isEvent && purpose && !finalName.toLowerCase().includes(purpose.toLowerCase())) {
+                finalName = `${finalName} (${purpose})`;
+            }
+
+            results.push({
+                name: finalName.substring(0, 120),
+                slot,
+                startTime: timeRange.start,
+                endTime: timeRange.end,
+                viewHref: viewHref ? (viewHref.startsWith('http') ? viewHref : 'https://learner.saveetha.in' + viewHref) : null,
+                btnLabel,
+                cardText: cardText.replace(/\n+/g, ' | ').substring(0, 300),
+            });
+        }
+
+        // ── Strategy 3 fallback: scan all divs for time ranges ─────────────
         if (results.length === 0) {
             const allEls = Array.from(document.querySelectorAll('div, li, article, section'));
             for (const el of allEls) {

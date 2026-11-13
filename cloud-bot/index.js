@@ -234,8 +234,123 @@ async function runBookingBot(targetKeyword, targetTime, targetDate, startTime, m
                 return false;
             }
 
+            const MONTHS = {
+                jan: 1, january: 1,
+                feb: 2, february: 2,
+                mar: 3, march: 3,
+                apr: 4, april: 4,
+                may: 5,
+                jun: 6, june: 6,
+                jul: 7, july: 7,
+                aug: 8, august: 8,
+                sep: 9, sept: 9, september: 9,
+                oct: 10, october: 10,
+                nov: 11, november: 11,
+                dec: 12, december: 12
+            };
+
+            function extractSlotDate(fullTextRaw) {
+                if (!fullTextRaw) return null;
+                const timingPortion = fullTextRaw.split(/booking\s*window|cancellation\s*ends|cancellation\s*closed|cancellation\s*closes/i)[0] || fullTextRaw;
+
+                const m1 = timingPortion.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b/i);
+                if (m1) {
+                    return {
+                        month: MONTHS[m1[1].toLowerCase()],
+                        day: parseInt(m1[2], 10),
+                        year: m1[3] ? parseInt(m1[3], 10) : null
+                    };
+                }
+
+                const m2 = timingPortion.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*(?:\s*,?\s*(\d{4}))?\b/i);
+                if (m2) {
+                    return {
+                        month: MONTHS[m2[2].toLowerCase()],
+                        day: parseInt(m2[1], 10),
+                        year: m2[3] ? parseInt(m2[3], 10) : null
+                    };
+                }
+
+                const m3 = timingPortion.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/);
+                if (m3) {
+                    return {
+                        day: parseInt(m3[1], 10),
+                        month: parseInt(m3[2], 10),
+                        year: m3[3] ? parseInt(m3[3], 10) : null
+                    };
+                }
+
+                return null;
+            }
+
+            function parseTargetDate(dateStr) {
+                if (!dateStr) return null;
+                const str = dateStr.trim().toLowerCase();
+
+                if (str === 'today') {
+                    const now = new Date();
+                    return { day: now.getDate(), month: now.getMonth() + 1, year: now.getFullYear() };
+                }
+                if (str === 'tomorrow') {
+                    const d = new Date();
+                    d.setDate(d.getDate() + 1);
+                    return { day: d.getDate(), month: d.getMonth() + 1, year: d.getFullYear() };
+                }
+
+                const m1 = str.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*(?:\s*,?\s*(\d{4}))?\b/i);
+                if (m1) {
+                    return {
+                        day: parseInt(m1[1], 10),
+                        month: MONTHS[m1[2].toLowerCase()],
+                        year: m1[3] ? parseInt(m1[3], 10) : null
+                    };
+                }
+
+                const m2 = str.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b/i);
+                if (m2) {
+                    return {
+                        month: MONTHS[m2[1].toLowerCase()],
+                        day: parseInt(m2[2], 10),
+                        year: m2[3] ? parseInt(m2[3], 10) : null
+                    };
+                }
+
+                const m3 = str.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?\b/);
+                if (m3) {
+                    return {
+                        day: parseInt(m3[1], 10),
+                        month: parseInt(m3[2], 10),
+                        year: m3[3] ? parseInt(m3[3], 10) : null
+                    };
+                }
+
+                const mDayOnly = str.match(/^(\d{1,2})(?:st|nd|rd|th)?$/);
+                if (mDayOnly) {
+                    return { day: parseInt(mDayOnly[1], 10), month: null, year: null };
+                }
+
+                return null;
+            }
+
+            function doesDateMatch(cardRaw, targetDateStr) {
+                if (!targetDateStr) return true;
+                const target = parseTargetDate(targetDateStr);
+                const slotDate = extractSlotDate(cardRaw);
+
+                if (target && slotDate) {
+                    if (target.day && slotDate.day && target.day !== slotDate.day) return false;
+                    if (target.month && slotDate.month && target.month !== slotDate.month) return false;
+                    if (target.year && slotDate.year && target.year !== slotDate.year) return false;
+                    return true;
+                }
+
+                const timingPortion = cardRaw.split(/booking\s*window|cancellation\s*ends|cancellation\s*closed|cancellation\s*closes/i)[0] || cardRaw;
+                const timingNorm = normalize(timingPortion);
+                const dateWords = normalize(targetDateStr).split(' ').filter(Boolean);
+                return dateWords.every(w => new RegExp('\\b' + w + '\\b').test(timingNorm));
+            }
+
             const kwNorm = normalize(kw);
-            const dateNorm = normalize(date);
 
             for (let i = 0; i < btns.length; i++) {
                 const btn = btns[i];
@@ -279,10 +394,7 @@ async function runBookingBot(targetKeyword, targetTime, targetDate, startTime, m
 
                 let matchTime = doesTimeMatch(fullTextRaw, time);
 
-                let matchDate = true;
-                if (dateNorm) {
-                    matchDate = fullTextNorm.includes(dateNorm) || titleTextNorm.includes(dateNorm);
-                }
+                let matchDate = doesDateMatch(fullTextRaw, date);
 
                 // ⛔ Check "Opening Soon" or "Already Booked" status
                 const isOpeningSoon = /opening\s*soon/i.test(fullTextRaw);

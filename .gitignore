@@ -7,4 +7,5 @@ node_modules/
 *call_config.json
 scratch*
 cloud-bot/scratch*
+test_login.js
 
